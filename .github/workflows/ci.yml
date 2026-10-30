@@ -1,4 +1,4 @@
-# CI for the dsh-workbench plugin family.
+# CI for the dsh-workbay plugin family.
 #
 # WHY WINDOWS-LATEST FOR TESTS: this family is Windows-only by construction.
 #   * gitcraft's host tests spawn a real `git` binary, create throwaway repos

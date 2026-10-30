@@ -79,7 +79,7 @@ function boot({ betterSidebar, native, locale, dock }) {
   const window = {
     /* The workbench dock publishes its page registry on this global, and the
        plugin registers into it during apply. */
-    __DSH_WORKBENCH_DOCK__: dock,
+    __DSH_WORKBAY__: dock,
     __ModuleLoader__: {
       load({ id, factory }) {
         assert.equal(id, 'dsh-gitcraft')

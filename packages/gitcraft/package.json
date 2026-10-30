@@ -43,7 +43,7 @@
     "test": "node --test tests/host.test.mjs tests/client.test.mjs tests/workspace.test.mjs"
   },
   "dependencies": {
-    "@dsh-workbench/kit": "file:../kit"
+    "@dsh-workbay/kit": "file:../kit"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

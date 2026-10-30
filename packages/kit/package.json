@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-workbench/kit",
+  "name": "@dsh-workbay/kit",
   "version": "0.1.0",
   "description": "Host-side helpers shared by the DSH workbench bundles: a loopback trust fence, a JSON body reader, and a POST /<prefix>/<method> RPC surface with the { ok, data } / { ok, error } envelope.",
   "type": "module",

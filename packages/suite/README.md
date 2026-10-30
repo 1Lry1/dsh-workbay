@@ -1,11 +1,11 @@
-# dsh-workbench-suite
+# dsh-workbay-suite
 
 一键装载整个工作台的**聚合金**（aggregator）。它自己不含代码，只做两件事：
 
 1. `dependencies` 里带上三个 bundle：
 
    ```json
-   "dsh-workbench-dock": "file:../dock",
+   "dsh-workbay-dock": "file:../dock",
    "dsh-gitcraft": "file:../gitcraft",
    "dsh-downloader": "file:../downloader"
    ```
@@ -14,8 +14,8 @@
 
    ```yaml
    - insert:
-       - id: workbench-dock
-         name: 'dsh-workbench-dock'
+       - id: workbay-dock
+         name: 'dsh-workbay-dock'
        - id: gitcraft
          name: 'dsh-gitcraft'
          config: { ... }
@@ -27,11 +27,11 @@
 
 ```powershell
 # A. 只装聚合包
-#    profile 的 dsh.profile.bundles 里只加 "dsh-workbench-suite"
-#    profile 的 dependencies 里加 "dsh-workbench-suite": "file:<repo>/packages/suite"
+#    profile 的 dsh.profile.bundles 里只加 "dsh-workbay-suite"
+#    profile 的 dependencies 里加 "dsh-workbay-suite": "file:<repo>/packages/suite"
 
 # B. 分别装三个（跟现在一样）
-#    bundles 里写 dsh-workbench-dock / dsh-gitcraft / dsh-downloader
+#    bundles 里写 dsh-workbay-dock / dsh-gitcraft / dsh-downloader
 ```
 
 **不要同时列 suite 和其中任何一个**：两边都会插入同一条 loader 行，前缀路由注册两次，DSH 会以 `duplicate prefix route` 拒绝启动整棵插件树。

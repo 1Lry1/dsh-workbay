@@ -1,4 +1,4 @@
-# @dsh-workbench/kit
+# @dsh-workbay/kit
 
 DSH 工作台各 bundle 共用的 **host 半侧**工具。只服务于 Node 侧，浏览器侧刻意不复用（原因见下）。
 
@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
 })
 ```
 
-一个插件 = 一个自包含文件 + 宿主提供的 `require` 种子表。浏览器侧**无法 `import '@dsh-workbench/kit'`**，所以「工作台页面注册」那段几十行小代码在两个页面插件里各留一份，而不是抽成公共依赖。
+一个插件 = 一个自包含文件 + 宿主提供的 `require` 种子表。浏览器侧**无法 `import '@dsh-workbay/kit'`**，所以「工作台页面注册」那段几十行小代码在两个页面插件里各留一份，而不是抽成公共依赖。
 
 ## 提供什么
 
@@ -46,7 +46,7 @@ mountJsonApi(ctx, {
 
 ## 谁在用
 
-- `dsh-workbench-dock`：2 个方法（`ping` / `registry`）
+- `dsh-workbay-dock`：2 个方法（`ping` / `registry`）
 - `dsh-gitcraft`：58 个方法，带写锁钩子
 - `dsh-downloader`：**不用**。它的 host 还要输出 SSE 与二进制帧，不是纯 JSON RPC 映射表，硬套会降低可读性。
 

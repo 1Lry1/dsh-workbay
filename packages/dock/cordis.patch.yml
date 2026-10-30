@@ -1,10 +1,10 @@
-# dsh-workbench-dock — bundle patch
+# dsh-workbay-dock — bundle patch
 #
-# Mounts the host half (the /dsh-workbench-dock/api routes). The browser half is
+# Mounts the host half (the /dsh-workbay-dock/api routes). The browser half is
 # served through exports["./client"] and registers:
 #   - one button in the session header's top-right action row;
 #   - one page type in DSH's OWN right sidebar (ctx.sidebarRightTabs), so the
 #     panel is a real right-side pane and NOT a dsh-better-sidebar tab.
 - insert:
-    - id: workbench-dock
-      name: 'dsh-workbench-dock'
+    - id: workbay-dock
+      name: 'dsh-workbay-dock'

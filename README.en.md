@@ -1,9 +1,9 @@
-# dsh-workbench
+# dsh-workbay
 
-[![CI](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml)
-[![license](https://img.shields.io/github/license/1Lry1/dsh-workbench)](LICENSE)
+[![CI](https://github.com/1Lry1/dsh-workbay/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbay/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/1Lry1/dsh-workbay)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](package.json)
-[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbench)
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbay)
 
 [Chinese](README.md) | **English**
 
@@ -13,11 +13,11 @@ This repository consolidates what used to be three standalone projects into a si
 
 ```
 packages/
-├─ dock/        dsh-workbench-dock    shell: left-sidebar entry + right-side dock overlay + page registry
+├─ dock/        dsh-workbay-dock    shell: left-sidebar entry + right-side dock overlay + page registry
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
-├─ kit/         @dsh-workbench/kit    shared host helpers: same-origin fence / JSON body / RPC envelope
-└─ suite/       dsh-workbench-suite   aggregator: installs all three at once (experimental)
+├─ kit/         @dsh-workbay/kit    shared host helpers: same-origin fence / JSON body / RPC envelope
+└─ suite/       dsh-workbay-suite   aggregator: installs all three at once (experimental)
 ```
 
 ```
@@ -49,7 +49,7 @@ A single bundle that fails to start can make the whole plugin tree fail to boot 
 Pages are React components registered on the **browser side**; the registry lives on a browser global, so the load order of the two bundles does not matter:
 
 ```js
-window.__DSH_WORKBENCH_DOCK__.registerPage({
+window.__DSH_WORKBAY__.registerPage({
   id: 'myplugin',          // required, non-empty
   title: 'My page',
   order: 40,               // ascending; GitCraft=20, Downloader=30
@@ -70,13 +70,13 @@ Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
-    "dsh-workbench-dock", "dsh-gitcraft", "dsh-downloader"
+    "dsh-workbay-dock", "dsh-gitcraft", "dsh-downloader"
   ] } },
   "dependencies": {
-    "dsh-workbench-dock": "file:<repo>/packages/dock",
+    "dsh-workbay-dock": "file:<repo>/packages/dock",
     "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
     "dsh-downloader":     "file:<repo>/packages/downloader",
-    "@dsh-workbench/kit": "file:<repo>/packages/kit"
+    "@dsh-workbay/kit": "file:<repo>/packages/kit"
   }
 }
 ```
@@ -85,18 +85,18 @@ Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `
 pnpm install            # or: dsh plugin --profile desktop add file:...
 ```
 
-**Option B — the suite aggregator (experimental)**: add only `dsh-workbench-suite` to `bundles` and let its patch do the rest. See [packages/suite/README.md](packages/suite/README.md).
+**Option B — the suite aggregator (experimental)**: add only `dsh-workbay-suite` to `bundles` and let its patch do the rest. See [packages/suite/README.md](packages/suite/README.md).
 
 After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
 
-> `@dsh-workbench/kit` must be resolvable by the DSH runtime: it is imported by the host halves of dock and gitcraft, so it has to be present in the profile's `node_modules`. `pnpm install` installs it automatically as a `file:` dependency; copying plugin directories by hand easily misses it, which shows up as the host half failing to load.
+> `@dsh-workbay/kit` must be resolvable by the DSH runtime: it is imported by the host halves of dock and gitcraft, so it has to be present in the profile's `node_modules`. `pnpm install` installs it automatically as a `file:` dependency; copying plugin directories by hand easily misses it, which shows up as the host half failing to load.
 
 ## Development
 
 ```powershell
 pnpm install                     # workspace dependencies
 pnpm test                        # unit/integration tests for all packages
-pnpm --filter @dsh-workbench/kit run test
+pnpm --filter @dsh-workbay/kit run test
 pnpm --filter dsh-gitcraft run test
 ```
 
@@ -111,7 +111,7 @@ node packages/downloader/smoke-test.mjs  # 25 checks; set the DSH_DOWNLOADER_* e
 ## Design constraints (don't break these)
 
 1. **A client half cannot import packages from this repo.** DSH loads client plugins with `window.__ModuleLoader__.load({ id, factory })`: one plugin is a single self-contained file plus the host's `require` seed table. That is why the small page-registration snippet is kept in both page plugins — deliberately so.
-2. **`@dsh-workbench/kit` serves the host half only.** It exports nothing usable in the browser.
+2. **`@dsh-workbay/kit` serves the host half only.** It exports nothing usable in the browser.
 3. **The downloader does not use kit's RPC envelope**: its host also emits SSE and binary frames, and forcing the envelope on top would hurt readability.
 4. **Do not mount both the suite and the individual packages** — the same row would be inserted twice, and the whole tree would fail to start.
 5. Every package's `cordis.patch.yml` contains exactly one `insert`; `id` is a globally unique loader id.
@@ -132,9 +132,9 @@ pwsh -File scripts/refresh-profile.ps1 -Profile desktop
 Get-Process AbSerialHost, DownloaderIpcBridge -ErrorAction SilentlyContinue | Stop-Process
 ```
 
-**The UI shows "Workbench" but has no pages** — the page registry is the browser global `window.__DSH_WORKBENCH_DOCK__`, and both page plugins wait for it. If dock was not loaded (`dsh-workbench-dock` missing from `bundles`), the pages have nowhere to register; conversely, if a page package is missing, the tab bar has only the workbench itself. Check that all three lines are present in the profile's `dsh.profile.bundles`.
+**The UI shows "Workbench" but has no pages** — the page registry is the browser global `window.__DSH_WORKBAY__`, and both page plugins wait for it. If dock was not loaded (`dsh-workbay-dock` missing from `bundles`), the pages have nowhere to register; conversely, if a page package is missing, the tab bar has only the workbench itself. Check that all three lines are present in the profile's `dsh.profile.bundles`.
 
-**The host half fails to load and the log says `Cannot find package '@dsh-workbench/kit'`** — kit is missing from the profile's `node_modules`. `pnpm install` picks it up automatically via `file:../kit`; copying plugin directories by hand is the easiest way to miss it.
+**The host half fails to load and the log says `Cannot find package '@dsh-workbay/kit'`** — kit is missing from the profile's `node_modules`. `pnpm install` picks it up automatically via `file:../kit`; copying plugin directories by hand is the easiest way to miss it.
 
 ## Contributing and security
 

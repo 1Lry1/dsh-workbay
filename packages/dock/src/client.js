@@ -1,5 +1,5 @@
 /**
- * dsh-workbench-dock — client half (v0.2, GLOBAL dock).
+ * dsh-workbay-dock — client half (v0.2, GLOBAL dock).
  *
  * ONE entry in the LEFT sidebar — the `sidebar.panellist` seat that "插件 / 自动化
  * 任务 / 更多" sit in — with `sidebar.footer.action` as the fallback for host
@@ -16,7 +16,7 @@
  *
  * Pages are contributed by other plugins through one browser global:
  *
- *   window.__DSH_WORKBENCH_DOCK__.registerPage({
+ *   window.__DSH_WORKBAY__.registerPage({
  *     id: 'gitcraft', title: 'GitCraft', order: 20,
  *     component: ({ t }) => <MyPanel />,
  *   })
@@ -24,7 +24,7 @@
  * Nothing here depends on dsh-better-sidebar.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-workbench-dock',
+  id: 'dsh-workbay-dock',
   factory: (require) => {
     const React = require('react')
     const E = React.createElement
@@ -34,13 +34,13 @@ window.__ModuleLoader__.load({
     const useCallback = React.useCallback
     const useRef = React.useRef
 
-    const GLOBAL_KEY = '__DSH_WORKBENCH_DOCK__'
-    const STORAGE_OPEN = 'dsh-workbench-dock.open.v1'
-    const STORAGE_PAGE = 'dsh-workbench-dock.page.v1'
-    const STORAGE_GEOM = 'dsh-workbench-dock.geom.v1'
-    const STORAGE_MODE = 'dsh-workbench-dock.mode.v1'
-    const STORAGE_DOCK_W = 'dsh-workbench-dock.dockw.v1'
-    const LOCALE_NS = 'dsh-workbench-dock'
+    const GLOBAL_KEY = '__DSH_WORKBAY__'
+    const STORAGE_OPEN = 'dsh-workbay-dock.open.v1'
+    const STORAGE_PAGE = 'dsh-workbay-dock.page.v1'
+    const STORAGE_GEOM = 'dsh-workbay-dock.geom.v1'
+    const STORAGE_MODE = 'dsh-workbay-dock.mode.v1'
+    const STORAGE_DOCK_W = 'dsh-workbay-dock.dockw.v1'
+    const LOCALE_NS = 'dsh-workbay-dock'
 
     /* ============================== i18n ============================== */
 
@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
       'button.tooltip': '打开工作台（全局共用，与当前会话无关）',
       'pane.title': '工作台',
       'pane.empty': '还没有注册任何页面',
-      'pane.emptyHint': '插件通过 window.__DSH_WORKBENCH_DOCK__.registerPage 注册页面后，会出现在这里。',
+      'pane.emptyHint': '插件通过 window.__DSH_WORKBAY__.registerPage 注册页面后，会出现在这里。',
       'pane.global': '全局面板 · 与当前会话无关',
       'pane.close': '关闭',
       'pane.minimize': '收起',
@@ -64,7 +64,7 @@ window.__ModuleLoader__.load({
       'button.tooltip': 'Open the workbench (global, independent of the session)',
       'pane.title': 'Workbench',
       'pane.empty': 'No pages registered yet',
-      'pane.emptyHint': 'A plugin appears here after calling window.__DSH_WORKBENCH_DOCK__.registerPage.',
+      'pane.emptyHint': 'A plugin appears here after calling window.__DSH_WORKBAY__.registerPage.',
       'pane.global': 'Global panel · independent of the current session',
       'pane.close': 'Close',
       'pane.minimize': 'Collapse',
@@ -771,16 +771,16 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 
     function apply(ctx) {
       const style = document.createElement('style')
-      style.setAttribute('data-dsh-workbench-dock', '')
+      style.setAttribute('data-dsh-workbay-dock', '')
       style.textContent = CSS
       document.head.appendChild(style)
-      ctx.effect(() => () => { style.remove() }, 'dsh-workbench-dock: styles')
+      ctx.effect(() => () => { style.remove() }, 'dsh-workbay-dock: styles')
 
       const t = translatorOf(ctx)
       ctx.effect(() => () => {
         for (const timer of fallbackTimers) clearTimeout(timer)
         for (const off of fallbackDisposers) { try { off() } catch (error) { void error } }
-      }, 'dsh-workbench-dock: fallback cleanup')
+      }, 'dsh-workbay-dock: fallback cleanup')
 
       /* Gate 1: the entry button, in the LEFT sidebar's TOP ROW.
          `sidebar.panellist` is the seat that "插件 / 自动化任务 / 更多" sit in,
@@ -790,12 +790,12 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
         if (slots === undefined || slots === null || typeof slots.inject !== 'function') return
         slotCtx.effect(() => slots.inject('sidebar.panellist', () => slots.register({
           name: 'sidebar.panellist',
-          id: 'workbench-dock',
+          id: 'workbay-dock',
           order: 30,
           label: () => t('button.label'),
           locale: LOCALE_NS,
         }, (slotProps) => E(WorkbenchEntryButton, Object.assign({}, slotProps, { t })))),
-        'dsh-workbench-dock: panellist entry')
+        'dsh-workbay-dock: panellist entry')
 
         /* Fallback: if the top seat never rendered this entry, put it in the
            footer seat instead, which every host composition renders. */
@@ -804,7 +804,7 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
           try {
             const off = slots.inject('sidebar.footer.action', () => slots.register({
               name: 'sidebar.footer.action',
-              id: 'workbench-dock-fallback',
+              id: 'workbay-dock-fallback',
               order: 40,
               locale: LOCALE_NS,
             }, (slotProps) => E(WorkbenchEntryButton, Object.assign({}, slotProps, { t }))))
@@ -825,7 +825,7 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
       if (ReactDOM !== null) {
         ctx.effect(() => {
           const container = document.createElement('div')
-          container.setAttribute('data-dsh-workbench-dock-root', '')
+          container.setAttribute('data-dsh-workbay-dock-root', '')
           document.body.appendChild(container)
           const root = ReactDOM.createRoot(container)
           root.render(E(WorkbenchOverlay, { t }))
@@ -833,15 +833,15 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
             try { root.unmount() } catch (error) { void error }
             try { if (container.parentNode !== null) container.parentNode.removeChild(container) } catch (error) { void error }
           }
-        }, 'dsh-workbench-dock: global overlay')
+        }, 'dsh-workbay-dock: global overlay')
       } else {
-        console.error('[workbench-dock] react-dom is not resolvable; the overlay cannot mount')
+        console.error('[workbay-dock] react-dom is not resolvable; the overlay cannot mount')
       }
     }
 
     return {
       apply,
-      name: 'dsh-workbench-dock',
+      name: 'dsh-workbay-dock',
       registerPage: registry.registerPage,
       open: () => setOpen(true),
       close: () => setOpen(false),

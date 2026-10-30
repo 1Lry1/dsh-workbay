@@ -1,5 +1,5 @@
 {
-  "name": "dsh-workbench-dock",
+  "name": "dsh-workbay-dock",
   "version": "0.2.2",
   "description": "Workbench dock for DeepSeek Harness: one left-sidebar entry that opens an INDEPENDENT right-hand panel hosting pages contributed by other plugins. Does not use dsh-better-sidebar. | DSH 插件：左侧栏「工作台」入口，打开一个独立的右侧面板，页面由其它插件注册；不使用 dsh-better-sidebar。",
   "type": "module",
@@ -36,7 +36,7 @@
     }
   },
   "dependencies": {
-    "@dsh-workbench/kit": "file:../kit"
+    "@dsh-workbay/kit": "file:../kit"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

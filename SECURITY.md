@@ -1,6 +1,6 @@
 # Security Policy
 
-`dsh-workbench` is a family of plugins for DeepSeek Harness (DSH). The plugins
+`dsh-workbay` is a family of plugins for DeepSeek Harness (DSH). The plugins
 run **inside** the user's DSH desktop process, with that user's privileges, and
 they deliberately drive local tools (git, serial ports, vendor flashing
 software). This file explains which versions get fixes, how to report a problem
@@ -13,11 +13,11 @@ version independently, so a fix may land in one and not the others.
 
 | Package | Version line supported | Notes |
 |---|---|---|
-| `dsh-workbench-dock` | `0.2.x` | The shell; no host-side command execution |
+| `dsh-workbay-dock` | `0.2.x` | The shell; no host-side command execution |
 | `dsh-gitcraft` | `0.1.x` | Spawns `git` against user-selected repositories |
 | `dsh-downloader` | `0.1.x` | Serial/COM + vendor Downloader IPC; can flash hardware |
-| `@dsh-workbench/kit` | `0.1.x` | Host-only helpers shared by dock and gitcraft |
-| `dsh-workbench-suite` | `0.1.x` | Experimental aggregator; no code of its own |
+| `@dsh-workbay/kit` | `0.1.x` | Host-only helpers shared by dock and gitcraft |
+| `dsh-workbay-suite` | `0.1.x` | Experimental aggregator; no code of its own |
 
 DSH engine ranges are declared per package (`engines.dsh`). An unsupported DSH
 version is out of scope: the plugin may load and misbehave in ways we cannot
@@ -36,11 +36,11 @@ Report privately through GitHub's private vulnerability reporting on this
 repository:
 
 - Open the **Security** tab → **Report a vulnerability**, or go directly to
-  <https://github.com/1Lry1/dsh-workbench/security/advisories/new>.
+  <https://github.com/1Lry1/dsh-workbay/security/advisories/new>.
 
 Please include:
 
-- the affected package and version (and `@dsh-workbench/kit` if relevant);
+- the affected package and version (and `@dsh-workbay/kit` if relevant);
 - your DSH version and Windows build;
 - a minimal reproduction: the repository layout, RPC call or UI steps needed;
 - the impact you believe it has, and whether any secret or file was exposed;
@@ -60,8 +60,8 @@ that user.
 
 **Local HTTP surface, fenced to loopback and same origin.** Each host half
 registers an HTTP prefix route on DSH's local web server
-(`/dsh-workbench-dock/api`, `/dsh-gitcraft/api`, `/downloader`).
-`@dsh-workbench/kit`'s `isTrustedRequest` accepts a request when any of these
+(`/dsh-workbay-dock/api`, `/dsh-gitcraft/api`, `/downloader`).
+`@dsh-workbay/kit`'s `isTrustedRequest` accepts a request when any of these
 holds: the TCP peer is loopback, the `Host` header is loopback, or
 `Sec-Fetch-Site` is `same-origin`/`same-site`. This stops a random web page from
 driving the plugin through the browser and stops cross-origin form/fetch posts.

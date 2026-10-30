@@ -1,26 +1,26 @@
 /**
- * dsh-workbench-dock — host half.
+ * dsh-workbay-dock — host half.
  *
  * A deliberately thin host: the workbench's PAGES live in their own plugins, so
  * this half owns only what a host must own —
  *
- *   POST /dsh-workbench-dock/api/registry   -> the registered page ids + titles
- *   POST /dsh-workbench-dock/api/ping       -> liveness probe for tests
+ *   POST /dsh-workbay-dock/api/registry   -> the registered page ids + titles
+ *   POST /dsh-workbay-dock/api/ping       -> liveness probe for tests
  *
  * The page registry itself is a CLIENT concern (pages are React components), so
  * this half exists mainly to give the bundle a Node entry that DSH can load and
  * that integration tests can hit. Nothing here talks to git or the filesystem.
  *
  * Route plumbing (trust fence, bounded body, envelope) comes from
- * @dsh-workbench/kit — see packages/kit/README.md.
+ * @dsh-workbay/kit — see packages/kit/README.md.
  */
 
-import { badRequest, mountJsonApi } from '@dsh-workbench/kit'
+import { badRequest, mountJsonApi } from '@dsh-workbay/kit'
 
-export const name = 'dsh-workbench-dock'
+export const name = 'dsh-workbay-dock'
 export const inject = ['webServer']
 
-const ROUTE_PREFIX = '/dsh-workbench-dock/api'
+const ROUTE_PREFIX = '/dsh-workbay-dock/api'
 
 /**
  * The page catalogue the client renders as tabs. Pages are declared here rather
@@ -46,7 +46,7 @@ function pageList() {
 
 const METHODS = {
   async ping() {
-    return { ok: true, service: 'dsh-workbench-dock', pages: pageList().length }
+    return { ok: true, service: 'dsh-workbay-dock', pages: pageList().length }
   },
   async registry() {
     return { pages: pageList() }
@@ -54,7 +54,7 @@ const METHODS = {
 }
 
 export function apply(ctx) {
-  mountJsonApi(ctx, { prefix: ROUTE_PREFIX, methods: METHODS, label: 'dsh-workbench-dock' })
+  mountJsonApi(ctx, { prefix: ROUTE_PREFIX, methods: METHODS, label: 'dsh-workbay-dock' })
   /* The page roster grows from other plugins' host halves; expose it as a
      service so a page plugin can announce itself without the browser. */
   if (typeof ctx.provide === 'function') {

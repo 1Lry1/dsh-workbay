@@ -1,5 +1,5 @@
 {
-  "name": "dsh-workbench",
+  "name": "dsh-workbay",
   "version": "0.0.0",
   "private": true,
   "description": "DeepSeek Harness workbench: the dock host, the GitCraft and Downloader pages that register into it, the shared host kit, and a one-shot suite bundle.",
@@ -11,7 +11,7 @@
   "packageManager": "pnpm@11.28.5",
   "scripts": {
     "test": "pnpm -r --if-present run test",
-    "test:kit": "pnpm --filter @dsh-workbench/kit run test",
+    "test:kit": "pnpm --filter @dsh-workbay/kit run test",
     "test:gitcraft": "pnpm --filter dsh-gitcraft run test",
     "install:profile": "pwsh -File scripts/refresh-profile.ps1"
   }

@@ -16,10 +16,10 @@ body:
       label: Which plugin?
       description: The bundle this proposal targets (or "cross-cutting" for the page contract / kit).
       options:
-        - dock — dsh-workbench-dock (panel shell, page registry)
+        - dock — dsh-workbay-dock (panel shell, page registry)
         - gitcraft — dsh-gitcraft (Git page)
         - downloader — dsh-downloader (flash + serial log page)
-        - kit — @dsh-workbench/kit (shared host helpers)
+        - kit — @dsh-workbay/kit (shared host helpers)
         - cross-cutting — page contract, docs, build/CI
     validations:
       required: true

@@ -1,5 +1,5 @@
 /**
- * @dsh-workbench/kit — host-side helpers shared by the workbench bundles.
+ * @dsh-workbay/kit — host-side helpers shared by the workbench bundles.
  *
  * Scope: the Node half only. DSH loads a plugin's browser half through
  * `window.__ModuleLoader__.load({ id, factory })` as one self-contained file
@@ -14,7 +14,7 @@
  *   2. bounded JSON body reading;
  *   3. the `POST <prefix>/<method>` RPC surface with the
  *      `{ ok: true, data } | { ok: false, error: { code, message } }` envelope,
- *      which is what dsh-workbench-dock and dsh-gitcraft both expose.
+ *      which is what dsh-workbay-dock and dsh-gitcraft both expose.
  *
  * dsh-downloader does not use (3): its host also streams SSE and binary frames,
  * which is a different shape from a JSON RPC map.

@@ -29,10 +29,10 @@ body:
       label: Plugin
       description: Which bundle is misbehaving? Pick "not sure" if you cannot tell.
       options:
-        - dock — dsh-workbench-dock (the right-side panel shell)
+        - dock — dsh-workbay-dock (the right-side panel shell)
         - gitcraft — dsh-gitcraft (Git page)
         - downloader — dsh-downloader (flash + serial log page)
-        - suite — dsh-workbench-suite (all three from one bundle)
+        - suite — dsh-workbay-suite (all three from one bundle)
         - not sure
     validations:
       required: true

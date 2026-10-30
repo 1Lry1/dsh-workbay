@@ -44,7 +44,7 @@ dsh plugin --profile desktop add 'file:<repo>/packages/gitcraft'
 
 装完**重启 DSH**。打开任意会话 → 右侧边栏 `+` → **GitCraft**；或会话头「打开右侧边栏」→ Guide 里的 **GitCraft** 胶囊。
 
-> 面板是「工作台」插件（`dsh-workbench-dock`）的一个页面：打开任意会话 → 左侧栏的 **工作台** 入口 → 面板里的 **GitCraft** 页。**不使用 `dsh-better-sidebar`**，也不会出现在它的 Tab 栏里。
+> 面板是「工作台」插件（`dsh-workbay-dock`）的一个页面：打开任意会话 → 左侧栏的 **工作台** 入口 → 面板里的 **GitCraft** 页。**不使用 `dsh-better-sidebar`**，也不会出现在它的 Tab 栏里。
 
 
 ## 选择仓库（不只扫当前目录）

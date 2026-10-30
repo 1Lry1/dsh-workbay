@@ -1,4 +1,4 @@
-# dsh-workbench-dock
+# dsh-workbay-dock
 
 > 在 **左侧栏顶部**（与「插件 / 自动化任务 / 更多」同一排）加一个「工作台」入口；点开后 **停靠到会话右侧，一边是会话、一边是工作台，两边同时可用**。同一份状态、同一组页面，与具体会话无关。**不使用 dsh-better-sidebar。**
 
@@ -42,7 +42,7 @@ DSH 自带的右侧栏是 **按会话隔离** 的：它的布局存在 `state.by
 页面是 React 组件，只能在浏览器侧注册。注册表放在**一个浏览器全局**上，两个 bundle 的加载顺序无所谓：
 
 ```js
-const dock = window.__DSH_WORKBENCH_DOCK__
+const dock = window.__DSH_WORKBAY__
 dock.registerPage({
   id: 'myplugin',
   title: '我的页面',
@@ -60,7 +60,7 @@ dock.registerPage({
 
 ```powershell
 dsh plugin --profile desktop add 'file:<repo>/packages/dock'
-# 或：profile 的 dependencies 写 "dsh-workbench-dock": "file:<repo>/packages/dock"，再 pnpm install
+# 或：profile 的 dependencies 写 "dsh-workbay-dock": "file:<repo>/packages/dock"，再 pnpm install
 ```
 
 装完**重启 DSH**。左侧栏顶部（与「插件 / 自动化任务 / 更多」同一排）出现「工作台」；若宿主版本没有那一排，会自动退到左侧栏底部。

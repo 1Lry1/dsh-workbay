@@ -23,6 +23,6 @@ plus a manual pass in the panel is the baseline.
 - [ ] Tests pass: `pnpm test` / `pnpm --filter <pkg> run test`
 - [ ] No machine-specific paths, environment values, DSH profile contents, or customer/project names are committed
 - [ ] Browser-side changes keep the client half a self-contained `window.__ModuleLoader__.load({ id, factory })` file (no new npm imports, no imports from this repo)
-- [ ] `@dsh-workbench/kit` is only imported from host halves
+- [ ] `@dsh-workbay/kit` is only imported from host halves
 - [ ] Docs updated if behavior, install steps or the page contract changed (README / package README / `docs/architecture.md`)
 - [ ] No commit of `node_modules/`, `*.log`, `*.bak*` or generated artifacts

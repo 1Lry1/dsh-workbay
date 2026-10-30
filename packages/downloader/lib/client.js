@@ -435,7 +435,7 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- 注册
     //
-    // 只向「工作台」插件（dsh-workbench-dock）注册一个页面，不再占用
+    // 只向「工作台」插件（dsh-workbay-dock）注册一个页面，不再占用
     // dsh-better-sidebar 的 Tab 栏：按钮和独立右侧栏都由 dock 提供，
     // 这里只负责面板组件本身。
     //
@@ -443,7 +443,7 @@ window.__ModuleLoader__.load({
     // 浏览器全局上；谁先到谁创建，另一个复用同一个对象。
 
     function registerWithDock(ctx) {
-      var dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBENCH_DOCK__ : undefined
+      var dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBAY__ : undefined
       if (dock === undefined || dock === null || typeof dock.registerPage !== 'function') return false
       try {
         var off = dock.registerPage({

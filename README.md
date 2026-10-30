@@ -1,9 +1,9 @@
-# dsh-workbench
+# dsh-workbay
 
-[![CI](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml)
-[![license](https://img.shields.io/github/license/1Lry1/dsh-workbench)](LICENSE)
+[![CI](https://github.com/1Lry1/dsh-workbay/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbay/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/1Lry1/dsh-workbay)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](package.json)
-[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbench)
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbay)
 
 **中文** | [English](README.en.md)
 
@@ -13,11 +13,11 @@ DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固
 
 ```
 packages/
-├─ dock/        dsh-workbench-dock    壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
+├─ dock/        dsh-workbay-dock    壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
 ├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
 ├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
-├─ kit/         @dsh-workbench/kit    共享 host 工具：同源围栏 / JSON 体 / RPC 信封
-└─ suite/       dsh-workbench-suite   聚合金：一次装好上面三个（实验性）
+├─ kit/         @dsh-workbay/kit    共享 host 工具：同源围栏 / JSON 体 / RPC 信封
+└─ suite/       dsh-workbay-suite   聚合金：一次装好上面三个（实验性）
 ```
 
 ```
@@ -49,7 +49,7 @@ packages/
 页面是**浏览器侧**注册的 React 组件，注册表放在一个浏览器全局上，两个 bundle 的加载顺序无所谓：
 
 ```js
-window.__DSH_WORKBENCH_DOCK__.registerPage({
+window.__DSH_WORKBAY__.registerPage({
   id: 'myplugin',          // 必填，非空
   title: '我的页面',
   order: 40,               // 升序，GitCraft=20，Downloader=30
@@ -70,13 +70,13 @@ profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
-    "dsh-workbench-dock", "dsh-gitcraft", "dsh-downloader"
+    "dsh-workbay-dock", "dsh-gitcraft", "dsh-downloader"
   ] } },
   "dependencies": {
-    "dsh-workbench-dock": "file:<repo>/packages/dock",
+    "dsh-workbay-dock": "file:<repo>/packages/dock",
     "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
     "dsh-downloader":     "file:<repo>/packages/downloader",
-    "@dsh-workbench/kit": "file:<repo>/packages/kit"
+    "@dsh-workbay/kit": "file:<repo>/packages/kit"
   }
 }
 ```
@@ -85,18 +85,18 @@ profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`
 pnpm install            # 或 dsh plugin --profile desktop add file:...
 ```
 
-**方式 B —— 聚合金（实验性）**：bundles 里只加 `dsh-workbench-suite`，其余交给它的 patch。见 [packages/suite/README.md](packages/suite/README.md)。
+**方式 B —— 聚合金（实验性）**：bundles 里只加 `dsh-workbay-suite`，其余交给它的 patch。见 [packages/suite/README.md](packages/suite/README.md)。
 
 装完**重启 DSH**，左侧栏出现「工作台」。
 
-> `@dsh-workbench/kit` 必须能被 DSH 的运行时解析到：它被 dock 和 gitcraft 的 host 半侧 import，所以 profile 的 `node_modules` 里要有它。用 `pnpm install` 时 pnpm 会按 `file:` 依赖自动装好；手工拷贝插件目录时容易漏，表现为 host 半侧加载失败。
+> `@dsh-workbay/kit` 必须能被 DSH 的运行时解析到：它被 dock 和 gitcraft 的 host 半侧 import，所以 profile 的 `node_modules` 里要有它。用 `pnpm install` 时 pnpm 会按 `file:` 依赖自动装好；手工拷贝插件目录时容易漏，表现为 host 半侧加载失败。
 
 ## 开发
 
 ```powershell
 pnpm install                     # workspace 依赖
 pnpm test                        # 所有包的单测/集成测
-pnpm --filter @dsh-workbench/kit run test
+pnpm --filter @dsh-workbay/kit run test
 pnpm --filter dsh-gitcraft run test
 ```
 
@@ -111,7 +111,7 @@ node packages/downloader/smoke-test.mjs  # 25 项自检；先设 DSH_DOWNLOADER_
 ## 设计约束（别踩）
 
 1. **客户端半侧不能 import 本仓库的包**。DSH 用 `window.__ModuleLoader__.load({ id, factory })` 加载客户端插件，一个插件就是一个自包含文件 + 宿主 `require` 种子表。所以页面注册那段小代码在两个页面插件里各留一份，这是刻意的。
-2. **`@dsh-workbench/kit` 只服务 host 半侧**。它不导出任何浏览器可用的东西。
+2. **`@dsh-workbay/kit` 只服务 host 半侧**。它不导出任何浏览器可用的东西。
 3. **downloaders 不用 kit 的 RPC 信封**：它的 host 还要输出 SSE 与二进制帧，硬套会降低可读性。
 4. **不要同时挂 suite 和单包**，会重复 insert 同一行导致整棵树启动失败。
 5. 每个包的 `cordis.patch.yml` 里都只有一条 `insert`；`id` 是全局唯一的 loader id。
@@ -132,9 +132,9 @@ pwsh -File scripts/refresh-profile.ps1 -Profile desktop
 Get-Process AbSerialHost, DownloaderIpcBridge -ErrorAction SilentlyContinue | Stop-Process
 ```
 
-**界面里「工作台」有了但没有页面** — 页面注册表是浏览器全局 `window.__DSH_WORKBENCH_DOCK__`，两个页面插件都在等它。若 dock 没被加载（`bundles` 里漏了 `dsh-workbench-dock`），页面就无处注册；反之若页面包漏了，Tab 条只有工作台本身。检查 profile 的 `dsh.profile.bundles` 三行齐全。
+**界面里「工作台」有了但没有页面** — 页面注册表是浏览器全局 `window.__DSH_WORKBAY__`，两个页面插件都在等它。若 dock 没被加载（`bundles` 里漏了 `dsh-workbay-dock`），页面就无处注册；反之若页面包漏了，Tab 条只有工作台本身。检查 profile 的 `dsh.profile.bundles` 三行齐全。
 
-**host 半侧加载失败、日志报 `Cannot find package '@dsh-workbench/kit'`** — profile 的 `node_modules` 里缺 kit。`pnpm install` 会按 `file:../kit` 自动带上；手工拷贝插件目录时最容易漏。
+**host 半侧加载失败、日志报 `Cannot find package '@dsh-workbay/kit'`** — profile 的 `node_modules` 里缺 kit。`pnpm install` 会按 `file:../kit` 自动带上；手工拷贝插件目录时最容易漏。
 
 ## 参与与安全
 

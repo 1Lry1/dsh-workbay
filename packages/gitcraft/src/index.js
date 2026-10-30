@@ -21,7 +21,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync, watch, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { mountJsonApi } from '@dsh-workbench/kit'
+import { mountJsonApi } from '@dsh-workbay/kit'
 
 export const name = 'dsh-gitcraft'
 export const inject = ['webServer']
@@ -2030,7 +2030,7 @@ async function stashApplyOrPop(payload, verb) {
 /* ============================== http ============================== */
 
 /* The route plumbing (trust fence, bounded JSON body, method dispatch, error
-   envelope) lives in @dsh-workbench/kit. This half keeps only what is genuinely
+   envelope) lives in @dsh-workbay/kit. This half keeps only what is genuinely
    GitCraft's: the method map and the per-repository write lock, handed to the
    kit as the `run` hook below. */
 

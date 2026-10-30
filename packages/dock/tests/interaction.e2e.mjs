@@ -71,7 +71,7 @@ const state = () => evaluate(`(() => {
     open: dock !== null || document.querySelector('.wbd-overlay') !== null,
     tabs: dock === null ? [] : Array.from(dock.querySelectorAll('.wbd-tab')).map((t) => (t.innerText || '').trim()),
     active: dock === null ? null : (dock.querySelector('.wbd-tab.is-active') || {}).innerText ?? null,
-    pages: window.__DSH_WORKBENCH_DOCK__?.list?.().map((p) => p.id) ?? null,
+    pages: window.__DSH_WORKBAY__?.list?.().map((p) => p.id) ?? null,
   }
 })()`)
 

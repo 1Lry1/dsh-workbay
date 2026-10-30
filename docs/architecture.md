@@ -12,14 +12,14 @@ DSH 的一个插件包 = 两个半侧：
 两条硬约束直接决定了本仓库的形状：
 
 1. **client 侧无法 `import` 任何 npm 包**，所以公共代码不能在浏览器侧做成依赖，只能复制或生成。
-2. **host 侧是正常 ESM**，所以公共代码可以做成 workspace 包（`@dsh-workbench/kit`）。
+2. **host 侧是正常 ESM**，所以公共代码可以做成 workspace 包（`@dsh-workbay/kit`）。
 
 ## 页面注册：跨 bundle 契约
 
 壳（dock）与页面（gitcraft / downloader）是两个独立 bundle，**加载顺序无保证**。因此注册表放在一个浏览器全局：
 
 ```js
-window.__DSH_WORKBENCH_DOCK__ = {
+window.__DSH_WORKBAY__ = {
   registerPage({ id, title, order, icon, component }) -> unsubscribe,
   list(), subscribe(fn),
   open(), close(), toggle(), isOpen(),
@@ -32,7 +32,7 @@ window.__DSH_WORKBENCH_DOCK__ = {
 
 ## 为什么 kit 只有 host 侧
 
-`@dsh-workbench/kit` 提供三件东西：
+`@dsh-workbay/kit` 提供三件东西：
 
 1. 同源围栏 `isTrustedRequest(req)`：loopback TCP peer（桌面壳把渲染进程放在 `dsh-app://` 下，转发过来的请求没有 loopback Host）、loopback Host、`Sec-Fetch-Site: same-origin/same-site` 三者任一即可；
 2. 有上限的 JSON 体读取（空体转 `{}`，超限 413）；
@@ -54,7 +54,7 @@ dock 和 gitcraft 用第 1–3 项；downloader 只用得到第 1、2 项的等�
 
 - `dock` / `gitcraft` / `downloader` 各自语义化版本，可独立发布、独立回滚。
 - `suite` 用 lockstep 版本表达「这套组合经过验证」，不随子包细节变化。
-- `kit` 是 `file:` 依赖，会被一起拷进 profile；如果将来把 `dsh-gitcraft` 发到 npm，`@dsh-workbench/kit` 也要一起发布（或者让 gitcraft 自包含）。
+- `kit` 是 `file:` 依赖，会被一起拷进 profile；如果将来把 `dsh-gitcraft` 发到 npm，`@dsh-workbay/kit` 也要一起发布（或者让 gitcraft 自包含）。
 
 ## 目录收敛的来龙去脉
 

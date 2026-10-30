@@ -24,7 +24,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $profileDir = Join-Path $env:USERPROFILE ".dsh\profiles\$Profile"
 
 if (-not (Test-Path $profileDir)) { throw "profile not found: $profileDir" }
-if (-not (Test-Path (Join-Path $repoRoot 'packages'))) { throw "not a dsh-workbench checkout: $repoRoot" }
+if (-not (Test-Path (Join-Path $repoRoot 'packages'))) { throw "not a dsh-workbay checkout: $repoRoot" }
 
 $blockers = Get-Process -ErrorAction SilentlyContinue |
   Where-Object { $_.ProcessName -in @('AbSerialHost', 'DownloaderIpcBridge', 'DeepSeek Harness') }
@@ -45,8 +45,8 @@ try {
 
 # The host halves of dock and gitcraft import the shared kit; a profile that
 # copied only the plugin folders would load them and crash on that import.
-$kit = Join-Path $profileDir 'node_modules\@dsh-workbench\kit\package.json'
-if (-not (Test-Path $kit)) { throw '@dsh-workbench/kit is missing from the profile — the dock and gitcraft hosts would fail to load' }
+$kit = Join-Path $profileDir 'node_modules\@dsh-workbay\kit\package.json'
+if (-not (Test-Path $kit)) { throw '@dsh-workbay/kit is missing from the profile — the dock and gitcraft hosts would fail to load' }
 
 # Leftover plugin copies from a migration or a rename (e.g. dsh-downloader.old-*)
 # are only deletable once DSH and its helpers have exited, which is exactly the

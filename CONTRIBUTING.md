@@ -1,7 +1,7 @@
-# Contributing to dsh-workbench
+# Contributing to dsh-workbay
 
 Thanks for helping out. This repository is a **pnpm workspace** holding a family
-of DeepSeek Harness (DSH) plugins: a dock shell (`dsh-workbench-dock`) and two
+of DeepSeek Harness (DSH) plugins: a dock shell (`dsh-workbay-dock`) and two
 pages that register into it (`dsh-gitcraft`, `dsh-downloader`), plus a shared
 host-side kit and an experimental aggregator bundle.
 
@@ -13,11 +13,11 @@ desktop app. Bug reports need a Windows version; so does a useful review.
 
 | Path | Package | Role | Tests |
 |---|---|---|---|
-| `packages/dock` | `dsh-workbench-dock` | The shell: header button, right-side panel, page registry | e2e only (needs a live DSH) |
+| `packages/dock` | `dsh-workbay-dock` | The shell: header button, right-side panel, page registry | e2e only (needs a live DSH) |
 | `packages/gitcraft` | `dsh-gitcraft` | Git page: branch tree, staging, commit, merge, blame, reflog | `node --test` + e2e |
 | `packages/downloader` | `dsh-downloader` | Flash + 1.5 Mbps serial log page (vendor engine, IPC helpers) | smoke/http scripts (need the vendor engine) |
-| `packages/kit` | `@dsh-workbench/kit` | Shared **host-only** helpers: same-origin fence, bounded JSON body, `{ ok, data }` RPC envelope | `node --test` |
-| `packages/suite` | `dsh-workbench-suite` | One bundle that inserts the other three (experimental) | none |
+| `packages/kit` | `@dsh-workbay/kit` | Shared **host-only** helpers: same-origin fence, bounded JSON body, `{ ok, data }` RPC envelope | `node --test` |
+| `packages/suite` | `dsh-workbay-suite` | One bundle that inserts the other three (experimental) | none |
 
 Each plugin package has a `cordis.patch.yml` that inserts exactly one loader
 row; the `id` inside is globally unique. `packages/downloader/helper/*.exe` and
@@ -44,7 +44,7 @@ pnpm test           # everything that is runnable without DSH: kit + gitcraft
 Per package:
 
 ```powershell
-pnpm --filter @dsh-workbench/kit run test
+pnpm --filter @dsh-workbay/kit run test
 pnpm --filter dsh-gitcraft run test
 # equivalently, from packages/gitcraft:
 node --test tests/host.test.mjs tests/client.test.mjs tests/workspace.test.mjs
@@ -99,7 +99,7 @@ pnpm install
 ```
 
 `scripts/refresh-profile.ps1` refuses to run when DSH or a helper process is
-still alive, and verifies afterwards that `@dsh-workbench/kit` landed in the
+still alive, and verifies afterwards that `@dsh-workbay/kit` landed in the
 profile (a profile that copied only the plugin folders crashes on that import).
 Restart DSH after it succeeds.
 
@@ -113,16 +113,16 @@ rejected even if it works locally.
    (`packages/dock/src/client.js`, `packages/gitcraft/src/client.js`,
    `packages/downloader/lib/client.js`). Inside the factory you may only
    `require` modules the host seeds (e.g. `react`); you **cannot** import npm
-   packages and you cannot import `@dsh-workbench/kit` or any other workspace
+   packages and you cannot import `@dsh-workbay/kit` or any other workspace
    package. Shared browser-side code is therefore duplicated or generated on
    purpose — that is a feature, not a missed refactor.
-2. **`@dsh-workbench/kit` is host-only.** It is ordinary ESM for Node, used by
+2. **`@dsh-workbay/kit` is host-only.** It is ordinary ESM for Node, used by
    the dock and gitcraft host halves for the same-origin fence, the bounded JSON
    body reader and the `POST /<prefix>/<method>` RPC envelope. It exports nothing
    usable in a browser.
 
 Also: one `insert` per `cordis.patch.yml` with a globally unique loader `id`, and
-never list `dsh-workbench-suite` together with the three individual bundles in
+never list `dsh-workbay-suite` together with the three individual bundles in
 `dsh.profile.bundles` — the same loader row would be inserted twice and DSH
 rejects the whole tree with `duplicate prefix route`.
 
@@ -136,7 +136,7 @@ pseudo-code, inside your client half's factory:
 
 ```js
 const registerWithDock = () => {
-  const dock = window.__DSH_WORKBENCH_DOCK__
+  const dock = window.__DSH_WORKBAY__
   if (dock === undefined || dock === null || typeof dock.registerPage !== 'function') return false
   const off = dock.registerPage({
     id: 'myplugin',        // required, non-empty, unique across pages
@@ -161,7 +161,7 @@ if (!registerWithDock()) {
 
 `registerPage` returns an unsubscribe function; wire it through `ctx.effect` so a
 dev reload does not leave duplicate tabs. Never create your own
-`window.__DSH_WORKBENCH_DOCK__` — a page that registers into a stub before the
+`window.__DSH_WORKBAY__` — a page that registers into a stub before the
 dock loads is exactly the incident that made the dock **adopt** an existing
 registry object (grafting its control surface onto it) and re-read the page table
 every 250 ms instead of trusting subscription order. The full contract and the
@@ -224,7 +224,7 @@ security issues, do **not** open a pull request or a public issue — see
 ```powershell
 pnpm install
 pnpm test                                   # 只跑不需要 DSH 的测试：kit + gitcraft
-pnpm --filter @dsh-workbench/kit run test
+pnpm --filter @dsh-workbay/kit run test
 pnpm --filter dsh-gitcraft run test
 ```
 
@@ -251,13 +251,13 @@ pwsh -File scripts/refresh-profile.ps1 -Profile <profile>
 1. client 半侧是**单文件**：`window.__ModuleLoader__.load({ id, factory })`，
    factory 里只能 `require` 宿主种子表里的模块（如 `react`），**不能 import
    任何 npm 包或本仓库的包**；浏览器侧公共代码只能复制或生成。
-2. `@dsh-workbench/kit` **只给 host 半侧**用，浏览器侧不导出任何东西。
+2. `@dsh-workbay/kit` **只给 host 半侧**用，浏览器侧不导出任何东西。
 
 另外：每个 `cordis.patch.yml` 只有一条 `insert`，`id` 全局唯一；
-`dsh-workbench-suite` 不能和三个单包同时挂在 `bundles` 里，否则同一行被
+`dsh-workbay-suite` 不能和三个单包同时挂在 `bundles` 里，否则同一行被
 insert 两次，DSH 会以 `duplicate prefix route` 拒绝启动。
 
-**新增页面**：调用 `window.__DSH_WORKBENCH_DOCK__.registerPage({ id, title,
+**新增页面**：调用 `window.__DSH_WORKBAY__.registerPage({ id, title,
 order, icon, component })`，`id` 必填且唯一，`order` 升序（GitCraft=20，
 Downloader=30），返回值是退订函数；dock 可能还没加载，要短轮询等它出现，
 不要自己新建注册表对象。完整契约见

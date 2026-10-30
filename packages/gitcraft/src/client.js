@@ -2716,12 +2716,12 @@ window.__ModuleLoader__.load({
       }
 
       /* ONE registration path: this plugin contributes a PAGE to the workbench
-         dock (`dsh-workbench-dock`) and never registers a dsh-better-sidebar
+         dock (`dsh-workbay-dock`) and never registers a dsh-better-sidebar
          tab. The dock owns the header button and the standalone right-side pane;
          this half only supplies the panel component.
          The registry is one browser global so either bundle may load first. */
       const registerWithDock = () => {
-        const dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBENCH_DOCK__ : undefined
+        const dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBAY__ : undefined
         if (dock === undefined || dock === null || typeof dock.registerPage !== 'function') return false
         try {
           const off = dock.registerPage({

@@ -10,7 +10,7 @@ importers:
 
   packages/dock:
     dependencies:
-      '@dsh-workbench/kit':
+      '@dsh-workbay/kit':
         specifier: file:../kit
         version: link:../kit
 
@@ -18,7 +18,7 @@ importers:
 
   packages/gitcraft:
     dependencies:
-      '@dsh-workbench/kit':
+      '@dsh-workbay/kit':
         specifier: file:../kit
         version: link:../kit
 
@@ -32,6 +32,6 @@ importers:
       dsh-gitcraft:
         specifier: file:../gitcraft
         version: link:../gitcraft
-      dsh-workbench-dock:
+      dsh-workbay-dock:
         specifier: file:../dock
         version: link:../dock
