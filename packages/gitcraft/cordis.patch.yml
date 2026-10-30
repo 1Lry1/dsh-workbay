@@ -2,7 +2,7 @@
 #
 # Installed through the official CLI:
 #
-#   dsh plugin --profile desktop add file:D:\AI_workspace\dsh-gitcraft
+#   dsh plugin --profile desktop add file:<repo>/packages/gitcraft
 #
 # The CLI reconciles dsh.profile.bundles against installed packages and, seeing
 # this declaration, merges this patch. Manual mount equivalent (profile

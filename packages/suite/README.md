@@ -28,7 +28,7 @@
 ```powershell
 # A. 只装聚合包
 #    profile 的 dsh.profile.bundles 里只加 "dsh-workbench-suite"
-#    profile 的 dependencies 里加 "dsh-workbench-suite": "file:D:/AI_workspace/dsh-workbench/packages/suite"
+#    profile 的 dependencies 里加 "dsh-workbench-suite": "file:<repo>/packages/suite"
 
 # B. 分别装三个（跟现在一样）
 #    bundles 里写 dsh-workbench-dock / dsh-gitcraft / dsh-downloader

@@ -39,7 +39,7 @@ SourceTree 是 Atlassian 的闭源商业软件（EULA 明确禁止反编译、�
 
 ```powershell
 # 本地目录安装（开发/自用）
-dsh plugin --profile desktop add 'file:D:\AI_workspace\dsh-gitcraft'
+dsh plugin --profile desktop add 'file:<repo>/packages/gitcraft'
 ```
 
 装完**重启 DSH**。打开任意会话 → 右侧边栏 `+` → **GitCraft**；或会话头「打开右侧边栏」→ Guide 里的 **GitCraft** 胶囊。
