@@ -400,6 +400,39 @@ function normalizeSeparators(value) {
   return value.split('\\').join('/')
 }
 
+/**
+ * Canonical absolute path.
+ *
+ * `realpathSync.native` goes through a file handle and therefore expands 8.3
+ * short names (`C:\Users\RUNNER~1\...`, which is what GitHub's Windows runners
+ * hand out as TMP) and subst/symlinked drives. The portable `realpathSync` only
+ * resolves links and leaves a short name alone — exactly the case that made the
+ * workspace scan return an empty list on CI.
+ */
+function canonicalPathSync(value) {
+  const native = typeof realpathSync.native === 'function' ? realpathSync.native : realpathSync
+  try {
+    return normalizeSeparators(native(value))
+  } catch {
+    return normalizeSeparators(path.resolve(value))
+  }
+}
+
+/**
+ * Compare two paths as the filesystem sees them.
+ *
+ * `git rev-parse --show-toplevel` always answers with the canonical long form,
+ * while Node can be handed an 8.3 short path. Comparing the two as plain
+ * strings reports "not a repository" for the very same directory, so every
+ * git-output-vs-filesystem comparison goes through canonicalPathSync first.
+ */
+function samePath(a, b) {
+  const left = canonicalPathSync(a)
+  const right = canonicalPathSync(b)
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
+  return caseInsensitive ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
 function isInside(root, target) {
   const a = root.toLowerCase().replace(/\/+$/, '')
   const b = target.toLowerCase().replace(/\/+$/, '')
@@ -445,7 +478,7 @@ async function isRepoTop(dir) {
   const top = await runGit(dir, ['rev-parse', '--show-toplevel'], { timeoutMs: 10_000 })
   if (top.code !== 0) return false
   const root = normalizeSeparators(top.stdout.trim())
-  return root === normalizeSeparators(dir)
+  return samePath(root, dir)
 }
 
 /**
@@ -1078,6 +1111,7 @@ const METHODS = {
     const dirs = await browseDir(realRequested)
     const top = await runGit(realRequested, ['rev-parse', '--show-toplevel'], { timeoutMs: 10_000 })
     const repoRoot = top.code === 0 ? normalizeSeparators(top.stdout.trim()) : null
+    const atRepoTop = repoRoot !== null && samePath(repoRoot, realRequested)
     return {
       workspace,
       drives: listDriveRoots(),
@@ -1085,9 +1119,9 @@ const METHODS = {
       /* `parent` is offered whenever a parent exists on disk — the whole tree is
          walkable, not just the part under the workspace. */
       parent: parentOf(realRequested),
-      inWorkspace: realWorkspace === null ? false : isInside(realWorkspace, normalizeSeparators(realRequested)),
-      isRepo: repoRoot !== null && repoRoot === normalizeSeparators(realRequested),
-      insideRepo: repoRoot !== null && repoRoot !== normalizeSeparators(realRequested) ? repoRoot : null,
+      inWorkspace: realWorkspace === null ? false : isInside(canonicalPathSync(realWorkspace), canonicalPathSync(realRequested)),
+      isRepo: atRepoTop,
+      insideRepo: repoRoot !== null && !atRepoTop ? repoRoot : null,
       dirs,
     }
   },
@@ -1130,7 +1164,7 @@ const METHODS = {
       isRepo: true,
       kind: 'repo',
       /** true when the chosen directory IS the repository top (not a subdir). */
-      isTop: root === normalizeSeparators(target),
+      isTop: samePath(root, target),
       root,
     }
   },

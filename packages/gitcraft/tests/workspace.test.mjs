@@ -8,7 +8,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -64,6 +64,11 @@ async function call(method, payload) {
 
 before(async () => {
   sandbox = mkdtempSync(path.join(tmpdir(), 'gwc-ws-'))
+  /* GitHub's Windows runners hand out TMP as an 8.3 short path
+     (C:\Users\RUNNER~1\...), while git reports the long form. The host now
+     canonicalises before comparing; pin the fixture to its long form too so a
+     regression in that comparison cannot be masked by the fixture layout. */
+  sandbox = realpathSync(sandbox)
   // A workspace that is NOT itself a repository and holds several repositories
   // at different depths, plus decoys that must be skipped.
   workspace = path.join(sandbox, 'workspace')

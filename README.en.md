@@ -136,6 +136,12 @@ Get-Process AbSerialHost, DownloaderIpcBridge -ErrorAction SilentlyContinue | St
 
 **The host half fails to load and the log says `Cannot find package '@dsh-workbench/kit'`** — kit is missing from the profile's `node_modules`. `pnpm install` picks it up automatically via `file:../kit`; copying plugin directories by hand is the easiest way to miss it.
 
+## Contributing and security
+
+- Dev loop, layout, page-registration contract and commit conventions: **[CONTRIBUTING.md](CONTRIBUTING.md)**
+- Vulnerability reporting and the threat model (routes are loopback-only, plugins run git/serial operations locally by design, no telemetry): **[SECURITY.md](SECURITY.md)**
+- CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)): `pnpm test` on Windows, plus a `node --check` syntax gate on Linux
+
 ## License
 
 MIT

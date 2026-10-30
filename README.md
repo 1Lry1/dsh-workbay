@@ -136,6 +136,12 @@ Get-Process AbSerialHost, DownloaderIpcBridge -ErrorAction SilentlyContinue | St
 
 **host 半侧加载失败、日志报 `Cannot find package '@dsh-workbench/kit'`** — profile 的 `node_modules` 里缺 kit。`pnpm install` 会按 `file:../kit` 自动带上；手工拷贝插件目录时最容易漏。
 
+## 参与与安全
+
+- 开发流程、目录约定、页面注册契约和提交规范：**[CONTRIBUTING.md](CONTRIBUTING.md)**
+- 漏洞报告渠道与威胁模型（路由只对 loopback 开放、插件按设计在本机执行 git/串口操作、无遥测）：**[SECURITY.md](SECURITY.md)**
+- CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）：Windows 上跑 `pnpm test`，Linux 上做一遍 `node --check` 语法门禁
+
 ## License
 
 MIT
