@@ -36,6 +36,26 @@ if ($blockers.Count -gt 0) {
 
 Push-Location $profileDir
 try {
+  # pnpm does NOT notice content changes inside a `file:` directory dependency
+  # when the package version is unchanged: it reports "Already up to date" and
+  # the profile keeps the OLD copy. Drop the copied packages first so the install
+  # has to import them again.
+  $profilePkgPath = Join-Path $profileDir 'package.json'
+  if (Test-Path $profilePkgPath) {
+    $profilePkg = Get-Content $profilePkgPath -Raw | ConvertFrom-Json
+    if ($null -ne $profilePkg.dependencies) {
+      $modulesDir = Join-Path $profileDir 'node_modules'
+      foreach ($dep in $profilePkg.dependencies.PSObject.Properties) {
+        if ($dep.Value -isnot [string] -or $dep.Value -notmatch '^(file:|link:)') { continue }
+        $depPath = Join-Path $modulesDir $dep.Name
+        if (Test-Path $depPath) {
+          Remove-Item $depPath -Recurse -Force
+          Write-Host "dropped stale copy of $($dep.Name)"
+        }
+      }
+    }
+  }
+
   Write-Host "installing profile '$Profile' from $repoRoot" -ForegroundColor Cyan
   pnpm install --no-frozen-lockfile
   if ($LASTEXITCODE -ne 0) { throw "pnpm install failed with exit code $LASTEXITCODE" }
