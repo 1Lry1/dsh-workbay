@@ -1,0 +1,58 @@
+{
+  "name": "dsh-workbench-dock",
+  "version": "0.2.2",
+  "description": "Workbench dock for DeepSeek Harness: a single header button that opens an INDEPENDENT right-side panel hosting pages contributed by other plugins. Does not use dsh-better-sidebar. | DSH 插件：右上角「工作台」按钮，打开一个独立的右侧栏面板，页面由其它插件注册；不使用 dsh-better-sidebar。",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "icon.svg",
+    "src/index.js",
+    "src/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@dsh-workbench/kit": "file:../kit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "workbench",
+    "sidebar",
+    "dock"
+  ]
+}

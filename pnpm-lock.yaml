@@ -1,0 +1,37 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/dock:
+    dependencies:
+      '@dsh-workbench/kit':
+        specifier: file:../kit
+        version: link:../kit
+
+  packages/downloader: {}
+
+  packages/gitcraft:
+    dependencies:
+      '@dsh-workbench/kit':
+        specifier: file:../kit
+        version: link:../kit
+
+  packages/kit: {}
+
+  packages/suite:
+    dependencies:
+      dsh-downloader:
+        specifier: file:../downloader
+        version: link:../downloader
+      dsh-gitcraft:
+        specifier: file:../gitcraft
+        version: link:../gitcraft
+      dsh-workbench-dock:
+        specifier: file:../dock
+        version: link:../dock

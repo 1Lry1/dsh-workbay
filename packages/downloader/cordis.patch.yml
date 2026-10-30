@@ -1,0 +1,9 @@
+# dsh-downloader —— bundle patch
+#
+# 一条 insert 把插件挂进 profile 的配置树。
+# 注意：不要同时在 profile 的 cordis.patch.yml 里手工再挂一次，
+# 双挂会注册两次 /downloader 前缀路由，导致整棵插件树启动失败
+# （"duplicate prefix route"）。
+- insert:
+    - id: downloader
+      name: dsh-downloader

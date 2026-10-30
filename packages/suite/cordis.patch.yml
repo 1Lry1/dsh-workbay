@@ -1,0 +1,26 @@
+# dsh-workbench-suite — bundle patch
+#
+# Aggregates the three workbench bundles so a profile can mount the whole
+# workbench with ONE entry in dsh.profile.bundles.
+#
+# Choose exactly one style per profile:
+#
+#   "bundles": ["...", "dsh-workbench-suite"]                 <- this patch wins
+#   "bundles": ["...", "dsh-workbench-dock", "dsh-gitcraft", "dsh-downloader"]
+#                                                             <- their own patches win
+#
+# Never list the suite AND any of the three: both patches insert the same loader
+# row, and a double mount registers the prefix route twice, which DSH rejects
+# ("duplicate prefix route") and the whole plugin tree fails to start.
+- insert:
+    - id: workbench-dock
+      name: 'dsh-workbench-dock'
+    - id: gitcraft
+      name: 'dsh-gitcraft'
+      config:
+        refreshIntervalMs: 15000
+        timeoutMs: 30000
+        networkTimeoutMs: 180000
+        defaultDiffView: unified
+    - id: downloader
+      name: 'dsh-downloader'

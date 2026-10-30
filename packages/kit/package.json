@@ -1,0 +1,29 @@
+{
+  "name": "@dsh-workbench/kit",
+  "version": "0.1.0",
+  "description": "Host-side helpers shared by the DSH workbench bundles: a loopback trust fence, a JSON body reader, and a POST /<prefix>/<method> RPC surface with the { ok, data } / { ok, error } envelope.",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/host.js",
+  "exports": {
+    ".": "./src/host.js",
+    "./host": "./src/host.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/host.test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "kit"
+  ]
+}

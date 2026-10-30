@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# local test output
+tests/**/*.tmp
+tests/**/fixtures/**/.git/
+*.log
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# local scratch that should never ship
+*.bak
+*.bak-*
+*.old-*
+*.tgz

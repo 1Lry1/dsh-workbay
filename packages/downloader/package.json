@@ -1,0 +1,36 @@
+{
+  "name": "dsh-downloader",
+  "version": "0.1.0",
+  "description": "Downloader：在「工作台」里烧录蓝牙芯片。驱动厂商 Downloader 引擎（IPC，不模拟鼠标键盘），自带 1.5 Mbps 串口日志；串口与烧录自动互斥切换，烧完自动恢复串口并保持板卡启动日志完整",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "helper",
+    "ipc-helper",
+    "cordis.patch.yml",
+    "README.md",
+    "安装说明.md",
+    "架构与实现说明.md"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "license": "MIT"
+}

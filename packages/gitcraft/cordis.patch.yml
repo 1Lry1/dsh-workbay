@@ -1,0 +1,26 @@
+# dsh-gitcraft bundle patch.
+#
+# Installed through the official CLI:
+#
+#   dsh plugin --profile desktop add file:D:\AI_workspace\dsh-gitcraft
+#
+# The CLI reconciles dsh.profile.bundles against installed packages and, seeing
+# this declaration, merges this patch. Manual mount equivalent (profile
+# cordis.patch.yml):
+#
+#   - insert:
+#       - id: gitcraft
+#         name: 'dsh-gitcraft'
+#
+# Only the Node half loads through this row (the /dsh-gitcraft/api routes).
+# The web client half is served through exports["./client"] and mounted by the
+# browser boot graph; there it registers one dsh-better-sidebar tab and, when
+# that base is absent, the native right-sidebar seat.
+- insert:
+    - id: gitcraft
+      name: 'dsh-gitcraft'
+      config:
+        refreshIntervalMs: 15000
+        timeoutMs: 30000
+        networkTimeoutMs: 180000
+        defaultDiffView: unified

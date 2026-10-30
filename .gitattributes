@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# Windows helpers shipped inside the downloader bundle: never let git touch them.
+*.exe binary
+*.dcf binary
+*.bin binary
+*.png binary
+*.jpg binary
+*.svg text
+
+packages/downloader/helper/*.exe binary
+packages/downloader/ipc-helper/*.exe binary

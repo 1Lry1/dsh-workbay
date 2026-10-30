@@ -1,0 +1,69 @@
+{
+  "name": "dsh-gitcraft",
+  "version": "0.1.8",
+  "description": "SourceTree-grade GitCraft for DeepSeek Harness: branch tree, commit graph, per-file and hunk-level staging, commit/amend, stash, merge with conflict resolution, tags, remotes, fetch/pull/push, cherry-pick, revert, reset, blame, file history, reflog. | DSH 插件：SourceTree 级 GitCraft，支持 hunk 级暂存、合并冲突解决、blame、文件历史与 reflog。",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.1.6-alpha.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "icon.svg",
+    "locale",
+    "src/index.js",
+    "src/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "docs/panel.png",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/host.test.mjs tests/client.test.mjs tests/workspace.test.mjs"
+  },
+  "dependencies": {
+    "@dsh-workbench/kit": "file:../kit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.1.6-alpha.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "git",
+    "git-gui",
+    "sourcetree",
+    "source-control",
+    "sidebar",
+    "commit-graph",
+    "hunk-staging"
+  ]
+}

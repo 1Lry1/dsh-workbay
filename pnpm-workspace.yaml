@@ -1,0 +1,11 @@
+packages:
+  - 'packages/*'
+
+# The DSH profile that loads these bundles uses `nodeLinker: hoisted`; keep the
+# monorepo the same so a workspace link and a profile install resolve identically.
+nodeLinker: hoisted
+
+# The bundles declare host-peer packages (@deepseek-ai/cordis, @deepseek-ai/dsh)
+# that only exist inside a DSH install. Do not try to fetch them from npm.
+autoInstallPeers: false
+strictPeerDependencies: false
