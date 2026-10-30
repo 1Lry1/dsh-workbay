@@ -63,7 +63,7 @@ dsh plugin --profile desktop add 'file:<repo>/packages/dock'
 # 或：profile 的 dependencies 写 "dsh-workbench-dock": "file:<repo>/packages/dock"，再 pnpm install
 ```
 
-装完**重启 DSH**。左下角出现「工作台」。
+装完**重启 DSH**。左侧栏顶部（与「插件 / 自动化任务 / 更多」同一排）出现「工作台」；若宿主版本没有那一排，会自动退到左侧栏底部。
 
 ## 测试
 

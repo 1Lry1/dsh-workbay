@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbench-dock",
   "version": "0.2.2",
-  "description": "Workbench dock for DeepSeek Harness: a single header button that opens an INDEPENDENT right-side panel hosting pages contributed by other plugins. Does not use dsh-better-sidebar. | DSH 插件：右上角「工作台」按钮，打开一个独立的右侧栏面板，页面由其它插件注册；不使用 dsh-better-sidebar。",
+  "description": "Workbench dock for DeepSeek Harness: one left-sidebar entry that opens an INDEPENDENT right-hand panel hosting pages contributed by other plugins. Does not use dsh-better-sidebar. | DSH 插件：左侧栏「工作台」入口，打开一个独立的右侧面板，页面由其它插件注册；不使用 dsh-better-sidebar。",
   "type": "module",
   "license": "MIT",
   "main": "src/index.js",

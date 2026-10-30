@@ -1,6 +1,6 @@
 # dsh-downloader —— Downloader
 
-在「**工作台**」（`dsh-workbench-dock`）里的一个页面，用于**蓝牙芯片烧录 + 串口日志**。打开任意会话 → 右上角 **工作台** 按钮 → 面板里的 **Downloader** 页签。不使用 `dsh-better-sidebar`。
+在「**工作台**」（`dsh-workbench-dock`）里的一个页面，用于**蓝牙芯片烧录 + 串口日志**。打开任意会话 → 左侧栏的 **工作台** 入口 → 面板里的 **Downloader** 页签。不使用 `dsh-better-sidebar`。
 
 驱动官方 `Downloader.exe` 的 IPC 接口完成烧录，不模拟鼠标键盘；同时自带 1.5 Mbps 串口日志。串口与烧录自动互斥切换，烧完自动恢复串口并保持板卡启动日志完整。
 

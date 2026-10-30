@@ -1,0 +1,109 @@
+name: Bug report
+description: Report something that is broken, crashes, or misbehaves in the workbench.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The workbench is a plugin
+        family for DeepSeek Harness (DSH), so the versions below are what make a
+        report reproducible.
+
+        **Before you paste anything:** remove tokens, API keys, passwords,
+        cookies, serial numbers and customer/project names from logs, screenshots
+        and paths. Redact to `<redacted>`. Never paste tokens or credentials of
+        any kind — not even a "test" one.
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH version
+      description: The DeepSeek Harness version shown in DSH (Settings → About), or the version in your profile's package.json.
+      placeholder: "e.g. 0.2.1-rc.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Plugin
+      description: Which bundle is misbehaving? Pick "not sure" if you cannot tell.
+      options:
+        - dock — dsh-workbench-dock (the right-side panel shell)
+        - gitcraft — dsh-gitcraft (Git page)
+        - downloader — dsh-downloader (flash + serial log page)
+        - suite — dsh-workbench-suite (all three from one bundle)
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Version of the plugin selected above (from the profile's package.json or the plugin README).
+      placeholder: "e.g. 0.1.8"
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Run `winver` and copy the version line.
+      placeholder: "e.g. Windows 11 23H2 (build 22631.4169)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that triggers the problem, starting from a fresh DSH start.
+      placeholder: |
+        1. Open DSH and click 工作台 in the left sidebar
+        2. Switch to the GitCraft tab
+        3. Stage a hunk and press Commit
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened. Screenshots help, but redact secrets first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and environment
+      description: |
+        Relevant DSH / plugin log lines, error messages, and the output of
+        `git --version` or `node --version` if the issue smells version-related.
+        Paste in a code block if you can.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I removed tokens, credentials, cookies and customer/project names from everything above.
+          required: true
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true
+        - label: I am running the latest release of the plugin (or explained above why I cannot upgrade).
+          required: false

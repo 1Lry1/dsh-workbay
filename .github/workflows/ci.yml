@@ -1,0 +1,109 @@
+# CI for the dsh-workbench plugin family.
+#
+# WHY WINDOWS-LATEST FOR TESTS: this family is Windows-only by construction.
+#   * gitcraft's host tests spawn a real `git` binary, create throwaway repos
+#     and real commits in the OS temp dir, and probe a Windows path;
+#   * the downloader drives serial/COM ports through two shipped Win32 helper
+#     executables (AbSerialHost.exe, DownloaderIpcBridge.exe);
+#   * the packages declare `engines.dsh` ranges for a desktop harness that only
+#     ships for Windows.
+# A Linux test job would either skip the interesting half or fail on it, so the
+# cheap syntax gate moves to ubuntu-latest instead and the tests stay here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref supersedes an older run; don't waste runners.
+concurrency:
+  group: "ci-${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+# Read-only by default: this workflow never publishes, releases or comments.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    # The git-heavy suite takes ~8 min on a developer box and considerably longer
+    # on a 2-core runner (Defender scans every temp-dir repository). 45 minutes is
+    # a failure cap, not an expectation: it turns a hung test into a fast red
+    # instead of burning the default 360-minute job budget.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # pnpm must be on PATH before setup-node runs, otherwise `cache: pnpm`
+      # cannot find the store it is supposed to cache. Keep the major version in
+      # sync with `packageManager` in the root package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # gitcraft's host tests create real repositories and commits. They set a
+      # per-repo identity, but the plugin itself also commits on behalf of the
+      # user, so a runner without one dies with "Please tell me who you are".
+      # This identity exists only inside the disposable runner.
+      - name: Configure git identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+
+      # The lockfile is the contract: CI installs exactly what is committed and
+      # must never rewrite pnpm-lock.yaml.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `-r --if-present` walks every workspace package and skips the ones with
+      # no `test` script (dock / downloader / suite only have browser e2e or
+      # smoke scripts that need a live DSH install, a Chromium build or real
+      # hardware, so they cannot run unattended here).
+      - name: Run tests
+        run: pnpm -r --if-present run test
+
+  syntax:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Deliberately no `pnpm install`: `node --check` only parses, it never
+      # resolves imports, so this gate costs seconds and fails before the
+      # Windows job spends a runner on a file with a missing brace.
+      #
+      # The client halves (packages/*/src/client.js, packages/downloader/lib/
+      # client.js) are single-file `window.__ModuleLoader__` bundles, but they
+      # are still ordinary JavaScript: every package declares `"type": "module"`,
+      # so `node --check` parses them as ESM and catches broken syntax.
+      - name: node --check every package file
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find packages -type f \( -name '*.js' -o -name '*.mjs' \) -not -path '*/node_modules/*' | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no .js/.mjs files found under packages/ — check the checkout"
+            exit 1
+          fi
+          echo "syntax-checking ${#files[@]} files"
+          for file in "${files[@]}"; do
+            node --check "$file"
+            echo "ok $file"
+          done

@@ -1,9 +1,10 @@
 /**
  * dsh-workbench-dock — client half (v0.2, GLOBAL dock).
  *
- * ONE button at the BOTTOM OF THE LEFT SIDEBAR (`sidebar.footer.action`, the
- * same seat the Cordis panel uses). Clicking it opens a GLOBAL overlay window
- * that belongs to this plugin alone.
+ * ONE entry in the LEFT sidebar — the `sidebar.panellist` seat that "插件 / 自动化
+ * 任务 / 更多" sit in — with `sidebar.footer.action` as the fallback for host
+ * compositions that do not render that row. Clicking it opens a GLOBAL overlay
+ * window that belongs to this plugin alone.
  *
  * Why an overlay and not the right sidebar:
  *   DSH's right sidebar is SESSION-SCOPED — its layout lives in

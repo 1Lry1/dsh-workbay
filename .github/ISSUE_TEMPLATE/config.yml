@@ -1,0 +1,4 @@
+# Force every issue through a template: a blank issue almost never carries the
+# DSH version, plugin version and Windows version this Windows-only plugin
+# family needs to be reproducible.
+blank_issues_enabled: false

@@ -1,0 +1,141 @@
+# dsh-workbench
+
+[![CI](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/1Lry1/dsh-workbench)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](package.json)
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbench)
+
+[Chinese](README.md) | **English**
+
+The **workbench** for DeepSeek Harness (DSH): one entry in the sidebar, one fixed panel on the right, with the Git and hardware-flashing pages used side by side, independent of any particular conversation.
+
+This repository consolidates what used to be three standalone projects into a single **pnpm workspace**:
+
+```
+packages/
+├─ dock/        dsh-workbench-dock    shell: left-sidebar entry + right-side dock overlay + page registry
+├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
+├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
+├─ kit/         @dsh-workbench/kit    shared host helpers: same-origin fence / JSON body / RPC envelope
+└─ suite/       dsh-workbench-suite   aggregator: installs all three at once (experimental)
+```
+
+```
+Sidebar [Workbench] ──click──▶ Dock panel on the right
+                               ┌────────────────────────────────────┐
+                               │ Workbench   Docked right     ⤢ ⇥   │
+                               │ [GitCraft] [Downloader]            │
+                               │                                    │
+                               │ Current page (beside conversation) │
+                               └────────────────────────────────────┘
+```
+
+## Why not one big plugin
+
+The three bundles have **different failure domains, release cadences and distribution targets**; merging them into one package would weld those boundaries shut:
+
+| Dimension | dock (shell) | gitcraft (page) | downloader (page) |
+|---|---|---|---|
+| host side | 2 read-only methods | 58 RPCs, `git` child processes | Serial port + flashing IPC + SSE, spawns two exes (including a 32-bit bridge) |
+| dependencies | None | A local `git` | Official Downloader, CP210x driver, a real board |
+| release cadence | Stable (0.2.x) | Fast (0.1.x, iterating continuously, 13 e2e) | Tracks hardware/firmware changes |
+| audience | Third parties who want to mount pages | Community (can be published to npm independently) | Internal tooling |
+| engine range | `>=0.2.1-rc.1 <0.3.0-0` | `>=0.1.6-alpha.2` | `>=0.2.1-rc.1 <0.3.0-0` |
+
+A single bundle that fails to start can make the whole plugin tree fail to boot (a `duplicate prefix route` will do it), so an exception on the flashing side must not crash the Git panel — and vice versa.
+
+## Page protocol
+
+Pages are React components registered on the **browser side**; the registry lives on a browser global, so the load order of the two bundles does not matter:
+
+```js
+window.__DSH_WORKBENCH_DOCK__.registerPage({
+  id: 'myplugin',          // required, non-empty
+  title: 'My page',
+  order: 40,               // ascending; GitCraft=20, Downloader=30
+  icon: (size) => <Icon size={size} />,
+  component: ({ t, dock }) => <MyPanel />,
+})
+```
+
+If dock has not loaded yet, poll briefly until it appears (both existing page plugins do this). For the complete contract and the three pitfalls already hit in practice, see [packages/dock/README.md](packages/dock/README.md).
+
+## Installing into DSH
+
+Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
+
+**Option A — three independent bundles (recommended, verified)**: in `package.json`:
+
+```jsonc
+{
+  "dsh": { "profile": { "bundles": [
+    "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
+    "dsh-workbench-dock", "dsh-gitcraft", "dsh-downloader"
+  ] } },
+  "dependencies": {
+    "dsh-workbench-dock": "file:<repo>/packages/dock",
+    "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
+    "dsh-downloader":     "file:<repo>/packages/downloader",
+    "@dsh-workbench/kit": "file:<repo>/packages/kit"
+  }
+}
+```
+
+```powershell
+pnpm install            # or: dsh plugin --profile desktop add file:...
+```
+
+**Option B — the suite aggregator (experimental)**: add only `dsh-workbench-suite` to `bundles` and let its patch do the rest. See [packages/suite/README.md](packages/suite/README.md).
+
+After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
+
+> `@dsh-workbench/kit` must be resolvable by the DSH runtime: it is imported by the host halves of dock and gitcraft, so it has to be present in the profile's `node_modules`. `pnpm install` installs it automatically as a `file:` dependency; copying plugin directories by hand easily misses it, which shows up as the host half failing to load.
+
+## Development
+
+```powershell
+pnpm install                     # workspace dependencies
+pnpm test                        # unit/integration tests for all packages
+pnpm --filter @dsh-workbench/kit run test
+pnpm --filter dsh-gitcraft run test
+```
+
+Browser e2e (needs a running DSH plus a Chromium-based browser):
+
+```powershell
+node packages/gitcraft/tests/ui.e2e.mjs  <base-url> <browser-exe> <repo>
+node packages/dock/tests/split.e2e.mjs   <base-url> <browser-exe> <repo> [shot.png]
+node packages/downloader/smoke-test.mjs  # 25 checks; set the DSH_DOWNLOADER_* env vars first, unset cases auto-SKIP
+```
+
+## Design constraints (don't break these)
+
+1. **A client half cannot import packages from this repo.** DSH loads client plugins with `window.__ModuleLoader__.load({ id, factory })`: one plugin is a single self-contained file plus the host's `require` seed table. That is why the small page-registration snippet is kept in both page plugins — deliberately so.
+2. **`@dsh-workbench/kit` serves the host half only.** It exports nothing usable in the browser.
+3. **The downloader does not use kit's RPC envelope**: its host also emits SSE and binary frames, and forcing the envelope on top would hurt readability.
+4. **Do not mount both the suite and the individual packages** — the same row would be inserted twice, and the whole tree would fail to start.
+5. Every package's `cordis.patch.yml` contains exactly one `insert`; `id` is a globally unique loader id.
+
+## FAQ
+
+**I changed `packages/*` but the UI shows no difference** — `file:` dependencies are **copied** into the profile's `node_modules`, not symlinked. You must reinstall the profile before restarting DSH:
+
+```powershell
+# Quit DSH first (not just minimize), then run:
+pwsh -File scripts/refresh-profile.ps1 -Profile desktop
+# or: cd C:\Users\<user>\.dsh\profiles\desktop; pnpm install
+```
+
+**`pnpm install` fails with `ERR_PNPM_EPERM ... rename ... dsh-downloader`** — the downloader's serial helper `AbSerialHost.exe` (which in turn starts `DownloaderIpcBridge.exe` during flashing) is still alive and holding the files. They exit together with DSH; for stubborn leftovers, terminate them manually:
+
+```powershell
+Get-Process AbSerialHost, DownloaderIpcBridge -ErrorAction SilentlyContinue | Stop-Process
+```
+
+**The UI shows "Workbench" but has no pages** — the page registry is the browser global `window.__DSH_WORKBENCH_DOCK__`, and both page plugins wait for it. If dock was not loaded (`dsh-workbench-dock` missing from `bundles`), the pages have nowhere to register; conversely, if a page package is missing, the tab bar has only the workbench itself. Check that all three lines are present in the profile's `dsh.profile.bundles`.
+
+**The host half fails to load and the log says `Cannot find package '@dsh-workbench/kit'`** — kit is missing from the profile's `node_modules`. `pnpm install` picks it up automatically via `file:../kit`; copying plugin directories by hand is the easiest way to miss it.
+
+## License
+
+MIT

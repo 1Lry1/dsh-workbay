@@ -47,7 +47,7 @@ mountJsonApi(ctx, {
 ## 谁在用
 
 - `dsh-workbench-dock`：2 个方法（`ping` / `registry`）
-- `dsh-gitcraft`：54 个方法，带写锁钩子
+- `dsh-gitcraft`：58 个方法，带写锁钩子
 - `dsh-downloader`：**不用**。它的 host 还要输出 SSE 与二进制帧，不是纯 JSON RPC 映射表，硬套会降低可读性。
 
 ## 测试

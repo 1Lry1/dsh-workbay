@@ -44,7 +44,7 @@ dsh plugin --profile desktop add 'file:<repo>/packages/gitcraft'
 
 装完**重启 DSH**。打开任意会话 → 右侧边栏 `+` → **GitCraft**；或会话头「打开右侧边栏」→ Guide 里的 **GitCraft** 胶囊。
 
-> 面板是「工作台」插件（`dsh-workbench-dock`）的一个页面：打开任意会话 → 右上角 **工作台** 按钮 → 右侧栏里的 **GitCraft** 页。**不使用 `dsh-better-sidebar`**，也不会出现在它的 Tab 栏里。
+> 面板是「工作台」插件（`dsh-workbench-dock`）的一个页面：打开任意会话 → 左侧栏的 **工作台** 入口 → 面板里的 **GitCraft** 页。**不使用 `dsh-better-sidebar`**，也不会出现在它的 Tab 栏里。
 
 
 ## 选择仓库（不只扫当前目录）
@@ -81,7 +81,7 @@ epoRoot 都做 realpath 包含检查。
 ## 架构
 
 ```
-src/index.js    host 半：54 个 RPC 方法、git 执行层、补丁生成、写锁、信任围栏
+src/index.js    host 半：58 个 RPC 方法、git 执行层、补丁生成、写锁、信任围栏
 src/client.js    client 半：单文件 React，向工作台注册一个页面，三种布局，i18n(zh/en)
 ```
 

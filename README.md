@@ -1,5 +1,12 @@
 # dsh-workbench
 
+[![CI](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/1Lry1/dsh-workbench/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/1Lry1/dsh-workbench)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](package.json)
+[![DSH plugin](https://img.shields.io/badge/DSH-plugin-4d6bfe)](https://github.com/1Lry1/dsh-workbench)
+
+**中文** | [English](README.en.md)
+
 DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固定面板，Git 和硬件烧录两个页面并排使用，与具体会话无关。
 
 这个仓库把原本三个独立工程收敛成一个 **pnpm workspace**：
@@ -7,7 +14,7 @@ DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固
 ```
 packages/
 ├─ dock/        dsh-workbench-dock    壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
-├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（54 个 RPC）
+├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
 ├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
 ├─ kit/         @dsh-workbench/kit    共享 host 工具：同源围栏 / JSON 体 / RPC 信封
 └─ suite/       dsh-workbench-suite   聚合金：一次装好上面三个（实验性）
@@ -29,9 +36,9 @@ packages/
 
 | 维度 | dock（壳） | gitcraft（页面） | downloader（页面） |
 |---|---|---|---|
-| host 侧 | 2 个只读方法 | 54 个 RPC，git 子进程 | 串口 + 烧录 IPC + SSE，拉起两个 exe（含 32 位桥） |
+| host 侧 | 2 个只读方法 | 58 个 RPC，git 子进程 | 串口 + 烧录 IPC + SSE，拉起两个 exe（含 32 位桥） |
 | 依赖 | 无 | 本机 `git` | 官方 Downloader、CP210x 驱动、真实板卡 |
-| 更新节奏 | 稳定（0.2.x） | 快（0.1.x 持续迭代，14 个 e2e） | 随硬件/固件变化 |
+| 更新节奏 | 稳定（0.2.x） | 快（0.1.x 持续迭代，13 个 e2e） | 随硬件/固件变化 |
 | 面向 | 想挂页面的第三方 | 社区（可独立发 npm） | 内部工具 |
 | 引擎范围 | `>=0.2.1-rc.1 <0.3.0-0` | `>=0.1.6-alpha.2` | `>=0.2.1-rc.1 <0.3.0-0` |
 
@@ -98,7 +105,7 @@ pnpm --filter dsh-gitcraft run test
 ```powershell
 node packages/gitcraft/tests/ui.e2e.mjs  <base-url> <browser-exe> <repo>
 node packages/dock/tests/split.e2e.mjs   <base-url> <browser-exe> <repo> [shot.png]
-node packages/downloader/smoke-test.mjs  # 25 项自检，需改文件顶部两个绝对路径
+node packages/downloader/smoke-test.mjs  # 25 项自检；先设 DSH_DOWNLOADER_* 环境变量，未设置的用例自动 SKIP
 ```
 
 ## 设计约束（别踩）

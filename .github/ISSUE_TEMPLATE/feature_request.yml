@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose a new capability or a change in behavior for a workbench plugin.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The workbench keeps three bundles deliberately independent (dock, gitcraft,
+        downloader), so it helps to say which one a proposal belongs to. Proposals
+        that respect the existing page-registration contract are much easier to
+        land.
+
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Which plugin?
+      description: The bundle this proposal targets (or "cross-cutting" for the page contract / kit).
+      options:
+        - dock — dsh-workbench-dock (panel shell, page registry)
+        - gitcraft — dsh-gitcraft (Git page)
+        - downloader — dsh-downloader (flash + serial log page)
+        - kit — @dsh-workbench/kit (shared host helpers)
+        - cross-cutting — page contract, docs, build/CI
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and where does the current behavior get in the way? Concrete workflows beat abstract wishes.
+      placeholder: |
+        When I stage a large diff I want to ...
+        Today the panel ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What should happen instead? Sketches, RPC names or UI wording are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve it, workarounds you already use, or why they fall short.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Compatibility check
+      options:
+        - label: This does not require the browser-side client file to import an npm package (client halves are single-file ModuleLoader bundles).
+          required: false
+        - label: This does not require merging the three bundles into one.
+          required: false
