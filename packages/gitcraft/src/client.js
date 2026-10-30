@@ -1382,12 +1382,28 @@ window.__ModuleLoader__.load({
       /* Share of the History column given to the COMMIT LIST while a commit's
          details are open below it (dragged, not fixed). */
       const [commitListRatio, setCommitListRatio] = useState(0.34)
+      /* True while a History splitter is being dragged: a watcher-driven reload
+         would change row heights under the pointer, so it waits for pointerup. */
+      const [historyInteracting, setHistoryInteracting] = useState(false)
+      /* Revision bookkeeping for the two surfaces the snapshot does NOT carry:
+         the commit graph and the branch/tag list. `refsEpoch` is bumped by
+         operations whose ref changes no snapshot field can prove (a fetch that
+         only moved remote refs, branch/tag create+delete, ...). */
+      const [refsEpoch, setRefsEpoch] = useState(0)
+      const refsRevisionRef = useRef(null)
+      const historySyncedRef = useRef(null)
+      const historyFailedRef = useRef(null)
+      const historyAppliedSearchRef = useRef('')
+      const [branchesLoading, setBranchesLoading] = useState(false)
+      const branchesSyncedRef = useRef(null)
+      const branchesFailedRef = useRef(null)
       const onDetailSplitDrag = useCallback((event) => {
         event.preventDefault()
         const wrap = event.currentTarget === null ? null : event.currentTarget.parentElement
         if (wrap === null) return
         const rect = wrap.getBoundingClientRect()
         if (rect.height <= 0) return
+        setHistoryInteracting(true)
         const move = (moveEvent) => {
           const ratio = (moveEvent.clientY - rect.top) / rect.height
           setCommitListRatio(Math.max(0.12, Math.min(0.82, ratio)))
@@ -1395,9 +1411,12 @@ window.__ModuleLoader__.load({
         const up = () => {
           window.removeEventListener('pointermove', move)
           window.removeEventListener('pointerup', up)
+          window.removeEventListener('pointercancel', up)
+          setHistoryInteracting(false)
         }
         window.addEventListener('pointermove', move)
         window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', up)
       }, [])
 
       const onHistorySplitDrag = useCallback((event) => {
@@ -1406,6 +1425,7 @@ window.__ModuleLoader__.load({
         if (wrap === null) return
         const rect = wrap.getBoundingClientRect()
         if (rect.height <= 0) return
+        setHistoryInteracting(true)
         const move = (moveEvent) => {
           const ratio = (moveEvent.clientY - rect.top) / rect.height
           setHistoryRatio(Math.max(0.15, Math.min(0.85, ratio)))
@@ -1413,9 +1433,12 @@ window.__ModuleLoader__.load({
         const up = () => {
           window.removeEventListener('pointermove', move)
           window.removeEventListener('pointerup', up)
+          window.removeEventListener('pointercancel', up)
+          setHistoryInteracting(false)
         }
         window.addEventListener('pointermove', move)
         window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', up)
       }, [])
       /* Line-level selection inside the open diff: keys are `hunk:bodyIndex`,
          exactly the shape the host's buildLineSelectionPatch expects. */
@@ -1441,6 +1464,32 @@ window.__ModuleLoader__.load({
       }, [width])
 
       const snapshot = store.snapshot
+
+      /* The revision token the two non-snapshot lists (History commits and the
+         branch/tag list) are keyed on. It is DERIVED from the snapshot that the
+         `/watch` loop above already refreshes, so it adds no polling of its own:
+         a plain worktree edit changes `changes` but leaves this token alone,
+         while commit/pull/merge/rebase/reset/checkout move `head` (or branch /
+         upstream / ahead / behind), which bumps it. `refsEpoch` covers the ref
+         rewrites that leave every snapshot field intact (a new tag, a fetch
+         that only added remote refs, a branch created without checkout). */
+      const refsRevision = snapshot === null ? null : [
+        snapshot.root,
+        snapshot.head,
+        snapshot.branch,
+        snapshot.detached === true ? 'detached' : 'attached',
+        snapshot.upstream,
+        snapshot.ahead,
+        snapshot.behind,
+        refsEpoch,
+      ].join('\u0000')
+
+      /* Mark "the refs may have moved" without waiting for a snapshot field to
+         prove it. The reload itself stays lazy: History/Branches react to the
+         token, and only while they are the active view. */
+      const invalidateRefs = useCallback(() => {
+        setRefsEpoch((value) => value + 1)
+      }, [])
 
       /* measure the container: the panel never guesses which seat it is in */
       useEffect(() => {
@@ -1509,6 +1558,13 @@ window.__ModuleLoader__.load({
         }
       }, [visible, store.refresh, scope.cwd, scope.sessionId, chosenRepo])
 
+      /* The token as of the latest committed render, readable from async code:
+         a loader records the revision it STARTED from, so a revision that lands
+         while it is in flight is not mistaken for loaded data. */
+      useEffect(() => {
+        refsRevisionRef.current = refsRevision
+      }, [refsRevision])
+
       const notify = useCallback((kind, message) => {
         setToast({ kind, message })
         setTimeout(() => setToast((current) => (current !== null && current.message === message ? null : current)), 4000)
@@ -1548,10 +1604,25 @@ window.__ModuleLoader__.load({
 
       /* ---- data loaders ---- */
 
+      /**
+       * Load the commit list.
+       *
+       * `options.revision` is the refs revision this load is answering; without
+       * it the current revision is captured at call time (that is what the
+       * revision-driven effect relies on, so a token bump that lands while the
+       * request is in flight is not marked as loaded). Only a first page
+       * (skip === 0) counts as syncing the list with the repository, and a
+       * FAILED load records the revision it failed on while keeping the
+       * previous commits — a transient error must never blank the graph, nor
+       * cause a retry loop.
+       */
       const loadHistory = useCallback(async (options) => {
         const nextSearch = options !== undefined && options.search !== undefined ? options.search : history.search
         const nextRef = options !== undefined && options.ref !== undefined ? options.ref : history.ref
         const skip = options !== undefined && options.skip !== undefined ? options.skip : 0
+        const startedRevision = options !== undefined && options.revision !== undefined
+          ? options.revision
+          : refsRevisionRef.current
         setHistory((previous) => ({ ...previous, loading: true }))
         try {
           const data = await call('log', withScope({
@@ -1560,6 +1631,11 @@ window.__ModuleLoader__.load({
             ...(nextRef === null || nextRef === undefined ? {} : { ref: nextRef }),
             ...(nextSearch === '' ? {} : { search: nextSearch }),
           }))
+          historyAppliedSearchRef.current = nextSearch
+          if (skip === 0) {
+            historySyncedRef.current = startedRevision
+            historyFailedRef.current = null
+          }
           setHistory((previous) => ({
             ...previous,
             loading: false,
@@ -1569,17 +1645,27 @@ window.__ModuleLoader__.load({
             ref: nextRef,
           }))
         } catch (error) {
+          if (skip === 0) historyFailedRef.current = startedRevision
           setHistory((previous) => ({ ...previous, loading: false }))
           notify('error', describeError(error))
         }
       }, [withScope, history.search, history.ref, notify, describeError])
 
+      /* Same revision contract as loadHistory: success syncs, failure records
+         the revision and keeps the rows already on screen. */
       const loadBranches = useCallback(async () => {
+        const startedRevision = refsRevisionRef.current
+        setBranchesLoading(true)
         try {
           const data = await call('branches', withScope({}))
+          branchesSyncedRef.current = startedRevision
+          branchesFailedRef.current = null
           setBranches(data.branches)
         } catch (error) {
+          branchesFailedRef.current = startedRevision
           notify('error', describeError(error))
+        } finally {
+          setBranchesLoading(false)
         }
       }, [withScope, notify, describeError])
 
@@ -1632,11 +1718,53 @@ window.__ModuleLoader__.load({
         }
       }, [withScope, snapshot, notify, describeError])
 
-      /* initial + nav-driven loads */
+      /* ---- revision-driven reloads --------------------------------------
+         ONE rule for both cached lists: they never poll independently, they
+         only answer the refs revision token above (which the existing `/watch`
+         loop drives). Nothing is fetched while their view is inactive — the
+         token simply stops matching, so the first activation reloads. At most
+         one load per revision is in flight; a revision that lands mid-load is
+         picked up when the load settles. Deferrals: a History splitter being
+         dragged, and an unsubmitted search draft (Enter / the search button
+         applies it, and that successful load syncs the revision). */
+
+      /* History is the reported bug: it was loaded only by the nav/root effect,
+         so a pull that left HEAD somewhere new never touched the commit list. */
+      useEffect(() => {
+        if (refsRevision === null || visible === false) return
+        if (nav !== 'history') {
+          /* Leaving the view clears the failure latch: coming back retries. */
+          historyFailedRef.current = null
+          return
+        }
+        if (historyInteracting) return
+        if (history.loading) return
+        /* Do not reload (nor silently apply) a search the user is still typing. */
+        if (history.search !== historyAppliedSearchRef.current) return
+        if (historySyncedRef.current === refsRevision) return
+        if (historyFailedRef.current === refsRevision) return
+        void loadHistory({ skip: 0, revision: refsRevision })
+      }, [refsRevision, nav, visible, historyInteracting, history.loading, history.search, loadHistory])
+
+      /* The branch/tag list has the same problem: it only loaded on activation
+         and on the few explicit create/delete buttons, so pull/fetch/checkout
+         left it stale. */
+      useEffect(() => {
+        if (refsRevision === null || visible === false) return
+        if (nav !== 'branches') {
+          branchesFailedRef.current = null
+          return
+        }
+        if (branchesLoading) return
+        if (branchesSyncedRef.current === refsRevision) return
+        if (branchesFailedRef.current === refsRevision) return
+        void loadBranches()
+      }, [refsRevision, nav, visible, branchesLoading, loadBranches])
+
+      /* Stash is not keyed on refs: its own buttons reload it, and a repo switch
+         must reload it for the new repository. */
       useEffect(() => {
         if (snapshot === null) return
-        if (nav === 'history') void loadHistory({ skip: 0 })
-        if (nav === 'branches') void loadBranches()
         if (nav === 'stash') void loadStash()
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [nav, snapshot === null ? null : snapshot.root])
@@ -1727,20 +1855,27 @@ window.__ModuleLoader__.load({
       const doFetch = useCallback(() => run('fetch', async () => {
         const data = await call('fetch', withScope({ all: true }))
         store.apply(data.snapshot)
+        /* fetch can move remote refs / tags without changing head or the
+           ahead/behind counters, so the snapshot alone cannot prove it. */
+        invalidateRefs()
         notify('ok', t('toolbar.fetch'))
-      }), [run, withScope, store, notify, t])
+      }), [run, withScope, store, invalidateRefs, notify, t])
 
       const doPull = useCallback(() => run('pull', async () => {
         const data = await call('pull', withScope({}))
         store.apply(data.snapshot)
+        /* An already-up-to-date pull moves nothing in the snapshot, but the
+           remote-tracking refs (and therefore the branch list) may have moved. */
+        invalidateRefs()
         notify('ok', t('toolbar.pull'))
-      }), [run, withScope, store, notify, t])
+      }), [run, withScope, store, invalidateRefs, notify, t])
 
       const doPush = useCallback(() => run('push', async () => {
         const data = await call('push', withScope({}))
         store.apply(data.snapshot)
+        invalidateRefs()
         notify('ok', t('toolbar.push'))
-      }), [run, withScope, store, notify, t])
+      }), [run, withScope, store, invalidateRefs, notify, t])
 
       const doMerge = useCallback((rev) => {
         setDialog({
@@ -1780,13 +1915,21 @@ window.__ModuleLoader__.load({
 
       const doInit = useCallback(() => run('init', async () => {
         store.apply(await call('init', withScope({})))
-      }), [run, store, withScope])
+        invalidateRefs()
+      }), [run, store, withScope, invalidateRefs])
 
       /* ---- render: header ---- */
 
       const headerRight = E('div', { className: 'gwc-headerActions' },
         E(IconButton, { name: 'repo', label: t('repo.switch'), onClick: () => setPickerOpen(true), disabled: busy !== null }),
-        E(IconButton, { name: 'refresh', label: t('toolbar.refresh'), onClick: store.refresh, disabled: busy !== null }),
+        /* The manual refresh means "re-read everything": the snapshot alone
+           would leave History/Branches untouched when HEAD did not move. */
+        E(IconButton, {
+          name: 'refresh',
+          label: t('toolbar.refresh'),
+          onClick: () => { store.refresh(); invalidateRefs() },
+          disabled: busy !== null,
+        }),
         E(IconButton, { name: 'fetch', label: t('toolbar.fetch'), onClick: doFetch, disabled: busy !== null || snapshot === null }),
         E(IconButton, { name: 'pull', label: t('toolbar.pull'), onClick: doPull, disabled: busy !== null || snapshot === null || snapshot.upstream === null }),
         E(IconButton, { name: 'push', label: t('toolbar.push'), onClick: doPush, disabled: busy !== null || snapshot === null || snapshot.detached === true }))
@@ -2148,7 +2291,7 @@ window.__ModuleLoader__.load({
         entry.kind === 'local'
           ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => setDialog({ kind: 'deleteBranch', name: entry.name }) })
           : entry.kind === 'tag'
-            ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => { void run('tagDelete', async () => { store.apply(await call('tagDelete', withScope({ name: entry.name }))) }); void loadBranches() } })
+            ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => { void run('tagDelete', async () => { store.apply(await call('tagDelete', withScope({ name: entry.name }))); invalidateRefs() }) } })
             : null))
 
       const branchesView = E('div', { className: 'gwc-branches' },
@@ -2258,7 +2401,7 @@ window.__ModuleLoader__.load({
             setDialog(null)
             void run('branchCreate', async () => {
               store.apply(await call('branchCreate', withScope(payload)))
-              void loadBranches()
+              invalidateRefs()
             })
           } })
           : dialog.kind === 'tag'
@@ -2266,13 +2409,14 @@ window.__ModuleLoader__.load({
               setDialog(null)
               void run('tagCreate', async () => {
                 store.apply(await call('tagCreate', withScope(payload)))
-                void loadBranches()
+                invalidateRefs()
               })
             } })
             : dialog.kind === 'reset'
               ? E(ResetDialog, { t, onCancel: () => setDialog(null), onSubmit: (mode) => {
                 setDialog(null)
                 void run('reset', async () => {
+                  /* reset always moves HEAD, which the snapshot token reports. */
                   store.apply(await call('reset', withScope({ rev: dialog.rev, mode, confirm: true })))
                 })
               } })
@@ -2281,7 +2425,7 @@ window.__ModuleLoader__.load({
                   setDialog(null)
                   void run('branchDelete', async () => {
                     store.apply(await call('branchDelete', withScope(payload)))
-                    void loadBranches()
+                    invalidateRefs()
                   })
                 } })
                 : dialog.kind === 'stash'

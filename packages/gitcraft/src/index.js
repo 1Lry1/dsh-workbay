@@ -112,6 +112,37 @@ function gitBinary() {
 }
 
 /**
+ * Global options prepended to EVERY spawn. A git process can cost well over a
+ * second on a cold Windows profile, so a refresh must (a) spawn as few processes
+ * as possible and (b) make each one as cheap as possible:
+ *
+ *   gc.auto / maintenance.auto   never run an opportunistic repack mid-request
+ *   core.fsmonitor               never pay for a fsmonitor daemon handshake
+ *   core.quotepath               print paths as UTF-8 instead of octal escapes
+ *
+ * They are prepended to argv (not passed as `git config` in an env var) so a
+ * user's own `-c` in DSH_GITCRAFT_BIN cannot turn the noise back on, and they
+ * land before the subcommand, which is where git expects global options.
+ */
+const GIT_GLOBAL_ARGS = [
+  '-c', 'core.fsmonitor=false',
+  '-c', 'gc.auto=0',
+  '-c', 'maintenance.auto=false',
+  '-c', 'core.quotepath=false',
+]
+
+/** spawn() env: no optional index locks, no interactive prompt, stable locale. */
+function gitEnv() {
+  return {
+    ...process.env,
+    GIT_OPTIONAL_LOCKS: '0',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_NO_LAZY_FETCH: '1',
+    LC_ALL: 'C',
+  }
+}
+
+/**
  * Run git with an argv array (no shell). Resolves for ANY exit code so callers
  * can decide whether a non-zero status is data or an error.
  */
@@ -120,19 +151,13 @@ function runGit(cwd, args, options = {}) {
   return new Promise((resolve, reject) => {
     let child
     try {
-      child = spawn(gitBinary(), args, {
+      child = spawn(gitBinary(), [...GIT_GLOBAL_ARGS, ...args], {
         cwd,
         windowsHide: true,
         // stdin is ignored on purpose: a network command must fail fast instead
         // of blocking on an interactive credential prompt.
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          GIT_OPTIONAL_LOCKS: '0',
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_NO_LAZY_FETCH: '1',
-          LC_ALL: 'C',
-        },
+        env: gitEnv(),
       })
     } catch (error) {
       reject(new PanelError('git-missing', 'cannot start git: ' + messageOf(error), 500))
@@ -190,17 +215,11 @@ function runGitWithInput(cwd, args, input, options = {}) {
   return new Promise((resolve, reject) => {
     let child
     try {
-      child = spawn(gitBinary(), args, {
+      child = spawn(gitBinary(), [...GIT_GLOBAL_ARGS, ...args], {
         cwd,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          GIT_OPTIONAL_LOCKS: '0',
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_NO_LAZY_FETCH: '1',
-          LC_ALL: 'C',
-        },
+        env: gitEnv(),
       })
     } catch (error) {
       reject(new PanelError('git-missing', 'cannot start git: ' + messageOf(error), 500))
@@ -646,35 +665,113 @@ function lockKeyOf(payload) {
 /* ============================== status parsing ============================== */
 
 /**
- * Parse `git status --porcelain=v1 -z`. Returns one entry per path with both
- * index and worktree column decoded, so the panel can render the two groups
- * without a second call.
+ * Parse `git status --porcelain=v2 --branch -z`.
+ *
+ * This ONE call carries the whole panel header as well as the file list, which
+ * is what removed six git spawns from every refresh:
+ *
+ *   # branch.oid <oid>|(initial)        HEAD commit, or "unborn"
+ *   # branch.head <name>|(detached)     branch name, or a detached HEAD
+ *   # branch.upstream <remote/branch>   only when an upstream is configured
+ *   # branch.ab +<ahead> -<behind>      only when an upstream is configured
+ *
+ *   1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>               ordinary change
+ *   2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>    rename/copy; the
+ *                                                              ORIGINAL path is
+ *                                                              the next -z field
+ *   u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>     unmerged (conflict)
+ *   ? <path>                                                   untracked
+ *
+ * v2 writes `.` for a clean column where v1 wrote a space; it is folded back to
+ * a space so every consumer keeps seeing the same alphabet as before.
  */
-function parseStatus(raw) {
+function parseStatusV2(raw) {
   const entries = []
+  const branch = { oid: null, unborn: false, name: '', detached: false, upstream: null, ahead: 0, behind: 0 }
   const parts = raw.split('\u0000')
   for (let i = 0; i < parts.length; i += 1) {
     const record = parts[i]
-    if (record === undefined || record.length < 4) continue
-    const x = record[0]
-    const y = record[1]
-    const filePath = record.slice(3)
-    let origin
-    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
-      i += 1
-      origin = parts[i]
+    if (record === undefined || record === '') continue
+    if (record.startsWith('# ')) {
+      parseBranchHeader(branch, record.slice(2))
+      continue
     }
-    entries.push({
-      path: normalizeSeparators(filePath),
-      origin: origin === undefined ? undefined : normalizeSeparators(origin),
-      index: x,
-      worktree: y,
-      staged: x !== ' ' && x !== '?',
-      untracked: x === '?' && y === '?',
-      conflicted: x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D'),
-    })
+    const kind = record[0]
+    if (kind === '1' || kind === '2') {
+      const pathAt = fieldStart(record, kind === '1' ? 8 : 9)
+      if (pathAt === -1) continue
+      let origin
+      if (kind === '2') {
+        i += 1
+        origin = parts[i]
+      }
+      entries.push(statusEntry(record.slice(2, 4), record.slice(pathAt), origin, false))
+      continue
+    }
+    if (kind === 'u') {
+      const pathAt = fieldStart(record, 10)
+      if (pathAt === -1) continue
+      entries.push(statusEntry(record.slice(2, 4), record.slice(pathAt), undefined, true))
+      continue
+    }
+    if (kind === '?') entries.push(statusEntry('??', record.slice(2), undefined, false))
   }
-  return entries
+  return { entries, branch }
+}
+
+/** Offset at which the field after `spaces` space-separated tokens starts. */
+function fieldStart(record, spaces) {
+  let at = 0
+  for (let n = 0; n < spaces; n += 1) {
+    const space = record.indexOf(' ', at)
+    if (space === -1) return -1
+    at = space + 1
+  }
+  return at
+}
+
+function parseBranchHeader(branch, header) {
+  if (header.startsWith('branch.oid ')) {
+    const oid = header.slice('branch.oid '.length).trim()
+    if (oid === '(initial)') branch.unborn = true
+    else branch.oid = oid
+    return
+  }
+  if (header.startsWith('branch.head ')) {
+    const head = header.slice('branch.head '.length).trim()
+    if (head === '(detached)') branch.detached = true
+    else branch.name = head
+    return
+  }
+  if (header.startsWith('branch.upstream ')) {
+    branch.upstream = header.slice('branch.upstream '.length).trim()
+    return
+  }
+  if (header.startsWith('branch.ab ')) {
+    const counts = /^\+(\d+)\s+-(\d+)$/.exec(header.slice('branch.ab '.length).trim())
+    if (counts !== null) {
+      branch.ahead = Number(counts[1])
+      branch.behind = Number(counts[2])
+    }
+  }
+}
+
+/**
+ * One path entry in the SAME shape the v1 parser produced: both status columns,
+ * the staged/untracked/conflicted flags, and the original path of a rename.
+ */
+function statusEntry(xy, filePath, origin, unmerged) {
+  const x = xy[0] === '.' ? ' ' : xy[0]
+  const y = xy[1] === '.' ? ' ' : xy[1]
+  return {
+    path: normalizeSeparators(filePath),
+    origin: origin === undefined ? undefined : normalizeSeparators(origin),
+    index: x,
+    worktree: y,
+    staged: x !== ' ' && x !== '?',
+    untracked: x === '?' && y === '?',
+    conflicted: unmerged || (x === 'A' && y === 'A') || (x === 'D' && y === 'D'),
+  }
 }
 
 function classifyEntry(entry) {
@@ -690,6 +787,11 @@ function classifyEntry(entry) {
 }
 
 /* ============================== reads ============================== */
+
+/* These two survive for the callers that genuinely need one field at a time: the
+   workspace scan (describing repos it does not snapshot) and the two index-reset
+   paths (`unstage`, `discard` on an unborn HEAD). The snapshot itself gets
+   head/branch/upstream from its single `status` call instead of spawning twice. */
 
 async function readHead(cwd) {
   const head = await runGit(cwd, ['rev-parse', 'HEAD'], { timeoutMs: 15_000 })
@@ -707,47 +809,77 @@ async function readBranch(cwd) {
   return { name: short.code === 0 ? short.stdout.trim() : '', detached: true }
 }
 
-async function readUpstream(cwd) {
-  const res = await runGit(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { timeoutMs: 15_000 })
-  if (res.code !== 0 || res.stdout.trim() === '') return { upstream: null, ahead: 0, behind: 0 }
-  const upstream = res.stdout.trim()
-  const counts = await runGit(cwd, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`], { timeoutMs: 20_000 })
-  if (counts.code !== 0) return { upstream, ahead: 0, behind: 0 }
-  const [aheadText, behindText] = counts.stdout.trim().split(/\s+/)
-  return { upstream, ahead: Number(aheadText) || 0, behind: Number(behindText) || 0 }
+/**
+ * Resolve the real Git directory from the working tree, WITHOUT a spawn.
+ *
+ * A plain repository has a `.git` directory; a linked worktree, a submodule or a
+ * `--separate-git-dir` checkout has a `.git` FILE holding `gitdir: <path>`
+ * (a relative path is relative to the working tree root). `display` is what
+ * `git rev-parse --git-dir` used to print — `.git` for a plain repository — so
+ * the snapshot JSON is unchanged.
+ */
+function gitDirOf(root) {
+  const dotGit = path.join(root, '.git')
+  let stats
+  try {
+    stats = lstatSync(dotGit)
+  } catch {
+    return { dir: null, display: null }
+  }
+  if (stats.isDirectory()) return { dir: dotGit, display: '.git' }
+  let text = ''
+  try {
+    text = readFileSync(dotGit, 'utf8')
+  } catch {
+    return { dir: null, display: null }
+  }
+  const match = /^\s*gitdir:\s*(.+?)\s*$/m.exec(text)
+  if (match === null) return { dir: null, display: null }
+  const raw = match[1]
+  return {
+    dir: path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(root, raw),
+    display: raw,
+  }
 }
 
-async function readOperation(cwd) {
-  const dir = path.join(cwd, '.git')
-  const exists = (name) => existsSync(path.join(dir, name))
-  if (exists('MERGE_HEAD')) return 'merge'
-  if (exists('rebase-merge') || exists('rebase-apply')) return 'rebase'
-  if (exists('CHERRY_PICK_HEAD')) return 'cherry-pick'
-  if (exists('REVERT_HEAD')) return 'revert'
+/** The in-progress operation, from the marker files in the git dir (no spawn). */
+function operationOf(gitDir) {
+  if (gitDir === null) return null
+  const has = (name) => existsSync(path.join(gitDir, name))
+  if (has('MERGE_HEAD')) return 'merge'
+  if (has('rebase-merge') || has('rebase-apply')) return 'rebase'
+  if (has('CHERRY_PICK_HEAD')) return 'cherry-pick'
+  if (has('REVERT_HEAD')) return 'revert'
   return null
 }
 
-async function readConflictedFiles(cwd) {
-  const res = await runGit(cwd, ['diff', '--name-only', '--diff-filter=U', '-z'], { timeoutMs: 20_000 })
-  if (res.code !== 0 || res.stdout === '') return []
-  return res.stdout.split('\u0000').filter((entry) => entry !== '').map(normalizeSeparators)
-}
-
+/**
+ * One snapshot of a repository, with EXACTLY THREE git processes:
+ *
+ *   1. `status --porcelain=v2 --branch`  head/branch/upstream/ahead-behind,
+ *      the per-path status columns and the conflicted (`u`) records;
+ *   2. `diff --cached --numstat`         staged per-file added/deleted counts;
+ *   3. `diff --numstat`                  unstaged per-file added/deleted counts.
+ *
+ * Everything else (git dir, in-progress operation) is read from disk. The two
+ * numstat calls stay because a status record does not carry line counts.
+ *
+ * This is the UNCACHED read: mutations return it so the panel always sees its
+ * own writes. The poll goes through `readSnapshotOf` below.
+ */
 async function snapshotOf(root) {
-  const [head, branch, upstream, statusRaw, stagedNumstat, worktreeNumstat, merged, conflicted] = await Promise.all([
-    readHead(root),
-    readBranch(root),
-    readUpstream(root),
-    runGit(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=dirty'], { timeoutMs: 30_000 }),
+  const [statusRaw, stagedNumstat, worktreeNumstat] = await Promise.all([
+    runGit(root, [
+      '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '-z',
+      '--untracked-files=all', '--ignore-submodules=dirty',
+    ], { timeoutMs: 30_000 }),
     runGit(root, ['diff', '--cached', '--numstat', '-z'], { timeoutMs: 30_000 }),
     runGit(root, ['diff', '--numstat', '-z'], { timeoutMs: 30_000 }),
-    runGit(root, ['rev-parse', '--git-dir'], { timeoutMs: 15_000 }),
-    readConflictedFiles(root),
   ])
   if (statusRaw.code !== 0) {
     throw new PanelError('status-failed', statusRaw.stderr.trim() || 'git status failed', 409)
   }
-  const rawEntries = parseStatus(statusRaw.stdout)
+  const { entries: rawEntries, branch } = parseStatusV2(statusRaw.stdout)
   const stagedCounts = parseNumstat(stagedNumstat.stdout)
   const worktreeCounts = parseNumstat(worktreeNumstat.stdout)
   const changes = rawEntries.map((entry) => {
@@ -769,25 +901,78 @@ async function snapshotOf(root) {
       unstagedDeleted: unstaged === undefined ? 0 : unstaged.deleted,
     }
   })
-  const operation = await readOperation(root)
+  const gitDir = gitDirOf(root)
+  /* A detached HEAD has no branch name, so the panel shows the short oid — the
+     same string `git rev-parse --short HEAD` used to supply. */
+  const headShort = branch.oid === null ? null : branch.oid.slice(0, 7)
   return {
     root,
-    head: head.hash,
-    headShort: head.short,
-    unborn: head.unborn,
-    branch: branch.name,
+    head: branch.oid,
+    headShort,
+    unborn: branch.unborn,
+    branch: branch.detached ? (headShort === null ? '' : headShort) : branch.name,
     detached: branch.detached,
-    upstream: upstream.upstream,
-    ahead: upstream.ahead,
-    behind: upstream.behind,
+    upstream: branch.upstream,
+    ahead: branch.ahead,
+    behind: branch.behind,
     changes,
-    operation,
-    conflictedFiles: conflicted,
-    gitDir: merged.code === 0 ? merged.stdout.trim() : null,
+    operation: operationOf(gitDir.dir),
+    conflictedFiles: rawEntries.filter((entry) => entry.conflicted).map((entry) => entry.path),
+    gitDir: gitDir.display,
     refreshIntervalMs: hostConfig.refreshIntervalMs,
     defaultDiffView: hostConfig.defaultDiffView,
     truncated: statusRaw.truncated,
   }
+}
+
+/* ============================== snapshot cache ============================== */
+
+/* The panel polls on a timer AND asks for a snapshot after its own actions, so a
+   burst of read-only requests must cost one git round-trip, not one per caller.
+   A read is reused for SNAPSHOT_TTL_MS, and concurrent reads share the in-flight
+   call. Writes never go through here (they call `snapshotOf` directly) and they
+   drop the cache when they finish, so a mutation is never reported stale. */
+const SNAPSHOT_TTL_MS = 400
+/* One retained snapshot per repository viewed: the panel only ever watches one
+   at a time, and this keeps a long session from holding every repository's
+   file list in memory. */
+const SNAPSHOT_CACHE_LIMIT = 8
+const snapshotCache = new Map()
+
+function invalidateSnapshots() {
+  snapshotCache.clear()
+}
+
+function rememberSnapshot(root, entry) {
+  if (snapshotCache.size >= SNAPSHOT_CACHE_LIMIT && snapshotCache.has(root) === false) {
+    const oldest = snapshotCache.keys().next()
+    if (oldest.done !== true) snapshotCache.delete(oldest.value)
+  }
+  snapshotCache.set(root, entry)
+}
+
+function readSnapshotOf(root) {
+  const cached = snapshotCache.get(root)
+  if (cached !== undefined) {
+    if (cached.pending !== undefined) return cached.pending
+    if (Date.now() - cached.at < SNAPSHOT_TTL_MS) return Promise.resolve(cached.value)
+  }
+  const entry = { at: 0, value: null, pending: undefined }
+  rememberSnapshot(root, entry)
+  /* Identity-checked when settling: a write may have replaced or dropped this
+     entry meanwhile, and a stale result must not be cached. */
+  entry.pending = snapshotOf(root).then((value) => {
+    if (snapshotCache.get(root) === entry) {
+      entry.at = Date.now()
+      entry.value = value
+      entry.pending = undefined
+    }
+    return value
+  }, (error) => {
+    if (snapshotCache.get(root) === entry) snapshotCache.delete(root)
+    throw error
+  })
+  return entry.pending
 }
 
 function parseNumstat(raw) {
@@ -1126,9 +1311,10 @@ const METHODS = {
     }
   },
 
+  /** The poll endpoint: read-only, so it shares the short-lived snapshot cache. */
   async snapshot(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    return snapshotOf(root)
+    return readSnapshotOf(root)
   },
 
   /**
@@ -1223,7 +1409,8 @@ const METHODS = {
 
   async status(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    return snapshotOf(root)
+    /* Read-only, like `snapshot`: both coalesce with the poll. */
+    return readSnapshotOf(root)
   },
 
   async log(payload) {
@@ -1378,17 +1565,29 @@ const METHODS = {
     const snapshot = await snapshotOf(root)
     const byPath = new Map(snapshot.changes.map((entry) => [entry.path, entry]))
     const tracked = []
+    const conflicted = []
     const untracked = []
     for (const filePath of paths) {
       const entry = byPath.get(filePath)
       if (entry === undefined) continue
       if (entry.untracked) untracked.push(filePath)
+      else if (entry.conflicted) conflicted.push(filePath)
       else tracked.push(filePath)
     }
-    if (tracked.length > 0) {
+    if (tracked.length > 0 || conflicted.length > 0) {
       const head = await readHead(root)
-      if (head.unborn) await git(root, ['rm', '--cached', '--quiet', '--', ...tracked])
-      else await git(root, ['restore', '--worktree', '--', ...tracked])
+      /* An unmerged path has no index/worktree version to restore from: plain
+         `git restore --worktree` refuses it with `path '<p>' is unmerged`. The
+         source form rewrites BOTH sides from HEAD, which is what "discard" means
+         here and also drops the unmerged stage entries (the conflict markers). */
+      if (conflicted.length > 0) {
+        if (head.unborn) await git(root, ['rm', '--cached', '--quiet', '--', ...conflicted])
+        else await git(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...conflicted])
+      }
+      if (tracked.length > 0) {
+        if (head.unborn) await git(root, ['rm', '--cached', '--quiet', '--', ...tracked])
+        else await git(root, ['restore', '--worktree', '--', ...tracked])
+      }
     }
     for (const filePath of untracked) {
       const absolute = path.join(root, filePath)
@@ -2045,10 +2244,29 @@ export function apply(ctx, config) {
     prefix: ROUTE_PREFIX,
     methods: METHODS,
     maxBodyBytes: MAX_BODY_BYTES,
-    /* Write methods run serialised per repository; reads never take the lock. */
-    run: (method, payload, invoke) => (WRITE_METHODS.has(method)
-      ? withRepoLock(lockKeyOf(payload), invoke)
-      : invoke()),
+    /* Write methods run serialised per repository; reads never take the lock.
+       A write also drops the read snapshot cache when it finishes: the panel
+       must not see the state from before its own action for up to a TTL. The
+       snapshot a write RETURNS is built by `snapshotOf` directly, so it is
+       always read from git after the write, never from the cache.
+       Reads that are not the snapshot probe (`log`, `diff`, `branches`, ...)
+       drop it too: a caller that moved on to another call is no longer the
+       poll burst the cache exists for, and the state it asks about next may
+       have moved (a git command run outside this plugin updates nothing the
+       cache can see). Only `snapshot`/`status` may reuse a recent read. */
+    run: (method, payload, invoke) => {
+      if (WRITE_METHODS.has(method)) {
+        return withRepoLock(lockKeyOf(payload), async () => {
+          try {
+            return await invoke()
+          } finally {
+            invalidateSnapshots()
+          }
+        })
+      }
+      if (method !== 'snapshot' && method !== 'status') invalidateSnapshots()
+      return invoke()
+    },
     label: 'dsh-gitcraft',
   })
   /* The native right-sidebar seat has no cwd to send, so the host resolves the

@@ -339,6 +339,44 @@ test('mergeAbort restores the pre-merge state', async () => {
   assert.equal(readText(path.join(repo, 'conflict.txt')), 'main2 side\n')
 })
 
+test('discard restores a conflicted path to its HEAD version', async () => {
+  /* Regression: `git restore --worktree -- <path>` refuses an unmerged path with
+     "error: path '<p>' is unmerged", so discarding a conflicted file always
+     failed. Discard must rewrite index AND worktree from HEAD for those paths. */
+  sh(repo, ['checkout', '-q', '-b', 'discard-topic', 'main'])
+  writeFileSync(path.join(repo, 'unmerged.txt'), 'topic discard\n')
+  sh(repo, ['add', 'unmerged.txt'])
+  sh(repo, ['commit', '-q', '-m', 'feat: unmerged.txt on the topic side'])
+  sh(repo, ['checkout', '-q', 'main'])
+  writeFileSync(path.join(repo, 'unmerged.txt'), 'main discard\n')
+  sh(repo, ['add', 'unmerged.txt'])
+  sh(repo, ['commit', '-q', '-m', 'feat: unmerged.txt on main'])
+  const headContent = readText(path.join(repo, 'unmerged.txt'))
+
+  const merged = await call('merge', { cwd: repo, rev: 'discard-topic' })
+  assert.equal(merged.ok, true, JSON.stringify(merged))
+  assert.equal(merged.data.conflicted, true)
+  assert.ok(merged.data.snapshot.conflictedFiles.includes('unmerged.txt'), 'merge left a UU path')
+  const before = merged.data.snapshot.changes.find((entry) => entry.path === 'unmerged.txt')
+  assert.ok(before !== undefined)
+  assert.equal(before.conflicted, true)
+  assert.equal(before.kind, 'conflicted')
+
+  const out = await call('discard', { cwd: repo, paths: ['unmerged.txt'] })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(out.data.conflictedFiles, [], 'no unmerged path is left')
+  assert.equal(out.data.changes.some((entry) => entry.path === 'unmerged.txt'), false, 'path is clean')
+  assert.equal(out.data.operation, 'merge', 'the merge is still in progress, only the conflict is gone')
+  assert.equal(sh(repo, ['status', '--porcelain', '--', 'unmerged.txt']).trim(), '')
+  assert.equal(sh(repo, ['diff', '--name-only', '--diff-filter=U']).trim(), '', 'no unmerged index stages')
+  assert.equal(readText(path.join(repo, 'unmerged.txt')), headContent, "file content is HEAD's version")
+
+  // Leave the shared fixture repository the way this test found it.
+  sh(repo, ['merge', '--abort'])
+  sh(repo, ['checkout', '-q', 'main'])
+  sh(repo, ['branch', '-D', 'discard-topic'])
+})
+
 test('reset requires confirmation for --hard', async () => {
   const bad = await call('reset', { cwd: repo, rev: 'HEAD~1', mode: 'hard' })
   assert.equal(bad.ok, false)

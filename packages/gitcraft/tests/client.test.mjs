@@ -65,7 +65,7 @@ function textOf(node) {
 }
 
 /** Boot the bundle the way the DSH client module loader does. */
-function boot({ betterSidebar, native, locale, dock }) {
+function boot({ betterSidebar, native, locale, dock, react, fetch }) {
   const activeLocale = locale === undefined ? 'en' : locale
   const registered = []
   const styleTags = []
@@ -83,7 +83,7 @@ function boot({ betterSidebar, native, locale, dock }) {
     __ModuleLoader__: {
       load({ id, factory }) {
         assert.equal(id, 'dsh-gitcraft')
-        const React = makeReact()
+        const React = react === undefined ? makeReact() : react()
         const require = (name) => {
           if (name === 'react') return React
           throw new Error('unexpected require: ' + name)
@@ -128,7 +128,8 @@ function boot({ betterSidebar, native, locale, dock }) {
   }
   // eslint-disable-next-line no-new-func
   const factoryFn = new Function('window', 'document', 'navigator', 'fetch', source)
-  factoryFn(window, document, { language: 'en-US' }, async () => { throw new Error('no network in tests') })
+  const noNetwork = async () => { throw new Error('no network in tests') }
+  factoryFn(window, document, { language: 'en-US' }, fetch === undefined ? noNetwork : fetch)
   const entry = registered[0]
   entry.mod.apply(ctx)
   return { registered, effects, injections, styleTags, ctx, React: entry.React }
@@ -349,3 +350,336 @@ test('the picker takes drive roots from the host, not from a hard-coded list', (
   assert.ok(source.includes('listing.drives'), 'drives come from the browse response')
   assert.ok(source.indexOf('String.fromCharCode(code)') === -1, 'no hard-coded C..Z drive loop in the client')
 })
+
+/* ========================================================================
+ * Refresh behaviour (the reported "History does not refresh after pull" bug).
+ *
+ * The React stand-in above never runs effects, so it cannot observe a revision
+ * bump. These tests mount the real Panel with a small hook runtime instead:
+ * state updates re-render, effects run when their deps change, and a scripted
+ * fetch answers `snapshot` / `log` / `branches` while holding `watch` open —
+ * exactly the `/watch` long-poll the host exposes. A "pull" is then simulated
+ * by resolving that long-poll with `changed: true` after moving HEAD.
+ * ===================================================================== */
+
+/** A tiny hook-capable React stand-in: enough for the GitCraft panel. */
+function makeHookReact() {
+  const runtime = {
+    instances: new Map(),
+    current: null,
+    dirty: false,
+    root: null,
+    elements: [],
+    textParts: [],
+  }
+  const sameDeps = (previous, next) => {
+    if (!Array.isArray(previous) || !Array.isArray(next)) return false
+    if (previous.length !== next.length) return false
+    for (let index = 0; index < previous.length; index += 1) {
+      if (!Object.is(previous[index], next[index])) return false
+    }
+    return true
+  }
+  const React = {
+    Fragment: 'FRAGMENT',
+    createElement(type, props, ...children) {
+      return { type, props: props === null || props === undefined ? {} : props, children: children.flat() }
+    },
+    useState(initial) {
+      const instance = runtime.current
+      const index = instance.index++
+      if (!(index in instance.hooks)) instance.hooks[index] = typeof initial === 'function' ? initial() : initial
+      const setValue = (next) => {
+        const previous = instance.hooks[index]
+        const value = typeof next === 'function' ? next(previous) : next
+        if (Object.is(value, previous)) return
+        instance.hooks[index] = value
+        runtime.dirty = true
+      }
+      return [instance.hooks[index], setValue]
+    },
+    useRef(initial) {
+      const instance = runtime.current
+      const index = instance.index++
+      if (!(index in instance.hooks)) instance.hooks[index] = { current: initial }
+      return instance.hooks[index]
+    },
+    useMemo(factory, deps) {
+      const instance = runtime.current
+      const index = instance.index++
+      const previous = instance.hooks[index]
+      if (previous !== undefined && sameDeps(previous.deps, deps)) return previous.value
+      const value = factory()
+      instance.hooks[index] = { value, deps }
+      return value
+    },
+    useCallback(fn, deps) {
+      const instance = runtime.current
+      const index = instance.index++
+      const previous = instance.hooks[index]
+      if (previous !== undefined && sameDeps(previous.deps, deps)) return previous.fn
+      instance.hooks[index] = { fn, deps }
+      return fn
+    },
+    useEffect(fn, deps) {
+      const instance = runtime.current
+      const index = instance.index++
+      const previous = instance.hooks[index]
+      if (previous !== undefined && sameDeps(previous.deps, deps)) return
+      instance.hooks[index] = { deps, cleanup: previous === undefined ? undefined : previous.cleanup }
+      instance.pending.push({ index, fn })
+    },
+    memo(fn) { return fn },
+  }
+  runtime.React = React
+
+  const renderNode = (node, path) => {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (typeof node === 'string' || typeof node === 'number') {
+      runtime.textParts.push(String(node))
+      return
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child, index) => renderNode(child, path + '.' + index))
+      return
+    }
+    if (typeof node !== 'object' || node.type === undefined) return
+    if (node.type === React.Fragment) {
+      renderNode(node.children, path + '.f')
+      return
+    }
+    if (typeof node.type === 'function') {
+      const name = node.type.name === '' ? 'anonymous' : node.type.name
+      const key = path + ':' + name
+      let instance = runtime.instances.get(key)
+      if (instance === undefined) {
+        instance = { key, index: 0, hooks: [], pending: [] }
+        runtime.instances.set(key, instance)
+      }
+      instance.index = 0
+      instance.pending = []
+      const previous = runtime.current
+      runtime.current = instance
+      let output
+      try {
+        output = node.type({ ...node.props, children: node.children.length === 1 ? node.children[0] : node.children })
+      } finally {
+        runtime.current = previous
+      }
+      renderNode(output, path + '>' + name)
+      return
+    }
+    runtime.elements.push(node)
+    renderNode(node.children, path)
+  }
+
+  runtime.render = () => {
+    let passes = 0
+    do {
+      passes += 1
+      if (passes > 50) throw new Error('hook runtime did not settle')
+      runtime.dirty = false
+      runtime.elements = []
+      runtime.textParts = []
+      renderNode(runtime.root, 'root')
+      for (const instance of runtime.instances.values()) {
+        const pending = instance.pending
+        instance.pending = []
+        for (const effect of pending) {
+          const slot = instance.hooks[effect.index]
+          if (slot !== undefined && typeof slot.cleanup === 'function') slot.cleanup()
+          const cleanup = effect.fn()
+          if (slot !== undefined) slot.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+        }
+      }
+    } while (runtime.dirty)
+  }
+
+  /** Let scripted fetches / the watch loop settle, re-rendering on state changes. */
+  runtime.flush = async () => {
+    for (let tick = 0; tick < 30; tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      if (runtime.dirty) runtime.render()
+    }
+  }
+  runtime.text = () => runtime.textParts.join(' ')
+
+  return runtime
+}
+
+/** Raw text of an element tree WITHOUT executing function components. */
+function rawText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (Array.isArray(node)) return node.map(rawText).join(' ')
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (typeof node !== 'object') return ''
+  return rawText(node.children)
+}
+
+function clickNav(runtime, label) {
+  const button = runtime.elements.find((element) => {
+    const className = element.props.className
+    return typeof element.props.onClick === 'function'
+      && typeof className === 'string'
+      && className.startsWith('gwc-navBtn')
+      && rawText(element).includes(label)
+  })
+  assert.ok(button !== undefined, 'nav button for ' + label)
+  button.props.onClick()
+}
+
+/**
+ * Scripted host: snapshot head/subject are mutable, `log` returns the current
+ * head as one commit, `watch` parks until the test resolves it ("the repository
+ * changed"). No timers are used, so a pending watch promise cannot leak.
+ */
+function makeFixture() {
+  const state = {
+    head: 'a'.repeat(40),
+    subject: 'before pull',
+    logCalls: 0,
+    branchCalls: 0,
+    failLog: false,
+    watchResolvers: [],
+  }
+  const reply = (body) => ({ status: 200, json: async () => body })
+  const snapshot = () => ({
+    root: 'D:\\repo',
+    head: state.head,
+    headShort: state.head.slice(0, 7),
+    unborn: false,
+    branch: 'main',
+    detached: false,
+    upstream: 'origin/main',
+    ahead: 0,
+    behind: 0,
+    changes: [],
+    operation: null,
+    conflictedFiles: [],
+    gitDir: null,
+    refreshIntervalMs: 5000,
+    defaultDiffView: 'unified',
+    truncated: false,
+  })
+  const fetchStub = (url) => {
+    const method = String(url).split('/').pop()
+    if (method === 'snapshot') return Promise.resolve(reply({ ok: true, data: snapshot() }))
+    if (method === 'watch') {
+      return new Promise((resolve) => {
+        state.watchResolvers.push((result) => resolve(reply({ ok: true, data: result })))
+      })
+    }
+    if (method === 'log') {
+      state.logCalls += 1
+      if (state.failLog) {
+        return Promise.resolve(reply({ ok: false, error: { code: 'network', message: 'transient git failure' } }))
+      }
+      return Promise.resolve(reply({
+        ok: true,
+        data: {
+          commits: [{
+            hash: state.head,
+            short: state.head.slice(0, 7),
+            subject: state.subject,
+            parents: [],
+            refs: [],
+            authorName: 'tester',
+            authorTime: 0,
+          }],
+          hasMore: false,
+        },
+      }))
+    }
+    if (method === 'branches') {
+      state.branchCalls += 1
+      return Promise.resolve(reply({ ok: true, data: { branches: [] } }))
+    }
+    return Promise.resolve(reply({ ok: true, data: {} }))
+  }
+  state.resolveWatch = (result) => {
+    const resolvers = state.watchResolvers
+    state.watchResolvers = []
+    for (const resolve of resolvers) resolve(result)
+  }
+  return { state, fetch: fetchStub }
+}
+
+/** Mount the registered page with the hook runtime. */
+async function mountPanel() {
+  const fixture = makeFixture()
+  const runtime = makeHookReact()
+  const dock = { pages: [], registerPage(page) { this.pages.push(page); return () => {} }, list() { return this.pages }, subscribe() { return () => {} } }
+  const booted = boot({ betterSidebar: undefined, native: undefined, dock, react: () => runtime.React, fetch: fixture.fetch })
+  runtime.root = dock.pages[0].component({ ctx: booted.ctx, sessionId: 's1', cwd: 'D:\\repo' })
+  runtime.render()
+  await runtime.flush()
+  return { fixture, runtime }
+}
+
+test('History reloads when the watched revision moves while it is active', async () => {
+  const { fixture, runtime } = await mountPanel()
+  /* Nothing is fetched eagerly: History is not the active view. */
+  assert.equal(fixture.state.logCalls, 0, 'History must not load while inactive')
+
+  clickNav(runtime, 'History')
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 1, 'activation loads the commit list once')
+  assert.match(runtime.text(), /before pull/)
+
+  /* A pull / external commit moves HEAD; the long-poll reports it. */
+  fixture.state.head = 'b'.repeat(40)
+  fixture.state.subject = 'after pull'
+  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 2, 'exactly one reload for the new revision')
+  assert.match(runtime.text(), /after pull/, 'the commit list shows the new HEAD')
+  assert.doesNotMatch(runtime.text(), /before pull/)
+
+  /* The same revision reported again must NOT reload (burst coalescing). */
+  fixture.state.resolveWatch({ supported: true, revision: 2, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 2, 'a repeated revision does not reload')
+})
+
+test('an inactive History view reloads lazily on activation, and so do branches', async () => {
+  const { fixture, runtime } = await mountPanel()
+
+  fixture.state.head = 'c'.repeat(40)
+  fixture.state.subject = 'pulled while on Changes'
+  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 0, 'no eager fetch while History is inactive')
+  assert.equal(fixture.state.branchCalls, 0, 'no eager fetch while Branches is inactive')
+
+  clickNav(runtime, 'History')
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 1, 'activation picks up the missed revision')
+  assert.match(runtime.text(), /pulled while on Changes/)
+
+  clickNav(runtime, 'Branches')
+  await runtime.flush()
+  assert.equal(fixture.state.branchCalls, 1, 'the branch/tag list refreshes on activation')
+})
+
+test('a failed History reload keeps the previous commits and shows the error', async () => {
+  const { fixture, runtime } = await mountPanel()
+  clickNav(runtime, 'History')
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 1)
+  assert.match(runtime.text(), /before pull/)
+
+  fixture.state.failLog = true
+  fixture.state.head = 'd'.repeat(40)
+  fixture.state.subject = 'never rendered'
+  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 2, 'the revision triggered a reload attempt')
+  assert.match(runtime.text(), /before pull/, 'the previous list is kept on failure')
+  assert.doesNotMatch(runtime.text(), /never rendered/)
+  assert.match(runtime.text(), /transient git failure/, 'the existing error toast is shown')
+
+  /* A failed revision is not retried in a loop. */
+  await runtime.flush()
+  assert.equal(fixture.state.logCalls, 2, 'no retry storm after a failed reload')
+})
+

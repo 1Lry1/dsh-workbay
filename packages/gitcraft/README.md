@@ -222,9 +222,23 @@ pwsh tests/fixture-coverage.ps1 -Repo D:\tmp\covrepo
 
 ### 一个环境事实：这台机器上单次 git 调用约 1.5–1.9 秒
 
-所以路径实时校验（`verifyPath`）从 3 次 git 调用精简为 **1 次**，
-并把仓库分支/HEAD 的获取移到打开仓库之后（快照里本来就有）。
-校验期间按钮显示「正在检查…」，这是 git 进程启动成本，不是逻辑卡住。
+所以「一次刷新要起几个 git 进程」直接决定面板手感。快照原先要 **9 个**进程
+（`rev-parse HEAD`、`symbolic-ref`、`rev-parse @{upstream}` + `rev-list`、`status`、
+两次 `--numstat`、`rev-parse --git-dir`、`diff --diff-filter=U`），现在只剩 **3 个**：
+一次 `git status --porcelain=v2 --branch`（HEAD / 分支 / 上游 / ahead-behind / 冲突全在里面）、
+两次 `--numstat`。`gitDir` 和「进行中的操作」直接从 `.git` 读文件得出，不再 spawn。
+外面再包一层 400ms 快照缓存 + 同请求合并：`snapshot` / `status` 并发时只跑一次，
+任何写操作（以及任意一次非读调用）都会在 `finally` 里清掉缓存，缓存不会掩盖外部改动。
+
+本机小仓库实测：
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 连续 10 次快照（轮询 + UI 调用） | 479 ms / 10 个 git 进程每次 | 134 ms / 约 1.6 个 |
+| 缓存过期后的冷读 6 次 | 458 ms / 10 个 | 261 ms / 4 个 |
+
+3 个进程彼此并行，剩下的成本主要是 git 进程启动本身。
+路径实时校验（`verifyPath`）仍是 1 次 git 调用，校验期间按钮显示「正在检查…」。
 
 ## 变更视图：列表与 diff 独立滚动
 
@@ -267,7 +281,8 @@ pwsh tests/fixture-coverage.ps1 -Repo D:\tmp\covrepo
 ## 已知限制
 
 - 交互式变基（`rebase -i`）、三方合并编辑器、submodule / LFS 管理尚未实现（冲突可用 ours/theirs/标记解决 + 继续，或去终端）。
-- 刷新为 15 秒轮询 + 操作后立即刷新，无文件系统监听。
+- 刷新靠 `/watch` 长轮询（文件系统不支持递归监听时退回慢轮询）+ 操作后立即刷新；快照带 400ms 缓存。
+- 外部进程只改 ref、且不改变快照任何字段时（例如在终端里 `git tag v1`），历史页与分支列表要等下一次 HEAD 变化或手动点「刷新」。这是快照形状的边界，不是漏了监听。
 - 尚未发布 npm，仅支持本地目录安装。
 
 ## License
