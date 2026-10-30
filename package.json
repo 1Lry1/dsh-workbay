@@ -13,6 +13,8 @@
     "test": "pnpm -r --if-present run test",
     "test:kit": "pnpm --filter @dsh-workbay/kit run test",
     "test:gitcraft": "pnpm --filter dsh-gitcraft run test",
-    "install:profile": "pwsh -File scripts/refresh-profile.ps1"
+    "install:profile": "pwsh -File scripts/refresh-profile.ps1",
+    "update": "pwsh -File scripts/update-from-github.ps1",
+    "update:fast": "pwsh -File scripts/update-from-github.ps1 -SkipTests"
   }
 }
