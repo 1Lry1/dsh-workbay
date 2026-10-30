@@ -91,6 +91,20 @@ After installing, **restart DSH**; a "Workbench" entry appears in the left sideb
 
 > `@dsh-workbay/kit` must be resolvable by the DSH runtime: it is imported by the host halves of dock and gitcraft, so it has to be present in the profile's `node_modules`. `pnpm install` installs it automatically as a `file:` dependency; copying plugin directories by hand easily misses it, which shows up as the host half failing to load.
 
+### Updating from GitHub
+
+The profile installs from this local clone (`file:` dependencies are copies, not links), so "use the GitHub version" means: pull the clone, then reinstall the profile.
+
+```powershell
+# 1) quit DSH completely (not minimized)
+# 2) in the clone:
+cd <repo>
+pnpm run update          # git fetch + ff-only + tests + reinstall the profile
+pnpm run update:fast     # same, skipping the tests
+```
+
+`pnpm run update` only fast-forwards: it refuses a dirty working tree or local commits instead of merging. Like `install:profile`, it aborts while DSH or `AbSerialHost.exe` / `DownloaderIpcBridge.exe` still holds the plugin files (pnpm reports `ERR_PNPM_EPERM`).
+
 ## Development
 
 ```powershell

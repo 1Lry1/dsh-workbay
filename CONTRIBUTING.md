@@ -103,6 +103,17 @@ still alive, and verifies afterwards that `@dsh-workbay/kit` landed in the
 profile (a profile that copied only the plugin folders crashes on that import).
 Restart DSH after it succeeds.
 
+To pick up what is on GitHub rather than your local edits:
+
+```powershell
+pnpm run update        # fetch + fast-forward + tests, then reinstall the profile
+pnpm run update:fast   # same without the test run
+```
+
+`scripts/update-from-github.ps1` only ever fast-forwards — a dirty tree or local
+commits make it stop instead of merging — and it leaves the profile untouched if
+the suite fails.
+
 ## Two hard constraints
 
 These decide the shape of the repository; a patch that breaks them will be

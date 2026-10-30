@@ -91,6 +91,21 @@ pnpm install            # 或 dsh plugin --profile desktop add file:...
 
 > `@dsh-workbay/kit` 必须能被 DSH 的运行时解析到：它被 dock 和 gitcraft 的 host 半侧 import，所以 profile 的 `node_modules` 里要有它。用 `pnpm install` 时 pnpm 会按 `file:` 依赖自动装好；手工拷贝插件目录时容易漏，表现为 host 半侧加载失败。
 
+### 更新到最新版（从 GitHub）
+
+插件以本机克隆为安装源（`file:` 是拷贝，不是软链），所以「用 GitHub 上的版本」= 拉取克隆 + 重装 profile：
+
+```powershell
+# 1) 完全退出 DSH（不是最小化）
+# 2) 在克隆目录里：
+cd <repo>
+pnpm run update          # git fetch + ff-only + 跑测试 + 重装 profile
+pnpm run update:fast     # 同上，跳过测试
+```
+
+`pnpm run update` 只做 fast-forward：工作区脏或有本地提交时会拒绝执行，不会偷偷合并。
+它和 `install:profile` 一样会在 DSH 还开着、或 `AbSerialHost.exe` / `DownloaderIpcBridge.exe` 还占着文件时中止（pnpm 会报 `ERR_PNPM_EPERM`）。
+
 ## 开发
 
 ```powershell
