@@ -64,11 +64,12 @@ async function call(method, payload) {
 
 before(async () => {
   sandbox = mkdtempSync(path.join(tmpdir(), 'gwc-ws-'))
-  /* GitHub's Windows runners hand out TMP as an 8.3 short path
-     (C:\Users\RUNNER~1\...), while git reports the long form. The host now
-     canonicalises before comparing; pin the fixture to its long form too so a
-     regression in that comparison cannot be masked by the fixture layout. */
-  sandbox = realpathSync(sandbox)
+  /* Pin the fixture to the canonical LONG path. `realpathSync.native` goes
+     through a file handle and expands an 8.3 short name; the portable variant
+     leaves `C:\Users\RUNNER~1\...` alone, and then assertions that compare a
+     path handed to the plugin with the path git reports would fail on CI for a
+     reason that has nothing to do with the code under test. */
+  sandbox = typeof realpathSync.native === 'function' ? realpathSync.native(sandbox) : realpathSync(sandbox)
   // A workspace that is NOT itself a repository and holds several repositories
   // at different depths, plus decoys that must be skipped.
   workspace = path.join(sandbox, 'workspace')
@@ -249,6 +250,51 @@ test('browse still refuses a non-absolute or unreadable directory', async () => 
   const asDir = await call('browse', { cwd: workspace, dir: file })
   assert.equal(asDir.ok, false)
   assert.equal(asDir.error.code, 'browse-failed')
+})
+
+test('an 8.3 short path resolves to the same repositories', async (t) => {
+  /* GitHub's Windows runners keep TMP under C:\Users\RUNNER~1, while
+     `git rev-parse --show-toplevel` always answers with the long form. If the
+     host compares those strings without canonicalising first, the scan silently
+     returns no repositories — that exact difference made CI red while the same
+     suite was green on a developer machine. */
+  if (process.platform !== 'win32') return t.skip('8.3 short names are a Windows concept')
+
+  let shortWorkspace = ''
+  try {
+    /* `for %I ... %~sI` is unreliable when cmd.exe is spawned without a shell;
+       the FileSystemObject reports the short name directly. Ask for the short
+       form of the WORKSPACE, not of the sandbox that contains it. */
+    const escaped = workspace.replace(/'/g, "''")
+    shortWorkspace = execFileSync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${escaped}').ShortPath`],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim()
+  } catch {
+    return t.skip('could not query the 8.3 short name')
+  }
+  if (shortWorkspace === '' || shortWorkspace.toLowerCase() === workspace.toLowerCase()) {
+    return t.skip('8.3 short names are disabled on this volume')
+  }
+
+  const scanned = await call('workspace', { cwd: shortWorkspace })
+  assert.equal(scanned.ok, true, JSON.stringify(scanned).slice(0, 300))
+  assert.deepEqual(
+    scanned.data.repos.map((entry) => entry.relative).sort(),
+    ['app', 'deep/a/b/inner', 'libs/core', 'libs/ui'],
+  )
+
+  const browsed = await call('browse', { cwd: shortWorkspace, dir: shortWorkspace })
+  assert.equal(browsed.ok, true)
+  assert.ok(browsed.data.dirs.some((entry) => entry.name === 'app' && entry.isRepo === true),
+    JSON.stringify(browsed.data.dirs))
+
+  const picked = await call('verifyPath', { cwd: shortWorkspace, path: path.join(shortWorkspace, 'app') })
+  assert.equal(picked.ok, true)
+  assert.equal(picked.data.isRepo, true)
+  assert.equal(picked.data.isTop, true)
 })
 
 test('the scan honours the skip list at every depth, not only the first level', async () => {

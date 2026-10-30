@@ -48,4 +48,19 @@ try {
 $kit = Join-Path $profileDir 'node_modules\@dsh-workbench\kit\package.json'
 if (-not (Test-Path $kit)) { throw '@dsh-workbench/kit is missing from the profile — the dock and gitcraft hosts would fail to load' }
 
+# Leftover plugin copies from a migration or a rename (e.g. dsh-downloader.old-*)
+# are only deletable once DSH and its helpers have exited, which is exactly the
+# precondition this script already enforces.
+$pluginsDir = Join-Path $env:USERPROFILE '.dsh\plugins'
+if (Test-Path $pluginsDir) {
+  foreach ($stale in Get-ChildItem $pluginsDir -Directory -Filter '*.old-*' -ErrorAction SilentlyContinue) {
+    try {
+      Remove-Item $stale.FullName -Recurse -Force
+      Write-Host "removed stale plugin copy $($stale.Name)"
+    } catch {
+      Write-Warning "could not remove $($stale.Name): $($_.Exception.Message)"
+    }
+  }
+}
+
 Write-Host 'ok — restart DSH to load the new code' -ForegroundColor Green
