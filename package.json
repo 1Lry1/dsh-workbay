@@ -19,7 +19,8 @@
                     "install:profile":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1",
                     "update":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1",
                     "update:fast":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1 -SkipTests",
-                    "profile:snippet":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/print-profile-snippet.ps1"
+                    "profile:snippet":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/print-profile-snippet.ps1",
+                    "smoke:e2e":  "node scripts/smoke-e2e.mjs"
                 },
     "devDependencies":  {
                             "@codemirror/commands":  "^6.11.1",

@@ -13,6 +13,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -155,6 +156,11 @@ function chunkRequest(chunkName, init) {
 
 before(async () => {
   sandbox = mkdtempSync(path.join(tmpdir(), 'kwbk-files-'))
+  /* Canonicalise the sandbox: GitHub's Windows runners expose TMP as an 8.3
+     short path (C:\Users\RUNNER~1\...), while the host answers with the real
+     long form (`realpathSync.native`) — comparing them as strings is a CI-only
+     failure unrelated to the code under test. */
+  sandbox = typeof realpathSync.native === 'function' ? realpathSync.native(sandbox) : realpathSync(sandbox)
   ws = path.join(sandbox, 'ws')
   outside = path.join(sandbox, 'outside')
   chunksDir = path.join(sandbox, 'chunks')

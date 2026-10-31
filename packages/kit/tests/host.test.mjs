@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -202,8 +202,13 @@ test('badRequest is a 400 ApiError', () => {
 /** Run `fn` against a throwaway sandbox and always clean it up. */
 function withSandbox(fn) {
   const sandbox = mkdtempSync(path.join(tmpdir(), 'kwbk-kit-'))
+  /* Canonicalise the sandbox: GitHub's Windows runners hand out TMP as an 8.3
+     short path (C:\Users\RUNNER~1\...), while `resolveInside` returns the real
+     long form (`realpathSync.native`). Comparing the two as strings would fail
+     on CI for a reason that has nothing to do with the helper. */
+  const canonical = typeof realpathSync.native === 'function' ? realpathSync.native(sandbox) : realpathSync(sandbox)
   try {
-    return fn(sandbox)
+    return fn(canonical)
   } finally {
     rmSync(sandbox, { recursive: true, force: true })
   }

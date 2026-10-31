@@ -80,6 +80,12 @@ jobs:
       - name: Run tests
         run: pnpm -r --if-present run test
 
+      # No DSH, no browser: boots the files + terminal bundles on a local HTTP
+      # server against this checkout and exercises tree/read/write/media/chunk
+      # and start/echo/stop — the same paths the pages take, minus the DOM.
+      - name: End-to-end smoke (no UI)
+        run: pnpm run smoke:e2e
+
   syntax:
     runs-on: ubuntu-latest
 
