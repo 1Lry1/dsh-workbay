@@ -1477,8 +1477,9 @@ test('real PTY: two sessions run independently', async (t) => {
     await secondStream.waitFor((event) => event.type === 'hello')
     await bootReal.call('input', { id: first.id, data: "Write-Output ('ONE-' + 1)\r" })
     await bootReal.call('input', { id: second.id, data: "Write-Output ('TWO-' + 2)\r" })
-    await firstStream.waitFor(outContains('ONE-1'), 30_000)
-    await secondStream.waitFor(outContains('TWO-2'), 30_000)
+    /* Two concurrent shells plus a cold runner: give each PTY a full minute. */
+    await firstStream.waitFor(outContains('ONE-1'), 60_000)
+    await secondStream.waitFor(outContains('TWO-2'), 60_000)
     assert.equal(firstStream.has(outContains('TWO-2')), false, 'PTY sessions must not share output')
     assert.equal(secondStream.has(outContains('ONE-1')), false, 'PTY sessions must not share output')
   } finally {
