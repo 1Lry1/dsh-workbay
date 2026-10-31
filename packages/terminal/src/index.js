@@ -130,28 +130,31 @@ function normalizeConfig(raw) {
  * The fixed argument vector for a shell family. Nothing here is derived from
  * request data.
  *
- * PowerShell gets an explicit read-eval loop instead of `-Command -`: that flag
- * is documented to read command text from stdin, but how much it buffers before
- * executing depends on the host (a piped stdin on a CI runner behaved
- * differently from a developer box, and the echo test timed out there). The loop
- * reads one line, evaluates it, and flushes, so a command's output is observable
- * as soon as it finishes. `-NonInteractive` keeps it from asking for input and
- * `OutputEncoding` pins stdout to UTF-8, which is what the SSE decoder expects
- * (Windows PowerShell 5.1 otherwise emits the OEM/ANSI code page).
+ * PowerShell gets an explicit read-eval loop, passed with `-EncodedCommand`
+ * (base64 of the script) rather than `-Command <multiline>`: the latter depends
+ * on how the host quotes a multi-line argv and on `[Console]::In` seeing
+ * redirected stdin — a piped stdin on a CI runner did not execute at all there
+ * while the same code worked on a developer box. Reading `OpenStandardInput()`
+ * through a StreamReader is the documented way to consume a redirected pipe.
+ * `-NonInteractive` keeps it from prompting, and `OutputEncoding` pins stdout to
+ * UTF-8, which is what the SSE decoder expects (Windows PowerShell 5.1 otherwise
+ * emits the OEM code page).
  */
 const POWERSHELL_REPL = [
   '$ErrorActionPreference = "Continue"',
   '$ProgressPreference = "SilentlyContinue"',
   'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+  '$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)',
   'while ($true) {',
-  '  $line = [Console]::In.ReadLine()',
+  '  $line = $reader.ReadLine()',
   '  if ($null -eq $line) { break }',
   '  try { Invoke-Expression $line } catch { Write-Error $_ }',
   '  [Console]::Out.Flush()',
   '}',
 ].join('\n')
 
-const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', POWERSHELL_REPL]
+const POWERSHELL_ENCODED = Buffer.from(POWERSHELL_REPL, 'utf16le').toString('base64')
+const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', POWERSHELL_ENCODED]
 const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 
 function resolveShell(configured) {

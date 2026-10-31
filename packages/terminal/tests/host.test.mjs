@@ -308,8 +308,16 @@ test('the SSE stream carries the output of a command written to stdin', async ()
 
     const output = await stream.waitFor(
       (event) => event.type === 'out' && typeof event.data === 'string' && event.data.includes('workbay-ok'),
-      15_000,
-    )
+      20_000,
+    ).catch(async (error) => {
+      /* CI-only failures need evidence, not just "timed out": a shell that died
+         on startup shows up as an exit/error event and an empty session list. */
+      let sessions = null
+      try { sessions = (await bootA.call('list', {})).data } catch { /* ignore */ }
+      throw new Error(
+        `${error.message}; lastEvents=${JSON.stringify(stream.events.slice(-8))}; sessions=${JSON.stringify(sessions)}`,
+      )
+    })
     assert.ok(output.data.length > 0)
   } finally {
     stream.close()
