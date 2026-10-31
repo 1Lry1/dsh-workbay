@@ -283,7 +283,7 @@ pwsh tests/fixture-coverage.ps1 -Repo D:\tmp\covrepo
 - 交互式变基（`rebase -i`）、三方合并编辑器、submodule / LFS 管理尚未实现（冲突可用 ours/theirs/标记解决 + 继续，或去终端）。
 - 刷新靠 `/watch` 长轮询（文件系统不支持递归监听时退回慢轮询）+ 操作后立即刷新；快照带 400ms 缓存。
 - 外部进程只改 ref、且不改变快照任何字段时（例如在终端里 `git tag v1`），历史页与分支列表要等下一次 HEAD 变化或手动点「刷新」。这是快照形状的边界，不是漏了监听。
-- 尚未发布 npm，仅支持本地目录安装。
+- 分发方式是 GitHub 源码 + `file:` 安装，不发布 npm 包。
 
 ## License
 

@@ -62,7 +62,7 @@ window.__DSH_WORKBAY__.registerPage({
 
 ## 给别人装（从 GitHub 克隆）
 
-目前**没有发布到 npm**，也没有 Release 包，所以别人只能“克隆 + `file:` 装”。目标机器要求：
+本项目**刻意不发布 npm 包**：GitHub 源码就是唯一分发方式，别人克隆后按下面四步装。目标机器要求：
 
 | 前置 | 要求 |
 |---|---|
@@ -102,7 +102,7 @@ pnpm install
 [Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_WORKSPACE', '<SDK 工程根目录>', 'User')
 ```
 
-之后更新用 `pnpm run update`（见下）。想省掉这些手工步骤，需要把包发到 npm 或做 Release tarball——那时 `dsh plugin add` 一行就能装。
+之后更新用 `pnpm run update`（见下）。如果哪天想要 `dsh plugin add` 一行安装，再考虑发 npm 或做 Release tarball 即可。
 
 ## 安装到 DSH
 

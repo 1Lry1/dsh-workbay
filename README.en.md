@@ -62,7 +62,7 @@ If dock has not loaded yet, poll briefly until it appears (both existing page pl
 
 ## Installing it on someone else's machine (from GitHub)
 
-The packages are **not on npm** and there is no release tarball yet, so a third party installs from a clone through `file:` dependencies. Requirements:
+This project deliberately **does not publish npm packages**: the GitHub source is the distribution. A third party clones it and installs through `file:` dependencies. Requirements:
 
 | Prerequisite | Requirement |
 |---|---|
@@ -102,7 +102,7 @@ The downloader page additionally needs (the plugin loads without them, but flash
 [Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_WORKSPACE', '<SDK project root>', 'User')
 ```
 
-Update later with `pnpm run update` (see below). Getting rid of these manual steps requires publishing to npm or shipping release tarballs — then `dsh plugin add` is a one-liner.
+Update later with `pnpm run update` (see below). If `dsh plugin add` one-liners ever become worth it, publishing to npm or shipping release tarballs is the path — today it is deliberately not done.
 
 ## Installing into DSH
 
