@@ -127,11 +127,31 @@ function normalizeConfig(raw) {
 /* ============================== shell profiles ============================== */
 
 /**
- * The fixed argument vector for a shell family. `powershell -Command -` reads
- * commands from stdin line by line; POSIX shells do the same with no arguments.
- * Nothing here is derived from request data.
+ * The fixed argument vector for a shell family. Nothing here is derived from
+ * request data.
+ *
+ * PowerShell gets an explicit read-eval loop instead of `-Command -`: that flag
+ * is documented to read command text from stdin, but how much it buffers before
+ * executing depends on the host (a piped stdin on a CI runner behaved
+ * differently from a developer box, and the echo test timed out there). The loop
+ * reads one line, evaluates it, and flushes, so a command's output is observable
+ * as soon as it finishes. `-NonInteractive` keeps it from asking for input and
+ * `OutputEncoding` pins stdout to UTF-8, which is what the SSE decoder expects
+ * (Windows PowerShell 5.1 otherwise emits the OEM/ANSI code page).
  */
-const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-Command', '-']
+const POWERSHELL_REPL = [
+  '$ErrorActionPreference = "Continue"',
+  '$ProgressPreference = "SilentlyContinue"',
+  'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+  'while ($true) {',
+  '  $line = [Console]::In.ReadLine()',
+  '  if ($null -eq $line) { break }',
+  '  try { Invoke-Expression $line } catch { Write-Error $_ }',
+  '  [Console]::Out.Flush()',
+  '}',
+].join('\n')
+
+const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', POWERSHELL_REPL]
 const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 
 function resolveShell(configured) {

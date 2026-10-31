@@ -44,8 +44,12 @@ SSE：`GET /events?id=<id>`，事件为 `data: {json}`：
 
 ## Shell 策略
 
-- 默认 `powershell` → Windows 上为 `powershell.exe -NoLogo -NoProfile -Command -`；
+- 默认 `powershell` → Windows 上为 `powershell.exe -NoLogo -NoProfile -NonInteractive -Command <REPL 脚本>`；
   其它平台上 `powershell` 视作 `pwsh`。
+  这里**不用** `-Command -`：它对管道 stdin 的缓冲行为在不同 Windows 主机上不一致
+  （CI 上会等到 EOF 才执行，本地却是逐行），所以改成一个固定的读-执行-刷新循环：
+  `[Console]::In.ReadLine()` → `Invoke-Expression` → `[Console]::Out.Flush()`，
+  并把 stdout 编码固定为 UTF-8（5.1 默认是 OEM 代码页）。
 - 配置 `shell` 可换成 `pwsh` / `cmd` / `bash` / `sh` / 绝对路径。参数向量由 shell 家族
   决定（PowerShell 固定四个参数；POSIX shell 不带参数），**永远不做字符串拼接**。
 - `spawn(binary, argv, { cwd: root, windowsHide: true, stdio: ['pipe','pipe','pipe'] })`，
