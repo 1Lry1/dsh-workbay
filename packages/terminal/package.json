@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbay-terminal",
   "version": "0.1.0",
-  "description": "Terminal page for the DSH workbench: a persistent PowerShell console rooted at the chosen workspace, streamed over SSE. No PTY — see docs/files-api.md.",
+  "description": "Terminal page for the DSH workbench: a persistent session with one shell process per command line, rooted at the chosen workspace and streamed over SSE. No PTY — see docs/files-api.md.",
   "type": "module",
   "license": "MIT",
   "main": "src/index.js",

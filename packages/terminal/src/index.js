@@ -2,10 +2,18 @@
  * dsh-workbay-terminal — host half (plain ESM JavaScript, no build step).
  *
  * There is no PTY in Node (no native ConPTY), so this bundle is a *persistent
- * command console*, not a full TTY: ONE long-lived shell process per session,
- * rooted at the workspace the client sent, with commands written to its stdin
- * as raw bytes and stdout/stderr streamed back over SSE. The contract lives in
- * docs/files-api.md §4/§5/§6.
+ * command console*, not a full TTY. The session is persistent; the PROCESS is
+ * not: each complete command line is executed as one short-lived child process
+ * (`start` only records the session), stdout/stderr stream back over SSE, and
+ * the working directory is maintained HOST-SIDE so it survives between
+ * commands. See docs/files-api.md §4/§5/§6.
+ *
+ * Why per-command instead of one long-lived shell reading stdin? A persistent
+ * `powershell -Command -` consumed piped stdin locally but not on every host
+ * (the CI Windows runner never produced output for a line written to stdin),
+ * and there is no PTY to fall back to. Spawning one process per line removes
+ * that dependency: the command is an argv element, so it cannot be lost by a
+ * host whose shell refuses to read a redirected stdin.
  *
  *   POST /dsh-workbay-terminal/api/start   { root }        -> { id, shell, cwd }
  *   POST /dsh-workbay-terminal/api/input   { id, data }    -> { ok: true }
@@ -13,27 +21,34 @@
  *   POST /dsh-workbay-terminal/api/list    {}              -> { sessions: [...] }
  *   GET  /dsh-workbay-terminal/events?id=  (SSE)           -> hello / out / exit / error
  *
- * Design decisions worth knowing before editing this file:
+ * Model:
+ *   - `input` appends to a per-session line buffer, splits on `\r?\n`, and runs
+ *     each complete line as ONE child process, one at a time per session. More
+ *     lines queue behind the running one.
+ *   - A line that is exactly `cd [target]` is handled by the HOST (resolve
+ *     against the session cwd, require an existing directory, update the cwd,
+ *     emit it as `out`) and never spawns anything, which is what makes `cd`
+ *     persist.
+ *   - A finished command emits an `out` marker `\r\n[exit N]\r\n` and keeps the
+ *     session alive; `exit` stays a SESSION-level event, emitted only by `stop`
+ *     (or dispose / idle timeout).
  *
- *   - NO shell-string building, ever. `start` only ever spawns a fixed argv
- *     array (config `shell` + a fixed argument vector chosen by shell family);
- *     every byte the user types afterwards arrives via `input` and goes
- *     straight to the child's stdin. There is no place where user text can
- *     become part of a command line.
- *   - The JSON RPC surface (trust fence, bounded body, `{ ok, data }` envelope,
- *     404/405 mapping) is `@dsh-workbay/kit`'s `mountJsonApi`; only the SSE
- *     route is implemented here, because a stream is not a JSON method.
- *   - Output is streamed, never persisted. A session's only buffer is one
- *     `StringDecoder` per pipe (to keep UTF-8 sequences intact); once the
- *     process closes, nothing about its output survives.
- *   - Explicit limits: at most `maxSessions` (default 4), auto-stop after
- *     `idleTimeoutMs` without input (default 30 min), and `apply`'s dispose
- *     kills every session it ever started.
- *   - Command text is never written to a log. This module logs nothing at all.
+ * Security and hygiene:
+ *   - NO shell-string building. The command line is one argv element of a fixed
+ *     argv vector; `cd` is host-side path arithmetic, never a shell builtin.
+ *   - The JSON RPC surface (trust fence, bounded body, envelope, 404/405) is
+ *     `@dsh-workbay/kit`'s `mountJsonApi`; only the SSE route is implemented
+ *     here, because a stream is not a JSON method.
+ *   - Nothing is persisted and nothing about a command is logged. Output lives
+ *     only in the SSE subscriber sockets and in two `StringDecoder`s per running
+ *     command (to keep UTF-8 sequences intact).
+ *   - Limits: at most `maxSessions` (default 4), auto-stop after
+ *     `idleTimeoutMs` without input (default 30 min), and `apply`'s dispose kills
+ *     every running command and clears every session/queue.
  *
  * Trust posture: routes are mounted on DSH's own web server and guarded by the
  * kit's same-origin fence (loopback peer / loopback Host / Sec-Fetch-Site), so
- * a random web page cannot open a shell on the machine.
+ * a random web page cannot run commands on the machine.
  */
 
 import { spawn } from 'node:child_process'
@@ -62,19 +77,22 @@ const MAX_SESSIONS = 32
 const MAX_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000
 /** SSE `out` events carry at most this many characters (the contract's 4 KiB). */
 const MAX_OUTPUT_CHUNK = 4096
+/** A command line larger than this is dropped with an error, not buffered forever. */
+const MAX_LINE_CHARS = 64 * 1024
 const HEARTBEAT_MS = 20_000
 /** Give a killed process this long before trying a harder kill. */
 const KILL_FALLBACK_MS = 3_000
 /** Last-resort synthetic exit if even the hard kill never reports `close`. */
 const FORCE_EXIT_MS = 4_500
-const SPAWN_TIMEOUT_MS = 15_000
 
 /**
- * Environment handed to the shell.
+ * Environment handed to each command process.
  *
  * A user shell is not the plugin host: it should not inherit every credential
- * or temporary variable DSH itself was started with. Only the variables a
- * shell (and the tools it runs) genuinely needs to function are copied through.
+ * or temporary variable DSH itself was started with. Only the variables a shell
+ * (and the tools it runs) genuinely needs to function are copied through. They
+ * are re-applied for EVERY command, so environment changes made by one command
+ * do not survive to the next (documented in README).
  */
 const SHELL_ENV_KEYS = [
   'PATH', 'Path', 'PATHEXT', 'SHELL',
@@ -97,6 +115,10 @@ function badRequest(message) {
 
 function notFound(message) {
   return new ApiError('not-found', message, 404)
+}
+
+function shellMissing(detail) {
+  return new ApiError('shell-missing', detail, 500)
 }
 
 function messageOf(error) {
@@ -124,61 +146,114 @@ function normalizeConfig(raw) {
   }
 }
 
-/* ============================== shell profiles ============================== */
+/* ============================== shell discovery ============================== */
 
-/**
- * The fixed argument vector for a shell family. Nothing here is derived from
- * request data.
- *
- * PowerShell gets an explicit read-eval loop, passed with `-EncodedCommand`
- * (base64 of the script) rather than `-Command <multiline>`: the latter depends
- * on how the host quotes a multi-line argv and on `[Console]::In` seeing
- * redirected stdin — a piped stdin on a CI runner did not execute at all there
- * while the same code worked on a developer box. Reading `OpenStandardInput()`
- * through a StreamReader is the documented way to consume a redirected pipe.
- * `-NonInteractive` keeps it from prompting, and `OutputEncoding` pins stdout to
- * UTF-8, which is what the SSE decoder expects (Windows PowerShell 5.1 otherwise
- * emits the OEM code page).
- */
-const POWERSHELL_REPL = [
-  '$ErrorActionPreference = "Continue"',
-  '$ProgressPreference = "SilentlyContinue"',
-  'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
-  '$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)',
-  'while ($true) {',
-  '  $line = $reader.ReadLine()',
-  '  if ($null -eq $line) { break }',
-  '  try { Invoke-Expression $line } catch { Write-Error $_ }',
-  '  [Console]::Out.Flush()',
-  '}',
-].join('\n')
-
-const POWERSHELL_ENCODED = Buffer.from(POWERSHELL_REPL, 'utf16le').toString('base64')
-const POWERSHELL_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', POWERSHELL_ENCODED]
 const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 
-function resolveShell(configured) {
-  if (/[\u0000\r\n]/.test(configured)) {
-    throw new ApiError('config-invalid', 'the shell config contains control characters', 500)
+/** Base name -> argument family; the argv vectors are fixed per family. */
+function shellFamilyOf(base) {
+  if (base === 'powershell' || base === 'pwsh') return 'powershell'
+  if (base === 'cmd') return 'cmd'
+  if (POSIX_SHELLS.has(base)) return 'posix'
+  /* An unrecognised shell is assumed to accept `-c`, which is the POSIX
+     convention and the least surprising default for a bare command. */
+  return 'posix'
+}
+
+/**
+ * The ONE command-invocation vector used for a family. The user's line is
+ * always exactly one argv element — never concatenated into a string.
+ */
+function commandArgv(family, line) {
+  if (family === 'powershell') return ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', line]
+  if (family === 'cmd') return ['/D', '/Q', '/C', line]
+  return ['-c', line]
+}
+
+function canonicalPath(value) {
+  const native = typeof realpathSync.native === 'function' ? realpathSync.native : realpathSync
+  try {
+    return native(value)
+  } catch {
+    return path.resolve(value)
   }
-  const absolute = path.isAbsolute(configured)
-  const base = path.basename(configured).toLowerCase().replace(/\.exe$/, '')
-  const isPowershell = base === 'powershell' || base === 'pwsh'
-  let binary = configured
-  if (!absolute) {
-    if (process.platform === 'win32') {
-      if (base === 'powershell') binary = 'powershell.exe'
-      else if (base === 'pwsh') binary = 'pwsh.exe'
-      else if (base === 'cmd') binary = 'cmd.exe'
-    } else if (isPowershell) {
-      /* `powershell` on a POSIX host means the cross-platform PowerShell. */
-      binary = 'pwsh'
+}
+
+function pathExtensions() {
+  if (process.platform !== 'win32') return ['']
+  const raw = process.env.PATHEXT
+  const extensions = typeof raw === 'string' && raw.trim() !== ''
+    ? raw.split(';')
+    : ['.COM', '.EXE', '.BAT', '.CMD']
+  return ['', ...extensions.map((entry) => entry.trim()).filter((entry) => entry !== '')]
+}
+
+/** Resolve a bare executable name through PATH/PATHEXT, with no shell involved. */
+function findOnPath(name) {
+  const pathValue = process.env.PATH ?? process.env.Path ?? ''
+  const directories = String(pathValue).split(path.delimiter).filter((entry) => entry !== '')
+  const extensions = path.extname(name) === '' ? pathExtensions() : ['']
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, name + extension)
+      try {
+        if (statSync(candidate).isFile()) return canonicalPath(candidate)
+      } catch {
+        /* keep looking */
+      }
     }
   }
-  let args = []
-  if (isPowershell) args = POWERSHELL_ARGS
-  else if (POSIX_SHELLS.has(base)) args = []
-  return { binary, args, display: path.basename(binary), family: isPowershell ? 'powershell' : 'generic' }
+  return null
+}
+
+/** A bare `powershell` means the platform's PowerShell executable. */
+function binaryNameFor(bare, configured) {
+  if (process.platform === 'win32') {
+    if (bare === 'powershell') return 'powershell.exe'
+    if (bare === 'pwsh') return 'pwsh.exe'
+    if (bare === 'cmd') return 'cmd.exe'
+    return configured
+  }
+  if (bare === 'powershell' || bare === 'pwsh') return 'pwsh'
+  return configured
+}
+
+/**
+ * Resolve the configured shell to an absolute executable path.
+ *
+ * An absolute config must exist; a bare name is resolved through the
+ * allow-listed PATH/PATHEXT. There is deliberately NO spawn probe: `start` must
+ * not launch anything (a broken shell is reported here as a 500, not later as
+ * an empty output stream).
+ */
+function resolveShell(configured) {
+  if (/[\u0000\r\n]/.test(configured)) {
+    throw shellMissing('the shell config contains control characters')
+  }
+  if (path.isAbsolute(configured)) {
+    let stats
+    try {
+      stats = statSync(configured)
+    } catch {
+      throw shellMissing('shell "' + configured + '" does not exist')
+    }
+    if (!stats.isFile()) throw shellMissing('shell "' + configured + '" is not a file')
+    const base = path.basename(configured).toLowerCase().replace(/\.exe$/, '')
+    return {
+      binary: canonicalPath(configured),
+      display: path.basename(configured),
+      family: shellFamilyOf(base),
+    }
+  }
+  const bare = path.basename(configured).toLowerCase().replace(/\.exe$/, '')
+  const name = binaryNameFor(bare, configured)
+  const found = findOnPath(name)
+  if (found === null) throw shellMissing('cannot find shell "' + configured + '" on PATH')
+  return {
+    binary: found,
+    display: path.basename(found),
+    family: shellFamilyOf(bare),
+  }
 }
 
 function shellEnv() {
@@ -192,20 +267,10 @@ function shellEnv() {
 
 /* ============================== root validation ============================== */
 
-function canonicalPath(value) {
-  const native = typeof realpathSync.native === 'function' ? realpathSync.native : realpathSync
-  try {
-    return native(value)
-  } catch {
-    return path.resolve(value)
-  }
-}
-
 /**
  * Validate the workspace root: absolute, existing, a directory. Root
  * *confinement* is the caller's responsibility (the same absolute path is used
- * as cwd), but a non-directory is always refused — a file cannot be a shell
- * working directory.
+ * as the command cwd), but a non-directory is always refused.
  */
 function requireRoot(value) {
   if (typeof value !== 'string' || value.trim() === '') throw badRequest('root is required')
@@ -224,10 +289,8 @@ function requireRoot(value) {
 /* ============================== service ============================== */
 
 function createService(settings) {
-  /** Live sessions only: an entry is deleted the moment its process closes. */
+  /** Live sessions only: an entry is deleted the moment `stop` finishes it. */
   const sessions = new Map()
-  /** Starts in flight, so two concurrent requests cannot exceed maxSessions. */
-  let pendingStarts = 0
   let disposed = false
 
   /* ---------------------------------------------------------------- SSE ---- */
@@ -264,11 +327,7 @@ function createService(settings) {
     }
   }
 
-  /* ------------------------------------------------------------- session ---- */
-
-  function finishSession(session, code) {
-    if (session.exited) return
-    session.exited = true
+  function clearTimers(session) {
     if (session.idleTimer !== null) {
       clearTimeout(session.idleTimer)
       session.idleTimer = null
@@ -281,6 +340,15 @@ function createService(settings) {
       clearTimeout(session.forceTimer)
       session.forceTimer = null
     }
+  }
+
+  /** Emit the SESSION-level exit, end subscribers, forget the session. */
+  function finishSession(session, code) {
+    if (session.exited) return
+    session.exited = true
+    clearTimers(session)
+    session.lineBuffer = ''
+    session.queue.length = 0
     writeEvent(session, { type: 'exit', code })
     for (const client of [...session.clients]) {
       dropClient(session, client)
@@ -291,48 +359,53 @@ function createService(settings) {
     for (const resolve of waiters) resolve()
   }
 
-  function forceKill(session) {
-    if (session.exited) return
+  function forceKillChild(child) {
     try {
-      if (session.child.exitCode === null && session.child.signalCode === null) {
-        session.child.kill('SIGKILL')
-      }
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     } catch {
       /* the process is already gone */
     }
   }
 
-  /** Kill the whole process tree, then make sure a synthetic exit is emitted. */
-  function requestKill(session) {
-    if (session.killRequested || session.exited) return
-    session.killRequested = true
-    session.stopping = true
-    const pid = session.child.pid
+  /** Kill a command's whole process tree (argv array, numeric pid, no shell). */
+  function killChildTree(child) {
+    const pid = child.pid
     if (process.platform === 'win32' && Number.isInteger(pid)) {
-      /* argv array, numeric pid — no shell, no string interpolation. `taskkill
-         /T` is what reaches grandchildren a shell command may have spawned. */
       try {
         const killer = spawn('taskkill', ['/T', '/F', '/PID', String(pid)], {
           windowsHide: true,
           stdio: 'ignore',
         })
-        killer.on('error', () => { forceKill(session) })
+        killer.on('error', () => { forceKillChild(child) })
       } catch {
-        forceKill(session)
+        forceKillChild(child)
       }
     } else {
-      try { session.child.kill('SIGTERM') } catch { /* gone */ }
+      try { child.kill('SIGTERM') } catch { /* gone */ }
     }
-    session.killTimer = setTimeout(() => forceKill(session), KILL_FALLBACK_MS)
-    session.forceTimer = setTimeout(() => finishSession(session, -1), FORCE_EXIT_MS)
-    if (typeof session.killTimer.unref === 'function') session.killTimer.unref()
-    if (typeof session.forceTimer.unref === 'function') session.forceTimer.unref()
   }
 
   function stopSession(session) {
     if (session.exited) return Promise.resolve()
+    if (session.stopRequested) {
+      return new Promise((resolve) => { session.exitWaiters.push(resolve) })
+    }
+    session.stopRequested = true
+    /* A half-typed command and every queued line are DROPPED: `stop` ends the
+       session, so replaying them in a later session would be surprising. */
+    session.lineBuffer = ''
+    session.queue.length = 0
+    const child = session.running
+    if (child === null) {
+      finishSession(session, 0)
+      return Promise.resolve()
+    }
     const finished = new Promise((resolve) => { session.exitWaiters.push(resolve) })
-    requestKill(session)
+    killChildTree(child)
+    session.killTimer = setTimeout(() => forceKillChild(child), KILL_FALLBACK_MS)
+    session.forceTimer = setTimeout(() => finishSession(session, -1), FORCE_EXIT_MS)
+    if (typeof session.killTimer.unref === 'function') session.killTimer.unref()
+    if (typeof session.forceTimer.unref === 'function') session.forceTimer.unref()
     return finished
   }
 
@@ -344,7 +417,7 @@ function createService(settings) {
     if (settings.idleTimeoutMs <= 0) return
     session.idleTimer = setTimeout(() => {
       session.idleTimer = null
-      requestKill(session)
+      void stopSession(session)
     }, settings.idleTimeoutMs)
     if (typeof session.idleTimer.unref === 'function') session.idleTimer.unref()
   }
@@ -356,57 +429,88 @@ function createService(settings) {
     return session
   }
 
-  function spawnShell(profile, cwd) {
-    return new Promise((resolve, reject) => {
-      let child
-      try {
-        child = spawn(profile.binary, profile.args, {
-          cwd,
-          windowsHide: true,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: shellEnv(),
-        })
-      } catch (error) {
-        reject(new ApiError('shell-missing', 'cannot start shell "' + profile.display + '": ' + messageOf(error), 500))
-        return
-      }
-      let settled = false
-      const timer = setTimeout(() => {
-        if (settled) return
-        settled = true
-        try { child.kill('SIGKILL') } catch { /* gone */ }
-        reject(new ApiError('shell-missing', 'shell "' + profile.display + '" did not start in time', 500))
-      }, SPAWN_TIMEOUT_MS)
-      if (typeof timer.unref === 'function') timer.unref()
-      const settle = (fn, value) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        child.off('spawn', onSpawn)
-        child.off('error', onError)
-        fn(value)
-      }
-      const onSpawn = () => { settle(resolve, child) }
-      const onError = (error) => {
-        settle(reject, new ApiError(
-          'shell-missing',
-          'cannot start shell "' + profile.display + '": ' + messageOf(error),
-          500,
-        ))
-      }
-      /* Attached before any await: a shell that dies immediately must not turn
-         an EPIPE on stdin into an uncaught exception. wireSession attaches the
-         real handlers once the session object exists. */
-      child.stdin.on('error', () => { /* handled by the close event */ })
-      child.once('spawn', onSpawn)
-      child.once('error', onError)
-    })
+  /* ------------------------------------------------------------ commands --- */
+
+  const CD_PATTERN = /^\s*cd(?:\s+(.*))?\s*$/i
+
+  function stripQuotes(value) {
+    if (value.length >= 2) {
+      const first = value[0]
+      const last = value[value.length - 1]
+      if ((first === '"' && last === '"') || (first === "'" && last === "'")) return value.slice(1, -1)
+    }
+    return value
   }
 
-  function wireSession(session) {
+  /**
+   * Host-side `cd`: the ONLY builtin the console understands. Returns true when
+   * the line was consumed (valid or not) and false when it is a normal command.
+   */
+  function handleCd(session, line) {
+    const match = CD_PATTERN.exec(line)
+    if (match === null) return false
+    const raw = match[1] === undefined ? '' : match[1].trim()
+    if (raw === '') {
+      /* Bare `cd` prints the current cwd; there is no home-directory concept. */
+      emitOutput(session, session.cwd + '\r\n')
+      return true
+    }
+    const target = stripQuotes(raw)
+    const resolved = path.resolve(session.cwd, target)
+    let stats
+    try {
+      stats = statSync(resolved)
+    } catch {
+      emitOutput(session, '\r\ncd: ' + target + ': no such directory\r\n')
+      return true
+    }
+    if (!stats.isDirectory()) {
+      emitOutput(session, '\r\ncd: ' + target + ': not a directory\r\n')
+      return true
+    }
+    session.cwd = canonicalPath(resolved)
+    session.lastActivityAt = Date.now()
+    emitOutput(session, session.cwd + '\r\n')
+    return true
+  }
+
+  /**
+   * Start the next queued line, if the session is idle. `cd` lines are consumed
+   * synchronously (they never spawn) so a queue of only `cd`s drains at once.
+   */
+  function pump(session) {
+    if (session.exited || session.stopRequested || session.running !== null) return
+    while (session.queue.length > 0) {
+      const line = session.queue.shift()
+      if (line.trim() === '') continue
+      if (handleCd(session, line)) continue
+      execute(session, line)
+      return
+    }
+  }
+
+  function execute(session, line) {
+    const argv = commandArgv(session.shellProfile.family, line)
+    let child
+    try {
+      child = spawn(session.shellProfile.binary, argv, {
+        cwd: session.cwd,
+        windowsHide: true,
+        /* stdin is ignored on purpose: this is a command console, not a TTY,
+           and an interactive program must fail fast instead of blocking on a
+           pipe nobody reads. */
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: shellEnv(),
+      })
+    } catch (error) {
+      writeEvent(session, { type: 'error', message: messageOf(error) })
+      emitOutput(session, '\r\n[exit -1]\r\n')
+      pump(session)
+      return
+    }
+    session.running = child
     const stdoutDecoder = new StringDecoder('utf8')
     const stderrDecoder = new StringDecoder('utf8')
-    const child = session.child
 
     child.stdout.on('data', (chunk) => { emitOutput(session, stdoutDecoder.write(chunk)) })
     child.stderr.on('data', (chunk) => { emitOutput(session, stderrDecoder.write(chunk)) })
@@ -414,11 +518,9 @@ function createService(settings) {
        a listener that becomes an uncaught exception in the host process. */
     child.stdout.on('error', () => { /* the close handler cleans up */ })
     child.stderr.on('error', () => { /* the close handler cleans up */ })
-    child.stdin.on('error', () => { /* EPIPE when the shell exits mid-write */ })
 
     child.on('error', (error) => {
       writeEvent(session, { type: 'error', message: messageOf(error) })
-      finishSession(session, -1)
     })
 
     child.on('close', (code, signal) => {
@@ -426,7 +528,19 @@ function createService(settings) {
       if (outTail !== '') emitOutput(session, outTail)
       const errTail = stderrDecoder.end()
       if (errTail !== '') emitOutput(session, errTail)
-      finishSession(session, code === null ? (signal === null ? -1 : -1) : code)
+      session.running = null
+      if (session.killTimer !== null) { clearTimeout(session.killTimer); session.killTimer = null }
+      if (session.forceTimer !== null) { clearTimeout(session.forceTimer); session.forceTimer = null }
+      if (session.exited) return
+      const exitCode = code === null ? -1 : code
+      if (session.stopRequested) {
+        finishSession(session, exitCode)
+        return
+      }
+      /* A finished command keeps the session alive; the per-command result is
+         an ordinary out marker, NOT the session-level exit event. */
+      emitOutput(session, '\r\n[exit ' + String(exitCode) + ']\r\n')
+      pump(session)
     })
   }
 
@@ -435,39 +549,36 @@ function createService(settings) {
   async function start(payload) {
     if (disposed) throw new ApiError('disposed', 'the plugin is shutting down', 503)
     const root = requireRoot(payload.root)
-    if (sessions.size + pendingStarts >= settings.maxSessions) {
+    if (sessions.size >= settings.maxSessions) {
       throw new ApiError(
         'session-limit',
         'at most ' + String(settings.maxSessions) + ' terminal session(s) may run at once',
         409,
       )
     }
+    /* Resolve (and validate) the shell now, so a misconfigured profile fails on
+       start instead of silently producing commands that never run. No process
+       is launched here. */
     const profile = resolveShell(settings.shell)
-    pendingStarts += 1
-    let child
-    try {
-      child = await spawnShell(profile, root)
-    } finally {
-      pendingStarts -= 1
-    }
     const session = {
       id: randomUUID(),
-      shell: profile.display,
       cwd: root,
+      shell: profile.display,
+      shellProfile: profile,
       startedAt: Date.now(),
       lastActivityAt: Date.now(),
-      child,
+      lineBuffer: '',
+      queue: [],
+      running: null,
       clients: new Set(),
       exitWaiters: [],
       exited: false,
-      stopping: false,
-      killRequested: false,
+      stopRequested: false,
       idleTimer: null,
       killTimer: null,
       forceTimer: null,
     }
     sessions.set(session.id, session)
-    wireSession(session)
     armIdle(session)
     return { id: session.id, shell: session.shell, cwd: session.cwd }
   }
@@ -475,17 +586,22 @@ function createService(settings) {
   async function input(payload) {
     const session = sessionOf(payload.id)
     if (typeof payload.data !== 'string') throw badRequest('data must be a string')
-    if (session.exited || session.stopping) throw notFound('unknown session')
-    if (payload.data !== '') {
-      if (!session.child.stdin.writable) throw new ApiError('session-closed', 'the shell stdin is closed', 409)
-      try {
-        session.child.stdin.write(payload.data, 'utf8')
-      } catch (error) {
-        throw new ApiError('session-closed', messageOf(error), 409)
-      }
-    }
+    if (session.exited || session.stopRequested) throw notFound('unknown session')
     session.lastActivityAt = Date.now()
     armIdle(session)
+    if (payload.data !== '') {
+      session.lineBuffer += payload.data
+      if (session.lineBuffer.length > MAX_LINE_CHARS) {
+        session.lineBuffer = ''
+        writeEvent(session, { type: 'error', message: 'input line is too long' })
+      } else {
+        const parts = session.lineBuffer.split(/\r?\n/)
+        /* The last element is the incomplete tail (possibly empty). */
+        session.lineBuffer = parts.pop() ?? ''
+        for (const line of parts) session.queue.push(line)
+        pump(session)
+      }
+    }
     return { ok: true }
   }
 
@@ -603,7 +719,7 @@ export function apply(ctx, config) {
     name + ': events stream',
   )
 
-  /* Never leave a shell behind when the plugin (or the host) goes away. The
+  /* Never leave a command behind when the plugin (or the host) goes away. The
      cleanup starts every kill synchronously, and awaiting it is harmless. */
   ctx.effect(() => () => service.dispose(), name + ': terminal sessions')
 }

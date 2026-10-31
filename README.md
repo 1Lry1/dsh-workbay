@@ -15,7 +15,7 @@ DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固
 packages/
 ├─ dock/        dsh-workbay-dock      壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
 ├─ files/       dsh-workbay-files     页面：文件树 + 查看器 + CodeMirror 编辑器（chunk 懒加载）
-├─ terminal/    dsh-workbay-terminal  页面：工作区常驻命令控制台（SSE 流式）
+├─ terminal/    dsh-workbay-terminal  页面：工作区命令控制台（逐条进程，SSE 流式）
 ├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
 ├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
 ├─ kit/         @dsh-workbay/kit      共享 host 工具：同源围栏 / JSON 体 / RPC 信封

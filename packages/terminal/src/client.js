@@ -6,10 +6,12 @@
  * and this file only supplies the page component. Contract: docs/files-api.md
  * §4/§5/§6.
  *
- * There is no PTY on the host, so this is a persistent-command *console*, not a
- * terminal emulator: output is a monospace log (basic SGR colours, everything
- * else stripped), input is a single line sent to the shell's stdin. The shell
- * outlives one command; Start/Stop control its lifecycle.
+ * There is no PTY on the host, so this is a *console*, not a terminal emulator:
+ * output is a monospace log (basic SGR colours, everything else stripped) and
+ * input is a single line submitted to the host's line-oriented API. The SESSION
+ * persists (it keeps the cwd); the host runs one process per submitted line, so
+ * a finished command appears as an inline `[exit N]` marker and Start/Stop
+ * control the session's lifecycle.
  *
  * Workspace root is READ-ONLY here: the Files page owns the picker and writes
  * `localStorage['dsh-workbay.root.v1']`; this page reads it and shows a clear

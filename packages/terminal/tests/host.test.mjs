@@ -1,34 +1,38 @@
 /**
- * Host-half tests for dsh-workbay-terminal.
+ * Host-half tests for dsh-workbay-terminal — PER-COMMAND execution model.
  *
  * Boots the plugin through a fake cordis context (the same shape
  * packages/gitcraft/tests/host.test.mjs uses), mounts the captured route
  * handlers on a REAL HTTP server, and drives sessions against a throwaway
  * directory in the OS temp dir.
  *
- * Real shells are spawned on purpose: the contract's whole point is that a
- * persistent process reads raw stdin and its output streams over SSE, which a
- * mocked child_process could not prove. Every session is stopped in `after`,
- * and each test stops its own session even when an assertion fails.
+ * The commands are real: `start` launches nothing, each complete line runs one
+ * shell process, and the assertions observe actual stdout over SSE. Every
+ * session is stopped in `after`, and each test stops its own session even when
+ * an assertion fails. A surviving child process would show up as a "survived"
+ * flag file written after its sleep, which the idle-timeout test asserts can
+ * never happen.
  *
- * Run:  node --test tests/host.test.mjs
+ * Run from packages/terminal:  node --test
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const plugin = await import('../src/index.js')
 
-const TEST_SHELL = process.platform === 'win32' ? 'powershell.exe' : 'sh'
+const IS_WINDOWS = process.platform === 'win32'
+const TEST_SHELL = IS_WINDOWS ? 'powershell.exe' : 'sh'
 const TEST_NEWLINE = '\n'
 
 /** @type {Array<{ dispose: () => Promise<void> }>} */
 const boots = []
 let sandbox
 let workspace
+let nested
 let filePath
 let missingPath
 let bootA
@@ -48,15 +52,42 @@ function canonicalPath(value) {
 function samePath(left, right) {
   const a = canonicalPath(left)
   const b = canonicalPath(right)
-  return process.platform === 'win32'
-    ? a.toLowerCase() === b.toLowerCase()
-    : a === b
+  return IS_WINDOWS ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Quote one path for the platform's shell (used only inside test commands). */
+function quoteForShell(value) {
+  if (IS_WINDOWS) return "'" + value.split("'").join("''") + "'"
+  return "'" + value.split("'").join("'\\''") + "'"
+}
+
+function pwdCommand() {
+  /* A marker prefix keeps this distinguishable from the `cd` output itself. */
+  return IS_WINDOWS ? "Write-Output ('CWD=' + (Get-Location).Path)" : 'printf \'CWD=%s\\n\' "$PWD"'
+}
+
+/**
+ * A harmless command that signals "I am running" with a flag file, keeps
+ * running, and optionally proves afterwards that it was NOT killed.
+ */
+function longCommand(flagPath, survivedPath) {
+  const flag = quoteForShell(flagPath)
+  if (IS_WINDOWS) {
+    const tail = survivedPath === undefined ? '' : '; Set-Content -LiteralPath ' + quoteForShell(survivedPath) + ' -Value 1'
+    return 'Set-Content -LiteralPath ' + flag + ' -Value 1; Start-Sleep -Seconds 4' + tail
+  }
+  const tail = survivedPath === undefined ? '' : '; touch ' + quoteForShell(survivedPath)
+  return 'touch ' + flag + '; sleep 4' + tail
 }
 
 /**
  * Boot one plugin instance on its own HTTP server. Two instances with different
  * configs are needed: one normal instance for the streaming tests, one with
- * `maxSessions: 1` and a short idle timeout for the limit tests.
+ * `maxSessions: 1` and a short idle timeout for the limit/kill tests.
  */
 function bootPlugin(config) {
   const routes = new Map()
@@ -199,8 +230,6 @@ function openEvents(baseUrl, id) {
       if (!closed && !(error instanceof DOMException && error.name === 'AbortError')) throw error
     }
   })()
-  /* The wrapper's `ready` is what tests await before calling waitFor, and an
-     early failure must not become an unhandled rejection. */
   ready.catch(() => undefined)
 
   return {
@@ -221,6 +250,9 @@ function openEvents(baseUrl, id) {
         waiters.add(waiter)
       })
     },
+    has(predicate) {
+      return events.some(predicate)
+    },
     close() {
       closed = true
       for (const waiter of [...waiters]) {
@@ -236,9 +268,13 @@ async function waitUntil(predicate, timeoutMs = 10_000, intervalMs = 50) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (await predicate()) return true
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    await sleep(intervalMs)
   }
   return false
+}
+
+function outContains(needle) {
+  return (event) => event.type === 'out' && typeof event.data === 'string' && event.data.includes(needle)
 }
 
 async function startSession(boot, root) {
@@ -247,12 +283,23 @@ async function startSession(boot, root) {
   return out.data
 }
 
+async function stopSession(boot, id, stream) {
+  const stopped = await boot.call('stop', { id })
+  assert.equal(stopped.ok, true, 'stop failed: ' + JSON.stringify(stopped))
+  if (stream !== undefined) {
+    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    assert.equal(typeof exit.code, 'number')
+  }
+  return stopped
+}
+
 /* ============================== lifecycle ============================== */
 
 before(async () => {
   sandbox = mkdtempSync(path.join(tmpdir(), 'gwt-'))
   workspace = path.join(sandbox, 'workspace')
-  mkdirSync(workspace, { recursive: true })
+  nested = path.join(workspace, 'nested')
+  mkdirSync(nested, { recursive: true })
   filePath = path.join(sandbox, 'not-a-directory.txt')
   writeFileSync(filePath, 'not a workspace\n')
   missingPath = path.join(sandbox, 'missing-dir')
@@ -270,9 +317,9 @@ after(async () => {
   }
 })
 
-/* ============================== tests ============================== */
+/* ============================== session lifecycle ============================== */
 
-test('start returns a live session and list reports its cwd', async () => {
+test('start creates a session and list reports its cwd', async () => {
   const session = await startSession(bootA)
   try {
     assert.equal(typeof session.id, 'string')
@@ -288,12 +335,11 @@ test('start returns a live session and list reports its cwd', async () => {
     assert.equal(entry.cwd, session.cwd)
     assert.equal(typeof entry.startedAt, 'number')
   } finally {
-    const stopped = await bootA.call('stop', { id: session.id })
-    assert.equal(stopped.ok, true)
+    await stopSession(bootA, session.id)
   }
 })
 
-test('the SSE stream carries the output of a command written to stdin', async () => {
+test('the SSE hello event carries the session cwd and shell', async () => {
   const session = await startSession(bootA)
   const stream = openEvents(bootA.baseUrl, session.id)
   try {
@@ -301,50 +347,184 @@ test('the SSE stream carries the output of a command written to stdin', async ()
     assert.equal(hello.cwd, session.cwd)
     assert.equal(typeof hello.shell, 'string')
     assert.ok(hello.shell.length > 0)
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
 
+/* ============================== command execution ============================== */
+
+test('a command line runs in one process and its stdout streams as out', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
     const sent = await bootA.call('input', { id: session.id, data: 'echo workbay-ok' + TEST_NEWLINE })
     assert.equal(sent.ok, true, JSON.stringify(sent))
     assert.equal(sent.data.ok, true)
 
-    const output = await stream.waitFor(
-      (event) => event.type === 'out' && typeof event.data === 'string' && event.data.includes('workbay-ok'),
-      20_000,
-    ).catch(async (error) => {
-      /* CI-only failures need evidence, not just "timed out": a shell that died
-         on startup shows up as an exit/error event and an empty session list. */
+    const output = await stream.waitFor(outContains('workbay-ok'), 20_000).catch(async (error) => {
+      /* CI-only failures need evidence, not just "timed out": a spawn failure
+         shows up as an error event, and a died session disappears from list. */
       let sessions = null
       try { sessions = (await bootA.call('list', {})).data } catch { /* ignore */ }
       throw new Error(
-        `${error.message}; lastEvents=${JSON.stringify(stream.events.slice(-8))}; sessions=${JSON.stringify(sessions)}`,
+        error.message + '; lastEvents=' + JSON.stringify(stream.events.slice(-8))
+        + '; sessions=' + JSON.stringify(sessions),
       )
     })
     assert.ok(output.data.length > 0)
+
+    /* The command's own exit is an out MARKER; the session stays alive. */
+    const marker = await stream.waitFor(outContains('[exit'), 20_000)
+    assert.match(marker.data, /\[exit \d+\]/)
+    const listed = await bootA.call('list', {})
+    assert.ok(listed.data.sessions.some((item) => item.id === session.id), 'session must outlive the command')
   } finally {
+    await stopSession(bootA, session.id)
     stream.close()
-    await bootA.call('stop', { id: session.id })
   }
 })
 
-test('stop emits an exit event and leaves no session behind', async () => {
+test('two commands run sequentially in the same session', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: 'echo first-marker' + TEST_NEWLINE })
+    await stream.waitFor(outContains('first-marker'), 20_000)
+    await bootA.call('input', { id: session.id, data: 'echo second-marker' + TEST_NEWLINE })
+    await stream.waitFor(outContains('second-marker'), 20_000)
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
+
+test('two lines queued in one input call both run, in order', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: 'echo queue-one\necho queue-two\n' })
+    await stream.waitFor(outContains('queue-one'), 20_000)
+    await stream.waitFor(outContains('queue-two'), 20_000)
+    const first = stream.events.findIndex(outContains('queue-one'))
+    const second = stream.events.findIndex(outContains('queue-two'))
+    assert.ok(first !== -1 && second !== -1 && first < second, 'the queue must preserve line order')
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
+
+test('an incomplete line is buffered until its newline arrives', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: 'echo partial-' })
+    await sleep(700)
+    assert.equal(stream.has(outContains('partial-')), false, 'no command may run before the newline')
+    await bootA.call('input', { id: session.id, data: 'done' + TEST_NEWLINE })
+    await stream.waitFor(outContains('partial-done'), 20_000)
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
+
+/* ============================== host-side cd ============================== */
+
+test('cd updates the session cwd and the next command runs there', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: 'cd nested' + TEST_NEWLINE })
+    await stream.waitFor(outContains('nested'), 10_000)
+
+    const listed = await bootA.call('list', {})
+    const entry = listed.data.sessions.find((item) => item.id === session.id)
+    assert.ok(entry !== undefined)
+    assert.equal(samePath(entry.cwd, nested), true, 'list must report the updated cwd')
+
+    await bootA.call('input', { id: session.id, data: pwdCommand() + TEST_NEWLINE })
+    const pwd = await stream.waitFor(
+      (event) => event.type === 'out' && typeof event.data === 'string'
+        && event.data.includes('CWD=') && event.data.includes('nested'),
+      20_000,
+    )
+    assert.match(pwd.data, /CWD=/)
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
+
+test('cd refuses a non-directory target and keeps the cwd', async () => {
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: 'cd no-such-directory-xyz' + TEST_NEWLINE })
+    await stream.waitFor(outContains('no such directory'), 10_000)
+    const listed = await bootA.call('list', {})
+    const entry = listed.data.sessions.find((item) => item.id === session.id)
+    assert.ok(entry !== undefined)
+    assert.equal(samePath(entry.cwd, workspace), true, 'a failed cd must not move the cwd')
+  } finally {
+    await stopSession(bootA, session.id)
+    stream.close()
+  }
+})
+
+/* ============================== stop / kill ============================== */
+
+test('stop kills a running command and ends the session', async () => {
+  const flagPath = path.join(workspace, 'stop-flag.txt')
+  rmSync(flagPath, { force: true })
+  const session = await startSession(bootA)
+  const stream = openEvents(bootA.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    await bootA.call('input', { id: session.id, data: longCommand(flagPath) + TEST_NEWLINE })
+    const started = await waitUntil(() => existsSync(flagPath), 15_000)
+    assert.equal(started, true, 'the long command should have started')
+
+    const began = Date.now()
+    await stopSession(bootA, session.id, stream)
+    const elapsed = Date.now() - began
+    assert.ok(elapsed < 4_000, 'stop should not wait for the command to finish (' + elapsed + 'ms)')
+
+    const emptied = await waitUntil(async () => {
+      const listed = await bootA.call('list', {})
+      return listed.ok === true && listed.data.sessions.length === 0
+    }, 10_000)
+    assert.equal(emptied, true, 'the session should be gone from list after stop')
+  } finally {
+    stream.close()
+  }
+})
+
+test('stop on an idle session emits exit 0 and removes it', async () => {
   const session = await startSession(bootA)
   const stream = openEvents(bootA.baseUrl, session.id)
   try {
     await stream.waitFor((event) => event.type === 'hello')
     const stopped = await bootA.call('stop', { id: session.id })
     assert.equal(stopped.ok, true)
-
     const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
-    assert.equal(typeof exit.code, 'number', 'exit should carry a numeric code')
-
-    const emptied = await waitUntil(async () => {
-      const listed = await bootA.call('list', {})
-      return listed.ok === true && listed.data.sessions.length === 0
-    }, 10_000)
-    assert.equal(emptied, true, 'the session should be gone from list after exit')
+    assert.equal(exit.code, 0)
+    const listed = await bootA.call('list', {})
+    assert.equal(listed.data.sessions.length, 0)
   } finally {
     stream.close()
   }
 })
+
+/* ============================== negative cases ============================== */
 
 test('start refuses a relative root with 400', async () => {
   const out = await bootA.call('start', { root: 'relative\\workspace' })
@@ -437,7 +617,7 @@ test('input requires a string data field with 400', async () => {
     assert.equal(out.status, 400)
     assert.equal(out.error.code, 'bad-request')
   } finally {
-    await bootA.call('stop', { id: session.id })
+    await stopSession(bootA, session.id)
   }
 })
 
@@ -451,12 +631,23 @@ test('maxSessions is enforced with a 409 session-limit', async () => {
   } finally {
     const stopped = await bootB.call('stop', { id: first.id })
     assert.equal(stopped.ok, true)
-    await waitUntil(async () => {
-      const listed = await bootB.call('list', {})
-      return listed.ok === true && listed.data.sessions.length === 0
-    }, 10_000)
   }
 })
+
+test('a missing shell binary is reported as 500 shell-missing', async () => {
+  const boot = await bootPlugin({
+    shell: 'dsh-workbay-shell-that-does-not-exist',
+    maxSessions: 1,
+    idleTimeoutMs: 60_000,
+  })
+  const out = await boot.call('start', { root: workspace })
+  assert.equal(out.status, 500)
+  assert.equal(out.ok, false)
+  assert.equal(out.error.code, 'shell-missing')
+  assert.equal((await boot.call('list', {})).data.sessions.length, 0)
+})
+
+/* ============================== idle timeout ============================== */
 
 test('an idle session is stopped automatically', async () => {
   const session = await startSession(bootB)
@@ -476,21 +667,37 @@ test('an idle session is stopped automatically', async () => {
   }
 })
 
-test('a missing shell binary is reported as 500 shell-missing', async () => {
-  const boot = await bootPlugin({
-    shell: 'dsh-workbay-shell-that-does-not-exist',
-    maxSessions: 1,
-    idleTimeoutMs: 60_000,
-  })
-  const out = await boot.call('start', { root: workspace })
-  assert.equal(out.status, 500)
-  assert.equal(out.ok, false)
-  assert.equal(out.error.code, 'shell-missing')
-  assert.equal((await boot.call('list', {})).data.sessions.length, 0)
+test('an idle-timeout stop kills the running command (no orphan writes the survived flag)', async () => {
+  const flagPath = path.join(workspace, 'idle-flag.txt')
+  const survivedPath = path.join(workspace, 'idle-survived.txt')
+  rmSync(flagPath, { force: true })
+  rmSync(survivedPath, { force: true })
+
+  const session = await startSession(bootB)
+  const stream = openEvents(bootB.baseUrl, session.id)
+  try {
+    await stream.waitFor((event) => event.type === 'hello')
+    /* The command would write `survivedPath` after 4 s if it were still alive
+       when the 1.5 s idle timeout stops the session. */
+    await bootB.call('input', { id: session.id, data: longCommand(flagPath, survivedPath) + TEST_NEWLINE })
+    const started = await waitUntil(() => existsSync(flagPath), 15_000)
+    assert.equal(started, true, 'the long command should have started')
+
+    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    assert.equal(typeof exit.code, 'number')
+    /* Give the killed process more than its remaining sleep: it must never get
+       to write the survived marker. */
+    await sleep(4_500)
+    assert.equal(existsSync(survivedPath), false, 'the idle-stop must kill the running command tree')
+  } finally {
+    stream.close()
+  }
 })
 
+/* ============================== default shell ============================== */
+
 test('the default shell is powershell on Windows', async (t) => {
-  if (process.platform !== 'win32') {
+  if (!IS_WINDOWS) {
     t.skip('the contract default (powershell.exe) only exists on Windows')
     return
   }
@@ -499,6 +706,6 @@ test('the default shell is powershell on Windows', async (t) => {
   try {
     assert.equal(session.shell, 'powershell.exe')
   } finally {
-    await boot.call('stop', { id: session.id })
+    await stopSession(boot, session.id)
   }
 })

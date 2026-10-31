@@ -81,21 +81,36 @@ handle.setContent(text) / handle.destroy()
 
 ## 4. `dsh-workbay-terminal`（前缀 `/dsh-workbay-terminal`）
 
-没有 PTY（Node 无原生 conpty），所以是**持久命令控制台**，不是完整 TTY：
-`powershell -NoLogo -NoProfile -Command -` 常驻进程，cwd = `root`，命令按行写入 stdin，输出流式回传。
+没有 PTY（Node 无原生 conpty），所以是**命令控制台**，不是完整 TTY。**每条命令一个进程**：
+会话只记录 cwd 与 shell，`input` 按行切分后为每行启动一次
+`powershell -NoLogo -NoProfile -NonInteractive -Command <line>`（cmd 用 `/C`，POSIX 用 `-c`），
+流式回传 stdout/stderr。
+
+> 为什么不是常驻 shell 写 stdin：`-Command -` 与 `-EncodedCommand` + `OpenStandardInput()`
+> 在 GitHub 的 Windows runner 上都不消费管道 stdin（会话活着、`hello` 正常、命令不执行），
+> 而本机正常。逐条进程没有这个环境依赖。
 
 | method | 入参 | 出参 |
 |---|---|---|
-| `start` | `{ root, cols?, rows? }` | `{ id, shell, cwd }` |
-| `input` | `{ id, data }` | `{ ok:true }` |
+| `start` | `{ root }` | `{ id, shell, cwd }` |
+| `input` | `{ id, data }` | `{ ok:true }`（按 `\r?\n` 切分，剩余半行缓冲） |
 | `stop` | `{ id }` | `{ ok:true }` |
 | `list` | `{}` | `{ sessions:[{id, cwd, startedAt}] }` |
 
 流：`GET /dsh-workbay-terminal/events?id=<id>`（SSE），事件
 `{ type:'out', data }` / `{ type:'exit', code }` / `{ type:'error', message }`。
 
-约束：最多 4 个会话；插件 dispose 时全部 kill；30 分钟无输入自动关闭；
-输出按 4 KiB 分片、ANSI 转义保留（客户端做基础 SGR 渲染）；不记录到日志文件。
+行为约定：
+
+- `cd <dir>` 由宿主处理：解析相对 cwd、校验目录存在、更新会话 cwd，并回显新路径；
+  其它行原样交给 shell。
+- cwd 跨命令保留；**环境变量不保留**（每次都是新进程）；交互式程序（vim/top）不可用。
+- 同一会话内命令串行执行，多余的先排队；`stop` 杀掉正在运行的进程树并发出会话级 `exit`。
+- 每条命令结束时宿主回显一行 `[exit N]`（会话保持），客户端把它当普通输出显示；
+  目前没有逐命令的 busy 指示，只有会话级状态（未启动/运行中/已退出）。
+- 每条命令额外开销 ≈ 一次 shell 启动（PowerShell 200~500ms）。
+- 约束：最多 4 个会话；插件 dispose 时全部 kill；30 分钟无输入自动关闭；
+  输出按 4 KiB 分片、ANSI 转义保留（客户端做基础 SGR 渲染）；不记录到日志文件。
 
 ## 5. 配置
 

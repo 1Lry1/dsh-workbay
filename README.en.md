@@ -15,7 +15,7 @@ This repository consolidates the capabilities into a single **pnpm workspace**:
 packages/
 ├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry
 ├─ files/       dsh-workbay-files     page: file tree + viewers + CodeMirror editor (lazy chunk)
-├─ terminal/    dsh-workbay-terminal  page: persistent command console rooted at the workspace (SSE)
+├─ terminal/    dsh-workbay-terminal  page: command console rooted at the workspace (one process per command, SSE)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
 ├─ kit/         @dsh-workbay/kit      shared host helpers: same-origin fence / JSON body / RPC envelope
