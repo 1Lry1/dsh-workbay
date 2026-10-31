@@ -67,6 +67,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Generated, gitignored: the files page lazy-loads CodeMirror from
+      # lib/chunks. Building here proves the chunk pipeline still works and lets
+      # the chunk test read the built artifact.
+      - name: Build lazy chunks
+        run: pnpm run build
+
       # `-r --if-present` walks every workspace package and skips the ones with
       # no `test` script (dock / downloader / suite only have browser e2e or
       # smoke scripts that need a live DSH install, a Chromium build or real

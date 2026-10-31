@@ -1,0 +1,13 @@
+# dsh-workbay-terminal — bundle patch
+#
+# Mounts the host half: /dsh-workbay-terminal/api (start/input/stop/list) and
+# the SSE stream /dsh-workbay-terminal/events. The browser half is served
+# through exports["./client"] and registers ONE page ('terminal') with the
+# workbench dock.
+- insert:
+    - id: workbay-terminal
+      name: 'dsh-workbay-terminal'
+      config:
+        shell: powershell
+        maxSessions: 4
+        idleTimeoutMs: 1800000

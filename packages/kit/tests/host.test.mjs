@@ -1,14 +1,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 import {
   ApiError,
   badRequest,
   createJsonApiHandler,
+  isRealPathInside,
   isTrustedRequest,
+  mediaTypeFor,
   mountJsonApi,
+  normalizeRel,
   readJsonBody,
+  resolveInside,
   sendJson,
 } from '../src/host.js'
 
@@ -189,3 +196,153 @@ test('badRequest is a 400 ApiError', () => {
   assert.equal(error.code, 'bad-request')
   assert.equal(error.message, 'missing cwd')
 })
+
+/* ============================== path helpers ============================== */
+
+/** Run `fn` against a throwaway sandbox and always clean it up. */
+function withSandbox(fn) {
+  const sandbox = mkdtempSync(path.join(tmpdir(), 'kwbk-kit-'))
+  try {
+    return fn(sandbox)
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Create a directory link. Windows only grants file symlinks to elevated or
+ * developer-mode accounts, but junctions need no privilege and Node reports
+ * them as symlinks (`lstat().isSymbolicLink() === true`).
+ */
+function makeDirLink(target, linkPath) {
+  try {
+    symlinkSync(target, linkPath, 'junction')
+    return true
+  } catch {
+    try {
+      symlinkSync(target, linkPath, 'dir')
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+test('normalizeRel collapses empty and dot segments and keeps POSIX segments', () => {
+  assert.equal(normalizeRel(''), '')
+  assert.equal(normalizeRel(undefined), '')
+  assert.equal(normalizeRel('.'), '')
+  assert.equal(normalizeRel('./'), '')
+  assert.equal(normalizeRel('a/b/c.txt'), 'a/b/c.txt')
+  assert.equal(normalizeRel('./a//b/./c.txt'), 'a/b/c.txt')
+  assert.equal(normalizeRel('dir/'), 'dir')
+  assert.equal(normalizeRel('a/...b/c'), 'a/...b/c')
+})
+
+test('normalizeRel rejects absolute, traversal, backslash, NUL and empty-when-required', () => {
+  for (const bad of ['/etc/passwd', 'a/../../b', '../x', 'a/..', 'a\\b', 'C:evil', 'a\u0000b', 42, {}]) {
+    assert.throws(() => normalizeRel(bad), (error) => error.code === 'bad-request', 'accepted: ' + String(bad))
+  }
+  assert.throws(() => normalizeRel('', { allowEmpty: false }), (error) => error.code === 'bad-request')
+  assert.throws(() => normalizeRel('...'), (error) => error.code === 'bad-request', 'dot-only segments are rejected')
+})
+
+test('mediaTypeFor maps known extensions case-insensitively and falls back to octet-stream', () => {
+  assert.equal(mediaTypeFor('a/b/photo.PNG'), 'image/png')
+  assert.equal(mediaTypeFor('icon.svg'), 'image/svg+xml')
+  assert.equal(mediaTypeFor('page.html'), 'text/html; charset=utf-8')
+  assert.equal(mediaTypeFor('notes.md'), 'text/markdown; charset=utf-8')
+  assert.equal(mediaTypeFor('doc.pdf'), 'application/pdf')
+  assert.equal(mediaTypeFor('unknown.zzz'), 'application/octet-stream')
+  assert.equal(mediaTypeFor('no-extension'), 'application/octet-stream')
+  assert.equal(mediaTypeFor(''), 'application/octet-stream')
+  assert.equal(mediaTypeFor(undefined), 'application/octet-stream')
+})
+
+test('isRealPathInside uses a separator boundary, not a bare prefix', () => {
+  assert.equal(isRealPathInside(path.resolve('/a/ws'), path.resolve('/a/ws')), true)
+  assert.equal(isRealPathInside(path.resolve('/a/ws'), path.resolve('/a/ws/sub/f.txt')), true)
+  assert.equal(isRealPathInside(path.resolve('/a/ws'), path.resolve('/a/ws2/f.txt')), false)
+  assert.equal(isRealPathInside(path.resolve('/a/ws'), path.resolve('/a/other/ws')), false)
+})
+
+test('resolveInside resolves existing children and appends a missing tail', () => withSandbox((sandbox) => {
+  const root = path.join(sandbox, 'ws')
+  mkdirSync(path.join(root, 'sub'), { recursive: true })
+  writeFileSync(path.join(root, 'sub', 'a.txt'), 'hi')
+  const realRoot = resolveInside(root, '')
+  assert.equal(realRoot, path.resolve(root))
+  assert.equal(resolveInside(root, 'sub/a.txt'), path.join(realRoot, 'sub', 'a.txt'))
+  /* A destination that does not exist yet is safe to name: its parent is real
+     and inside the root. */
+  assert.equal(resolveInside(root, 'sub/new.txt'), path.join(realRoot, 'sub', 'new.txt'))
+  assert.equal(resolveInside(root, 'new/dir/leaf.txt'), path.join(realRoot, 'new', 'dir', 'leaf.txt'))
+}))
+
+test('resolveInside validates the root itself', () => withSandbox((sandbox) => {
+  const file = path.join(sandbox, 'file.txt')
+  writeFileSync(file, 'x')
+  assert.throws(() => resolveInside('relative/dir', ''), (error) => error.code === 'bad-request')
+  assert.throws(() => resolveInside(path.join(sandbox, 'missing'), ''), (error) => error.code === 'bad-request')
+  assert.throws(() => resolveInside(file, ''), (error) => error.code === 'bad-request')
+  assert.throws(() => resolveInside('', ''), (error) => error.code === 'bad-request')
+  assert.throws(() => resolveInside(42, ''), (error) => error.code === 'bad-request')
+}))
+
+test('resolveInside rejects a traversal or absolute rel', () => withSandbox((sandbox) => {
+  const root = path.join(sandbox, 'ws')
+  mkdirSync(root)
+  for (const bad of ['../x', 'a/../../x', '/etc/passwd', 'a\\..\\x']) {
+    assert.throws(() => resolveInside(root, bad), (error) => error.code === 'bad-request', 'accepted: ' + bad)
+  }
+}))
+
+test('resolveInside refuses a directory link that leaves the root', () => withSandbox((sandbox) => {
+  const root = path.join(sandbox, 'ws')
+  const outside = path.join(sandbox, 'outside')
+  mkdirSync(root)
+  mkdirSync(outside)
+  writeFileSync(path.join(outside, 'secret.txt'), 'TOP SECRET')
+  if (!makeDirLink(outside, path.join(root, 'escape'))) {
+    /* No symlink/junction privilege (locked-down Windows profile): the cases
+       below are exactly what the confinement code exists for, so report it. */
+    return
+  }
+  assert.throws(
+    () => resolveInside(root, 'escape/secret.txt'),
+    (error) => error.code === 'outside-root' && error.status === 403,
+  )
+  assert.throws(() => resolveInside(root, 'escape'), (error) => error.code === 'outside-root')
+  /* The boundary is a separator, so a SIBLING with the same prefix is outside. */
+  const sibling = path.join(sandbox, 'ws2')
+  mkdirSync(sibling)
+  if (makeDirLink(sibling, path.join(root, 'sibling'))) {
+    assert.throws(() => resolveInside(root, 'sibling'), (error) => error.code === 'outside-root')
+  }
+  /* `followFinal: false` may name the link itself (unlink/rename) but never a
+     path THROUGH it. */
+  assert.equal(resolveInside(root, 'escape', { followFinal: false }), path.join(resolveInside(root, ''), 'escape'))
+  assert.throws(() => resolveInside(root, 'escape/secret.txt', { followFinal: false }), (error) => error.code === 'outside-root')
+}))
+
+test('resolveInside follows a link that stays inside the root', () => withSandbox((sandbox) => {
+  const root = path.join(sandbox, 'ws')
+  mkdirSync(path.join(root, 'actual'), { recursive: true })
+  writeFileSync(path.join(root, 'actual', 'a.txt'), 'inside')
+  if (!makeDirLink(path.join(root, 'actual'), path.join(root, 'alias'))) return
+  assert.equal(
+    resolveInside(root, 'alias/a.txt'),
+    path.join(resolveInside(root, ''), 'actual', 'a.txt'),
+  )
+}))
+
+test('resolveInside reports a dangling symlink as outside-root', () => withSandbox((sandbox) => {
+  const root = path.join(sandbox, 'ws')
+  mkdirSync(root)
+  try {
+    symlinkSync(path.join(sandbox, 'missing-target'), path.join(root, 'dangling'), 'file')
+  } catch {
+    return /* creating file symlinks needs developer mode on Windows */
+  }
+  assert.throws(() => resolveInside(root, 'dangling'), (error) => error.code === 'outside-root')
+}))

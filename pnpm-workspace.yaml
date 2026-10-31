@@ -9,3 +9,5 @@ nodeLinker: hoisted
 # that only exist inside a DSH install. Do not try to fetch them from npm.
 autoInstallPeers: false
 strictPeerDependencies: false
+allowBuilds:
+  esbuild: true

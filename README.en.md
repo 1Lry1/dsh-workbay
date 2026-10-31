@@ -7,27 +7,29 @@
 
 [Chinese](README.md) | **English**
 
-The **workbench** for DeepSeek Harness (DSH): one entry in the sidebar, one fixed panel on the right, with the Git and hardware-flashing pages used side by side, independent of any particular conversation.
+The **workbench** for DeepSeek Harness (DSH): one entry in the sidebar, one fixed panel on the right, with the files, Git, terminal and hardware-flashing pages used side by side, independent of any particular conversation.
 
-This repository consolidates what used to be three standalone projects into a single **pnpm workspace**:
+This repository consolidates the capabilities into a single **pnpm workspace**:
 
 ```
 packages/
-├─ dock/        dsh-workbay-dock    shell: left-sidebar entry + right-side dock overlay + page registry
+├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry
+├─ files/       dsh-workbay-files     page: file tree + viewers + CodeMirror editor (lazy chunk)
+├─ terminal/    dsh-workbay-terminal  page: persistent command console rooted at the workspace (SSE)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
-├─ kit/         @dsh-workbay/kit    shared host helpers: same-origin fence / JSON body / RPC envelope
-└─ suite/       dsh-workbay-suite   aggregator: installs all three at once (experimental)
+├─ kit/         @dsh-workbay/kit      shared host helpers: same-origin fence / JSON body / RPC envelope
+└─ suite/       dsh-workbay-suite     aggregator: installs all five at once (experimental)
 ```
 
 ```
 Sidebar [Workbench] ──click──▶ Dock panel on the right
-                               ┌────────────────────────────────────┐
-                               │ Workbench   Docked right     ⤢ ⇥   │
-                               │ [GitCraft] [Downloader]            │
-                               │                                    │
-                               │ Current page (beside conversation) │
-                               └────────────────────────────────────┘
+                               ┌────────────────────────────────────────┐
+                               │ Workbench   Docked right     ⤢ ⇥       │
+                               │ [Files] [Terminal] [GitCraft] [Download]│
+                               │                                        │
+                               │      Current page (beside conversation)│
+                               └────────────────────────────────────────┘
 ```
 
 ## Why not one big plugin

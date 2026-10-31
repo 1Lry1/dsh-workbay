@@ -7,27 +7,29 @@
 
 **中文** | [English](README.en.md)
 
-DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固定面板，Git 和硬件烧录两个页面并排使用，与具体会话无关。
+DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固定面板，文件、Git、终端、硬件烧录四个页面并排使用，与具体会话无关。
 
-这个仓库把原本三个独立工程收敛成一个 **pnpm workspace**：
+这个仓库把能力收敛成一个 **pnpm workspace**：
 
 ```
 packages/
-├─ dock/        dsh-workbay-dock    壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
+├─ dock/        dsh-workbay-dock      壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
+├─ files/       dsh-workbay-files     页面：文件树 + 查看器 + CodeMirror 编辑器（chunk 懒加载）
+├─ terminal/    dsh-workbay-terminal  页面：工作区常驻命令控制台（SSE 流式）
 ├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
 ├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
-├─ kit/         @dsh-workbay/kit    共享 host 工具：同源围栏 / JSON 体 / RPC 信封
-└─ suite/       dsh-workbay-suite   聚合金：一次装好上面三个（实验性）
+├─ kit/         @dsh-workbay/kit      共享 host 工具：同源围栏 / JSON 体 / RPC 信封
+└─ suite/       dsh-workbay-suite     聚合金：一次装好上面五个（实验性）
 ```
 
 ```
 左侧栏 [工作台] ──点击──▶ 右侧停靠面板
-                          ┌──────────────────────────────┐
-                          │ 工作台  已停靠右侧      ⤢ ⇥  │
-                          │ [GitCraft] [Downloader]      │
-                          │                              │
-                          │   当前页面内容（与会话并排）  │
-                          └──────────────────────────────┘
+                          ┌────────────────────────────────────────┐
+                          │ 工作台  已停靠右侧              ⤢ ⇥    │
+                          │ [文件] [终端] [GitCraft] [Downloader]  │
+                          │                                        │
+                          │         当前页面内容（与会话并排）       │
+                          └────────────────────────────────────────┘
 ```
 
 ## 为什么不是一个大插件

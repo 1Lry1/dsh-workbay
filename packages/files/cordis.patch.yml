@@ -1,0 +1,12 @@
+# dsh-workbay-files — bundle patch
+#
+# Mounts the host half: the workspace file API under /dsh-workbay-files/api,
+# the media route (raw bytes with content-type) and the lazy-chunk route that
+# serves lib/chunks/*.js. The browser half is served through exports["./client"]
+# and registers ONE page ('files') with the workbench dock.
+- insert:
+    - id: workbay-files
+      name: 'dsh-workbay-files'
+      config:
+        allowWrite: false
+        maxFileBytes: 1048576

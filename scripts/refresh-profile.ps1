@@ -34,6 +34,17 @@ if ($blockers.Count -gt 0) {
   throw 'close DSH first, then run this script again'
 }
 
+# The files page lazy-loads CodeMirror from lib/chunks/, which is generated and
+# gitignored. Bake it before copying, or the editor/viewers fail at first open.
+Push-Location $repoRoot
+try {
+  Write-Host 'building lazy chunks...' -ForegroundColor Cyan
+  pnpm run build
+  if ($LASTEXITCODE -ne 0) { throw 'chunk build failed' }
+} finally {
+  Pop-Location
+}
+
 Push-Location $profileDir
 try {
   # pnpm does NOT notice content changes inside a `file:` directory dependency

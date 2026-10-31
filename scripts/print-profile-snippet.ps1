@@ -28,12 +28,14 @@ if (-not (Test-Path (Join-Path $repoRoot 'packages\dock\package.json'))) {
 }
 
 $posix = $repoRoot.Replace('\', '/')
-$bundles = @('dsh-workbay-dock', 'dsh-gitcraft', 'dsh-downloader')
+$bundles = @('dsh-workbay-dock', 'dsh-workbay-files', 'dsh-workbay-terminal', 'dsh-gitcraft', 'dsh-downloader')
 $deps = [ordered]@{
-  'dsh-workbay-dock'  = "file:$posix/packages/dock"
-  'dsh-gitcraft'      = "file:$posix/packages/gitcraft"
-  'dsh-downloader'    = "file:$posix/packages/downloader"
-  '@dsh-workbay/kit'  = "file:$posix/packages/kit"
+  'dsh-workbay-dock'     = "file:$posix/packages/dock"
+  'dsh-workbay-files'    = "file:$posix/packages/files"
+  'dsh-workbay-terminal' = "file:$posix/packages/terminal"
+  'dsh-gitcraft'         = "file:$posix/packages/gitcraft"
+  'dsh-downloader'       = "file:$posix/packages/downloader"
+  '@dsh-workbay/kit'     = "file:$posix/packages/kit"
 }
 
 if ($Json) {

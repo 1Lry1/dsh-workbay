@@ -7,18 +7,25 @@
  * (small) dock-page registration snippet therefore stays duplicated in the two
  * page plugins on purpose — see docs/architecture.md.
  *
- * Three things live here:
+ * Four things live here:
  *
  *   1. the trust fence every plugin route uses (loopback peer / loopback Host /
  *      same-origin Sec-Fetch-Site);
  *   2. bounded JSON body reading;
  *   3. the `POST <prefix>/<method>` RPC surface with the
  *      `{ ok: true, data } | { ok: false, error: { code, message } }` envelope,
- *      which is what dsh-workbay-dock and dsh-gitcraft both expose.
+ *      which is what dsh-workbay-dock and dsh-gitcraft both expose;
+ *   4. filesystem path helpers for the bundles that serve a workspace root
+ *      (`resolveInside` / `normalizeRel`) and for binary routes
+ *      (`mediaTypeFor`). dsh-workbay-files and dsh-workbay-terminal both need
+ *      the same "the client may only name a path inside this root" rule, and a
+ *      home-grown realpath check is exactly the kind of code that drifts.
  *
  * dsh-downloader does not use (3): its host also streams SSE and binary frames,
  * which is a different shape from a JSON RPC map.
  */
+import { lstatSync, realpathSync, statSync } from 'node:fs'
+import path from 'node:path'
 
 export const DEFAULT_MAX_BODY_BYTES = 64 * 1024
 
@@ -204,4 +211,216 @@ export function mountJsonApi(ctx, options) {
     label + ': api routes',
   )
   return handler
+}
+
+/* ============================== filesystem paths ============================== */
+
+/* Windows and macOS compare paths case-insensitively; Linux does not. Getting
+   this wrong turns "inside the root" into a per-machine bug. */
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
+
+function realpathOf(value) {
+  /* `realpathSync.native` expands 8.3 short names (`RUNNER~1`) and subst/
+     symlinked drives, which is what makes a TMP-style root comparable to the
+     paths Node reports for its children. */
+  return typeof realpathSync.native === 'function' ? realpathSync.native(value) : realpathSync(value)
+}
+
+function outsideRoot(message) {
+  return new ApiError('outside-root', message, 403)
+}
+
+/**
+ * Is `target` the root itself or a descendant of it?
+ *
+ * This is a PREFIX ON SEGMENT BOUNDARIES: `C:\ws2` must not count as inside
+ * `C:\ws`, which a bare `startsWith` would allow.
+ */
+export function isRealPathInside(root, target) {
+  const left = CASE_INSENSITIVE_FS ? root.toLowerCase() : root
+  const right = CASE_INSENSITIVE_FS ? target.toLowerCase() : target
+  if (right === left) return true
+  const boundary = left.endsWith(path.sep) ? left : left + path.sep
+  return right.startsWith(boundary)
+}
+
+/**
+ * Validate and normalise a client-supplied workspace-relative path.
+ *
+ * The contract is POSIX-only: `a/b/c`, never absolute, never a `..` segment,
+ * never a backslash (on Windows `path.resolve` would happily treat it as a
+ * separator and `a\..\..\x` would leave the root). Empty means "the root
+ * itself" unless `allowEmpty: false`.
+ *
+ * @param {unknown} rel
+ * @param {{ allowEmpty?: boolean }} [options]
+ * @returns {string} normalised relative path ('' for the root)
+ */
+export function normalizeRel(rel, options = {}) {
+  const allowEmpty = options.allowEmpty === undefined ? true : options.allowEmpty === true
+  const raw = rel === undefined || rel === null ? '' : rel
+  if (typeof raw !== 'string') throw badRequest('rel must be a string')
+  if (raw.length > 4096) throw badRequest('rel is too long')
+  if (raw.includes('\u0000')) throw badRequest('rel must not contain NUL')
+  if (raw.includes('\\')) throw badRequest('rel must use POSIX separators ("/")')
+  if (raw.startsWith('/')) throw badRequest('rel must be a relative path')
+  /* `C:foo` is drive-relative on Windows: it resolves against that drive's
+     current directory, not against the root. */
+  if (/^[A-Za-z]:/.test(raw)) throw badRequest('rel must be a relative path')
+  const segments = []
+  for (const segment of raw.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') throw badRequest('rel must not contain ".."')
+    /* Names such as `...` are dot-only and collapse to `.`/`..` on Windows. */
+    if (/^\.+$/.test(segment)) throw badRequest('rel contains an invalid segment')
+    segments.push(segment)
+  }
+  if (segments.length === 0) {
+    if (!allowEmpty) throw badRequest('rel is required')
+    return ''
+  }
+  return segments.join('/')
+}
+
+/**
+ * Resolve `rel` inside `root` and prove the RESULT is still inside `root`.
+ *
+ * Steps: the root must be an absolute, existing directory; its own realpath is
+ * the confinement boundary. Every existing segment is `lstat`ed and symlinks
+ * are followed only after their realpath has been checked against that
+ * boundary. A missing tail (a write/mkdir/rename destination) is appended
+ * lexically to the last real directory, which is safe because that directory
+ * has itself been proven to be inside the root.
+ *
+ * `followFinal: false` stops before resolving the LAST segment. Use it for
+ * directory-entry operations (stat/unlink/rename) that must act on a symlink
+ * itself rather than its target. Never use it before opening a file.
+ *
+ * @param {string} root absolute path to an existing directory
+ * @param {string} [rel] POSIX relative path
+ * @param {{ followFinal?: boolean }} [options]
+ * @returns {string} absolute path confined to the root's realpath
+ * @throws {ApiError} 400 `bad-request` for a malformed root/rel,
+ *                    403 `outside-root` for a symlink escape or dangling link
+ */
+export function resolveInside(root, rel, options = {}) {
+  const followFinal = options.followFinal === undefined ? true : options.followFinal === true
+  if (typeof root !== 'string' || root.trim() === '') throw badRequest('root is required')
+  if (!path.isAbsolute(root)) throw badRequest('root must be an absolute path')
+  let rootReal
+  try {
+    rootReal = realpathOf(path.resolve(root))
+  } catch {
+    throw badRequest('root does not exist')
+  }
+  let rootStats
+  try {
+    rootStats = statSync(rootReal)
+  } catch {
+    throw badRequest('root is not accessible')
+  }
+  if (!rootStats.isDirectory()) throw badRequest('root is not a directory')
+
+  const normalized = normalizeRel(rel === undefined || rel === null ? '' : rel)
+  if (normalized === '') return rootReal
+
+  const segments = normalized.split('/')
+  let current = rootReal
+  for (let index = 0; index < segments.length; index += 1) {
+    const next = path.join(current, segments[index])
+    const isFinal = index === segments.length - 1
+    let stats
+    try {
+      stats = lstatSync(next)
+    } catch (error) {
+      const code = error !== null && typeof error === 'object' ? error.code : undefined
+      if (code === 'ENOENT') {
+        /* Nothing here yet: the remainder does not exist, so appending it to a
+           proven-inside directory cannot leave the root. */
+        return path.join(current, ...segments.slice(index))
+      }
+      if (code === 'ENOTDIR') throw badRequest('a parent segment is not a directory')
+      throw new ApiError('fs-error', 'cannot inspect path: ' + messageOf(error), 500)
+    }
+    if (!stats.isSymbolicLink()) {
+      current = next
+      continue
+    }
+    /* A final symlink that callers only unlink/rename may be returned as-is
+       (the link lives inside the root even when its target does not). */
+    if (isFinal && followFinal === false) return next
+    let resolved
+    try {
+      resolved = realpathOf(next)
+    } catch {
+      /* A dangling link could point anywhere; we cannot prove containment. */
+      throw outsideRoot('refusing to follow a dangling symlink')
+    }
+    if (!isRealPathInside(rootReal, resolved)) {
+      throw outsideRoot('path escapes the workspace root')
+    }
+    current = resolved
+  }
+  return current
+}
+
+/* Text formats get a charset so a browser does not have to guess; binary ones
+   keep the bare media type. An unknown extension is deliberately not sniffed
+   (the media route also sends `nosniff`). */
+const MEDIA_TYPES = Object.freeze({
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.xhtml': 'application/xhtml+xml; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.cjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.markdown': 'text/markdown; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.tsv': 'text/tab-separated-values; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.wasm': 'application/wasm',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.zip': 'application/zip',
+  '.gz': 'application/gzip',
+})
+
+/**
+ * Content-Type for a file path. Unknown extensions fall back to
+ * `application/octet-stream` — never to a type the browser would render.
+ *
+ * @param {unknown} filePath
+ * @returns {string}
+ */
+export function mediaTypeFor(filePath) {
+  if (typeof filePath !== 'string' || filePath === '') return 'application/octet-stream'
+  const extension = path.extname(filePath).toLowerCase()
+  if (extension === '') return 'application/octet-stream'
+  return Object.prototype.hasOwnProperty.call(MEDIA_TYPES, extension)
+    ? MEDIA_TYPES[extension]
+    : 'application/octet-stream'
 }

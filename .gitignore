@@ -18,3 +18,7 @@ Thumbs.db
 *.bak-*
 *.old-*
 *.tgz
+
+# generated lazy chunks (scripts/build-chunks.mjs); rebuilt by `pnpm run build`
+packages/*/lib/chunks/
+
