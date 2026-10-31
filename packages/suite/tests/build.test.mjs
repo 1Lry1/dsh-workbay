@@ -6,8 +6,9 @@
  *
  *   1. host: the generated apply() mounts EVERY bundle — each one's route
  *      prefixes are registered on the fake ctx exactly once;
- *   2. client: the concatenated file registers all five client modules with the
- *      module loader (queue semantics), with unique ids.
+ *   2. client: the bundle registers ONE module under the package name
+ *      `dsh-workbay-suite` (the client module system resolves a boot row by
+ *      package name) and materializes all five vendored client halves.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
@@ -47,7 +48,7 @@ test('the generated patch inserts exactly one row', () => {
   assert.equal((patch.match(/name: '/g) ?? []).length, 1, 'a second row would double-register routes')
 })
 
-test('the generated client queues all five module registrations', () => {
+test('the generated client registers one module under the package name', () => {
   const source = readFileSync(clientPath, 'utf8')
   const registrations = []
   const window = {
@@ -59,15 +60,39 @@ test('the generated client queues all five module registrations', () => {
     },
   }
   /* The file is plain browser code; only window.__ModuleLoader__ is touched at
-     evaluation time (the factories run later). */
+     evaluation time (the vendored factories run at materialization). */
   new Function('window', source)(window)
-  assert.equal(registrations.length, 5, 'expected dock + four pages')
-  const ids = registrations.map((registration) => String(registration.id))
-  assert.equal(new Set(ids).size, ids.length, 'module ids must be unique: ' + ids.join(', '))
-  for (const expected of ['dsh-workbay-dock', 'dsh-workbay-files', 'dsh-workbay-terminal', 'dsh-gitcraft', 'dsh-downloader']) {
-    assert.ok(ids.includes(expected), 'missing client bundle ' + expected + ' in ' + ids.join(', '))
+
+  /* DSH's client module system builds one boot row per package name and asks
+     the bundle to register exactly that id. Registering the five vendored ids
+     instead leaves the `dsh-workbay-suite` row unregistered, so web boot fails
+     with "entry did not activate" (and the fallback reload re-executes the
+     bundle, which used to raise a duplicate-registration error). */
+  assert.equal(registrations.length, 1, 'a package bundle must register one factory under its own name')
+  const [registration] = registrations
+  assert.equal(registration.id, 'dsh-workbay-suite')
+  assert.equal(typeof registration.factory, 'function')
+
+  /* Materializing the suite factory runs every vendored client factory; a
+     missing or broken one throws here instead of at boot. */
+  class Component {}
+  const React = {
+    Component,
+    Fragment: Symbol('Fragment'),
+    createElement() { return null },
+    useState() { return [] },
+    useEffect() {},
+    useMemo() {},
+    useRef() {},
+    useCallback() {},
   }
-  for (const registration of registrations) assert.equal(typeof registration.factory, 'function')
+  const plugin = registration.factory((specifier) => {
+    if (specifier === 'react') return React
+    throw new Error('unexpected require: ' + specifier)
+  })
+  assert.equal(plugin.name, 'dsh-workbay-suite')
+  assert.equal(typeof plugin.apply, 'function')
+  assert.deepEqual([...plugin.inject], [])
 })
 
 test('the merged host mounts every bundle exactly once on a fake ctx', async () => {
@@ -104,7 +129,7 @@ test('the merged host mounts every bundle exactly once on a fake ctx', async () 
     tools: { register() { return () => {} } },
     get() { return undefined },
   }
-  plugin.apply(ctx, {})
+  await plugin.apply(ctx, {})
   const prefixes = routes.map((route) => String(route.path))
 
   for (const expected of [

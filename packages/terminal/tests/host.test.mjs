@@ -1358,12 +1358,16 @@ test('real PTY: Ctrl+C interrupts a long command without ending the session', as
     await bootReal.call('input', { id: session.id, data: "Write-Output ('READY-' + 1)\r" })
     await stream.waitFor(outContains('READY-1'), 30_000)
 
-    await bootReal.call('input', { id: session.id, data: 'Start-Sleep -Seconds 30\r' })
-    await sleep(1_000)
+    /* Prove the shell is executing before interrupting: on a cold/large machine
+       the previous 1 s sleep could land during PowerShell startup, so Ctrl+C
+       aborted initialization instead of a command and the session died. */
+    await bootReal.call('input', { id: session.id, data: "Write-Output ('SLEEPING-' + 1); Start-Sleep -Seconds 30\r" })
+    await stream.waitFor(outContains('SLEEPING-1'), 45_000)
+    await sleep(600)
     await bootReal.call('input', { id: session.id, data: String.fromCharCode(3) })
-    await sleep(400)
+    await sleep(600)
     await bootReal.call('input', { id: session.id, data: "Write-Output ('AFTER-' + 1)\r" })
-    await stream.waitFor(outContains('AFTER-1'), 20_000)
+    await stream.waitFor(outContains('AFTER-1'), 60_000)
 
     const listed = await bootReal.call('list', {})
     assert.ok(listed.data.sessions.some((entry) => entry.id === session.id), 'Ctrl+C must not kill the session')

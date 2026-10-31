@@ -26,8 +26,14 @@ packages/suite/
 
 - 宿主：每个包的 `apply(ctx, config)` 是普通函数，聚合金在一个 ctx 上依次调用它们即可；
   每个包仍保留自己的路由前缀、自己的失败域。
-- 客户端：`window.__ModuleLoader__.load({ id, factory })` 是**队列** API，一个脚本里可以
-  注册多个模块；拼接时用 IIFE 隔离各自作用域。
+- 客户端：DSH 的 client 模块图**按包名建行**——`dsh-workbay-suite` 这一行要求 bundle
+  注册 `id: 'dsh-workbay-suite'` 的 factory。所以生成器把五个 client 半侧的
+  `__ModuleLoader__.load(...)` **截获**成 `capture(...)`，最后只注册一个
+  `dsh-workbay-suite`：它的 factory 依次物化五个子模块，`apply()` 在同一 fiber 里
+  组合它们（逐个 try/catch，单页坏了不会拖垮入口）。**不要**让五段代码各自
+  `load()` 注册自己的 id——那样 suite 这一行永远拿不到 factory，web boot 会报
+  `1 entry did not activate`，并回退重执行同一 bundle 触发
+  `duplicate factory registration`。
 - 路径：files/terminal 用 `import.meta.url` 找自己的 `lib/chunks` / `helper`，downloader 用
   同样方式找 `helper` —— vendor 保留了包内目录结构，所以这些相对路径继续成立；
   `@dsh-workbay/kit` 的 import 在拷贝时改写成相对路径。
