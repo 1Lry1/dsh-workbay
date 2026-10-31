@@ -79,10 +79,10 @@ function longCommand(flagPath, survivedPath) {
   const flag = quoteForShell(flagPath)
   if (IS_WINDOWS) {
     const tail = survivedPath === undefined ? '' : '; Set-Content -LiteralPath ' + quoteForShell(survivedPath) + ' -Value 1'
-    return 'Set-Content -LiteralPath ' + flag + ' -Value 1; Start-Sleep -Seconds 4' + tail
+    return 'Set-Content -LiteralPath ' + flag + ' -Value 1; Start-Sleep -Seconds 15' + tail
   }
   const tail = survivedPath === undefined ? '' : '; touch ' + quoteForShell(survivedPath)
-  return 'touch ' + flag + '; sleep 4' + tail
+  return 'touch ' + flag + '; sleep 15' + tail
 }
 
 /**
@@ -306,7 +306,7 @@ before(async () => {
   missingPath = path.join(sandbox, 'missing-dir')
 
   bootA = await bootPlugin({ shell: TEST_SHELL, maxSessions: 4, idleTimeoutMs: 60_000 })
-  bootB = await bootPlugin({ shell: TEST_SHELL, maxSessions: 1, idleTimeoutMs: 1_500 })
+  bootB = await bootPlugin({ shell: TEST_SHELL, maxSessions: 1, idleTimeoutMs: 8_000 })
 
   /* Warm the shell once. On a cold CI runner the first PowerShell spawn can take
      tens of seconds (Defender scan + JIT) while every later spawn is fast; paying
@@ -699,17 +699,22 @@ test('an idle-timeout stop kills the running command (no orphan writes the survi
   const stream = openEvents(bootB.baseUrl, session.id)
   try {
     await stream.waitFor((event) => event.type === 'hello')
-    /* The command would write `survivedPath` after 4 s if it were still alive
-       when the 1.5 s idle timeout stops the session. */
+    /* The command writes `flagPath` first, then sleeps 15 s, then writes
+       `survivedPath`. The 8 s idle timeout must stop it between the two. That
+       timeout is deliberately longer than a cold shell start: at 1.5 s a slow
+       runner stopped the session before the command ever ran, which proves
+       nothing about orphan killing. */
     await bootB.call('input', { id: session.id, data: longCommand(flagPath, survivedPath) + TEST_NEWLINE })
     const started = await waitUntil(() => existsSync(flagPath), 40_000)
     assert.equal(started, true, 'the long command should have started')
+    const startedAt = Date.now()
 
-    const exit = await stream.waitFor((event) => event.type === 'exit', 20_000)
+    const exit = await stream.waitFor((event) => event.type === 'exit', 30_000)
     assert.equal(typeof exit.code, 'number')
-    /* Give the killed process more than its remaining sleep: it must never get
-       to write the survived marker. */
-    await sleep(4_500)
+    /* Wait until the killed process's remaining sleep has definitely elapsed:
+       the survived marker must never appear. */
+    const remaining = startedAt + 16_000 - Date.now()
+    if (remaining > 0) await sleep(remaining)
     assert.equal(existsSync(survivedPath), false, 'the idle-stop must kill the running command tree')
   } finally {
     stream.close()
