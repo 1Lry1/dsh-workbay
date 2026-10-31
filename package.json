@@ -20,7 +20,8 @@
                     "update":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1",
                     "update:fast":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1 -SkipTests",
                     "profile:snippet":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/print-profile-snippet.ps1",
-                    "smoke:e2e":  "node scripts/smoke-e2e.mjs"
+                    "smoke:e2e":  "node scripts/smoke-e2e.mjs",
+                    "install:profile:on-exit":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-on-exit.ps1"
                 },
     "devDependencies":  {
                             "@codemirror/commands":  "^6.11.1",
@@ -43,6 +44,8 @@
                             "@codemirror/state":  "^6.7.6",
                             "@codemirror/view":  "^6.43.15",
                             "@lezer/highlight":  "^1.2.5",
+                            "@xterm/addon-fit":  "^0.11.0",
+                            "@xterm/xterm":  "^6.0.0",
                             "esbuild":  "^0.28.2"
                         }
 }

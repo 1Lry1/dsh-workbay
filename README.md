@@ -15,7 +15,7 @@ DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固
 packages/
 ├─ dock/        dsh-workbay-dock      壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
 ├─ files/       dsh-workbay-files     页面：文件树 + 查看器 + CodeMirror 编辑器（chunk 懒加载）
-├─ terminal/    dsh-workbay-terminal  页面：工作区命令控制台（逐条进程，SSE 流式）
+├─ terminal/    dsh-workbay-terminal  页面：真终端（ConPTY）+ 多 tab（xterm.js，SSE 流式）
 ├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
 ├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
 ├─ kit/         @dsh-workbay/kit      共享 host 工具：同源围栏 / JSON 体 / RPC 信封
@@ -140,6 +140,19 @@ pnpm install            # 或 dsh plugin --profile desktop add file:...
 装完**重启 DSH**，左侧栏出现「工作台」。
 
 > `@dsh-workbay/kit` 必须能被 DSH 的运行时解析到：它被 dock 和 gitcraft 的 host 半侧 import，所以 profile 的 `node_modules` 里要有它。用 `pnpm install` 时 pnpm 会按 `file:` 依赖自动装好；手工拷贝插件目录时容易漏，表现为 host 半侧加载失败。
+
+### 在 DSH 关闭后自动安装（推荐）
+
+`refresh-profile.ps1` 不能在 DSH 运行时执行：应用锁着插件目录，而且工作台里的终端本身就是 DSH 的子进程。所以在**工作台终端里**直接跑 `pnpm run install:profile` 必然会看到
+`close DSH first, then run this script again`——这是保护，不是故障。
+
+用这个入口可以省掉"先关再手动跑"的来回：
+
+```powershell
+pnpm run install:profile:on-exit
+# 它启动一个 WMI 分离进程等待 DSH 退出，然后自动构建 + 安装。
+# 现在完全退出 DSH（含托盘），装完再打开 DSH 即可；日志在 %TEMP%\dsh-workbay-install.log
+```
 
 ### 更新到最新版（从 GitHub）
 

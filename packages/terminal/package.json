@@ -12,6 +12,8 @@
   },
   "files": [
     "src",
+    "lib",
+    "helper",
     "cordis.patch.yml",
     "README.md",
     "icon.svg"
@@ -44,7 +46,7 @@
     }
   },
   "scripts": {
-    "test": "node --test tests/host.test.mjs"
+    "test": "node --test tests/host.test.mjs tests/client.test.mjs tests/pty-helper.test.mjs"
   },
   "keywords": [
     "dsh",

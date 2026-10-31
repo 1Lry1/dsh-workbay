@@ -48,7 +48,7 @@
 
 ## 3. Chunk 协议（重依赖懒加载）
 
-宿主：`GET /dsh-workbay-files/chunk/<name>.js`，从 `lib/chunks/` 读文件，
+宿主：`GET /dsh-workbay-files/chunk/<name>.js`（终端包同形：`/dsh-workbay-terminal/chunk/<name>.js`），从 `lib/chunks/` 读文件，
 `cache-control: no-cache` + `ETag`（内容 hash），304 支持；缺文件 404。
 
 脚本格式（构建产物，**不要手写**）：
@@ -81,36 +81,37 @@ handle.setContent(text) / handle.destroy()
 
 ## 4. `dsh-workbay-terminal`（前缀 `/dsh-workbay-terminal`）
 
-没有 PTY（Node 无原生 conpty），所以是**命令控制台**，不是完整 TTY。**每条命令一个进程**：
-会话只记录 cwd 与 shell，`input` 按行切分后为每行启动一次
-`powershell -NoLogo -NoProfile -NonInteractive -Command <line>`（cmd 用 `/C`，POSIX 用 `-c`），
-流式回传 stdout/stderr。
+两种模式，`start` 返回的 `mode` 与 SSE `hello.mode` 告知客户端：
 
-> 为什么不是常驻 shell 写 stdin：`-Command -` 与 `-EncodedCommand` + `OpenStandardInput()`
-> 在 GitHub 的 Windows runner 上都不消费管道 stdin（会话活着、`hello` 正常、命令不执行），
-> 而本机正常。逐条进程没有这个环境依赖。
+- **`pty`（默认，Windows）**：真 PTY。宿主启动 `helper/WorkbayPty.exe`（ConPTY，
+  独立 C# 进程，因为 Electron 主进程不能加载 Node 原生模块），`input` 是**原始按键**
+  （`\r`、`\x03`、方向键 `\x1b[A`…），由 PTY 里的 shell 回显与编辑；可跑 vim/top、
+  彩色输出、Ctrl+C。协议见 [terminal-pty.md](terminal-pty.md)。
+- **`command`（回退：非 Windows / helper 缺失 / `pty:'off'`）**：逐命令进程，
+  会话维护 cwd，`cd` 由宿主处理，交互式程序不可用。
 
 | method | 入参 | 出参 |
 |---|---|---|
-| `start` | `{ root }` | `{ id, shell, cwd }` |
-| `input` | `{ id, data }` | `{ ok:true }`（按 `\r?\n` 切分，剩余半行缓冲） |
+| `start` | `{ root, cols?, rows?, shell? }` | `{ id, shell, cwd, mode }` |
+| `input` | `{ id, data }` | `{ ok:true }`（pty：原始按键；command：按 `\r?\n` 切分） |
+| `resize` | `{ id, cols, rows }` | `{ ok:true }`（20..500 × 5..200） |
+| `restart` | `{ id }` | `{ id, shell, cwd, mode }`（同 cwd 新会话，旧会话回收） |
 | `stop` | `{ id }` | `{ ok:true }` |
-| `list` | `{}` | `{ sessions:[{id, cwd, startedAt}] }` |
+| `list` | `{}` | `{ sessions:[{id, cwd, startedAt, mode}] }` |
 
 流：`GET /dsh-workbay-terminal/events?id=<id>`（SSE），事件
-`{ type:'out', data }` / `{ type:'exit', code }` / `{ type:'error', message }`。
+`{ type:'out', data }` / `{ type:'exit', code }` / `{ type:'error', message }`；
+`hello` 额外带 `mode`、`cols`、`rows`。
 
 行为约定：
 
-- `cd <dir>` 由宿主处理：解析相对 cwd、校验目录存在、更新会话 cwd，并回显新路径；
-  其它行原样交给 shell。
-- cwd 跨命令保留；**环境变量不保留**（每次都是新进程）；交互式程序（vim/top）不可用。
-- 同一会话内命令串行执行，多余的先排队；`stop` 杀掉正在运行的进程树并发出会话级 `exit`。
-- 每条命令结束时宿主回显一行 `[exit N]`（会话保持），客户端把它当普通输出显示；
-  目前没有逐命令的 busy 指示，只有会话级状态（未启动/运行中/已退出）。
-- 每条命令额外开销 ≈ 一次 shell 启动（PowerShell 200~500ms）。
-- 约束：最多 4 个会话；插件 dispose 时全部 kill；30 分钟无输入自动关闭；
-  输出按 4 KiB 分片、ANSI 转义保留（客户端做基础 SGR 渲染）；不记录到日志文件。
+- PTY 模式不做任何宿主侧解释：不拦 `cd`、不加行缓冲、不本地回显，字节进出。
+- command 模式的约定保持不变：`cd` 宿主处理、cwd 跨命令保留、环境变量不保留、
+  命令串行 + 队列、每条命令结束回显 `[exit N]`、每条命令额外开销 ≈ 一次 shell 启动。
+- command 模式强制 UTF-8 输出（PowerShell 前置 `[Console]::OutputEncoding`，cmd 前置
+  `chcp 65001>nul &`），否则中文在 OEM 代码页下会乱码（真实截图里出现过）。
+- 约束：最多 8 个会话（硬上限 32）；插件 dispose 时全部 kill；30 分钟无输入自动关闭；
+  输出按 4 KiB 分片、ANSI 转义原样透传；不记录到日志文件。
 
 ## 5. 配置
 
@@ -119,6 +120,8 @@ handle.setContent(text) / handle.destroy()
 | `allowWrite` | `dsh-workbay-files` 的 cordis 行 config | `false`（profile 里显式开） |
 | `maxFileBytes` | 同上 | `1 MiB` |
 | `terminal.shell` | `dsh-workbay-terminal` config | `powershell` |
+| `terminal.pty` | 同上 | `auto`（`off` 强制逐命令，`on` 缺 helper 时 500） |
+| `terminal.maxSessions` | 同上 | `8`（硬上限 32） |
 
 ## 6. 页面注册
 

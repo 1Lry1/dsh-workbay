@@ -15,7 +15,7 @@ This repository consolidates the capabilities into a single **pnpm workspace**:
 packages/
 ├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry
 ├─ files/       dsh-workbay-files     page: file tree + viewers + CodeMirror editor (lazy chunk)
-├─ terminal/    dsh-workbay-terminal  page: command console rooted at the workspace (one process per command, SSE)
+├─ terminal/    dsh-workbay-terminal  page: real ConPTY terminal with tabs (xterm.js, SSE)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
 ├─ kit/         @dsh-workbay/kit      shared host helpers: same-origin fence / JSON body / RPC envelope
@@ -139,6 +139,21 @@ pnpm install            # or: dsh plugin --profile desktop add file:...
 After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
 
 > `@dsh-workbay/kit` must be resolvable by the DSH runtime: it is imported by the host halves of dock and gitcraft, so it has to be present in the profile's `node_modules`. `pnpm install` installs it automatically as a `file:` dependency; copying plugin directories by hand easily misses it, which shows up as the host half failing to load.
+
+### Install automatically after DSH quits (recommended)
+
+`refresh-profile.ps1` cannot run while DSH is open: the app locks the plugin tree,
+and the workbench terminal is itself a child of DSH. Running `pnpm run install:profile`
+inside that terminal therefore always prints
+`close DSH first, then run this script again` — that guard is intentional.
+
+Use this entry point instead:
+
+```powershell
+pnpm run install:profile:on-exit
+# starts a WMI-detached watcher, waits for DSH to disappear, then builds + installs.
+# Quit DSH completely (tray too), then reopen it when %TEMP%\dsh-workbay-install.log says done.
+```
 
 ### Updating from GitHub
 

@@ -9,5 +9,6 @@
       name: 'dsh-workbay-terminal'
       config:
         shell: powershell
-        maxSessions: 4
+        pty: auto
+        maxSessions: 8
         idleTimeoutMs: 1800000
