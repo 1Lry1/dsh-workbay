@@ -288,6 +288,19 @@ function hasNulByte(buffer) {
   return false
 }
 
+/**
+ * Let the host breathe.
+ *
+ * The content search reads the filesystem synchronously (readdirSync/readFileSync)
+ * inside an async method. Without yields a large workspace would block the
+ * Electron main process's event loop for up to the 6 s search budget, freezing
+ * the DSH UI and every other plugin's RPC. Yielding to the macrotask queue every
+ * few milliseconds keeps the host responsive while the scan continues.
+ */
+function yieldToHost() {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 /** Read at most `length` bytes from the start of a file. */
 function readSlice(filePath, length) {
   if (length <= 0) return Buffer.alloc(0)
@@ -724,7 +737,13 @@ const METHODS = {
     const deadline = startedAt + SEARCH_TIME_BUDGET_MS
 
     const queue = [{ dir: root, rel: '' }]
+    /* Cooperatively yield to the host event loop during the scan (see yieldToHost). */
+    let lastYieldAt = startedAt
     while (queue.length > 0 && !truncated) {
+      if (Date.now() - lastYieldAt >= 12) {
+        await yieldToHost()
+        lastYieldAt = Date.now()
+      }
       const current = queue.shift()
       let dirents
       try {
@@ -736,6 +755,10 @@ const METHODS = {
       dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       const subdirectories = []
       for (const dirent of dirents) {
+        if (Date.now() - lastYieldAt >= 12) {
+          await yieldToHost()
+          lastYieldAt = Date.now()
+        }
         if (Date.now() > deadline) {
           truncated = true
           break
