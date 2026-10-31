@@ -232,7 +232,7 @@ after(async () => {
 
 /* ============================== roots / browse ============================== */
 
-test('roots reports drives, a default root and an absolute-path contract', async () => {
+test('roots reports drives and never suggests the DSH profile directory', async () => {
   const out = await call('roots', {})
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.ok(Array.isArray(out.data.drives) && out.data.drives.length >= 1)
@@ -240,7 +240,13 @@ test('roots reports drives, a default root and an absolute-path contract', async
     assert.equal(typeof drive.name, 'string')
     assert.equal(path.isAbsolute(drive.path), true, 'drive path must be absolute: ' + drive.path)
   }
-  assert.equal(path.isAbsolute(out.data.root), true)
+  /* `root` is the last workspace actually served, or null before any is chosen.
+     process.cwd() inside DSH is the profile directory and must never be offered
+     as the workspace. */
+  assert.equal(out.data.root === null || typeof out.data.root === 'string', true)
+  if (typeof out.data.root === 'string') {
+    assert.equal(out.data.root.toLowerCase().includes('.dsh'), false, 'profile dir leaked as root: ' + out.data.root)
+  }
   assert.ok(Array.isArray(out.data.recent))
 })
 

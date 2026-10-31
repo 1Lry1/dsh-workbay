@@ -317,15 +317,17 @@ function sendRouteError(res, error) {
 /* ============================== methods ============================== */
 
 const METHODS = {
-  /** Available filesystem roots plus the roots recently used on this host. */
+  /**
+   * Available filesystem roots plus the roots recently used on this host.
+   *
+   * `root` is the LAST workspace this host actually served, or null when none
+   * has been chosen yet. It must not default to `process.cwd()`: inside DSH that
+   * is the profile directory (`~/.dsh/profiles/<name>`), and suggesting it made
+   * the picker look like the profile was the workspace — the wrong thing to
+   * invite edits into. The client shows its empty state until a root is chosen.
+   */
   async roots() {
-    let root
-    try {
-      root = resolveInside(process.cwd(), '')
-    } catch {
-      root = path.parse(process.cwd()).root
-    }
-    return { root: jsonPath(root), drives: listDrives(), recent: [...recentRoots] }
+    return { root: recentRoots.length > 0 ? recentRoots[0] : null, drives: listDrives(), recent: [...recentRoots] }
   },
 
   /**

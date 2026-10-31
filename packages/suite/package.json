@@ -2,7 +2,7 @@
   "name": "dsh-workbay-suite",
   "version": "0.1.0",
   "private": true,
-  "description": "One-shot aggregator for the DSH workbench: depends on dsh-workbay-dock, dsh-gitcraft and dsh-downloader and inserts their three loader rows from a single bundle patch. Experimental — see README.",
+  "description": "One-shot aggregator for the DSH workbench: depends on the dock, files, terminal, gitcraft and downloader bundles and inserts all five loader rows from a single bundle patch, so the plugin list shows ONE entry.",
   "type": "module",
   "license": "MIT",
   "files": [
@@ -20,7 +20,10 @@
   },
   "dependencies": {
     "dsh-workbay-dock": "file:../dock",
+    "dsh-workbay-files": "file:../files",
+    "dsh-workbay-terminal": "file:../terminal",
     "dsh-gitcraft": "file:../gitcraft",
-    "dsh-downloader": "file:../downloader"
+    "dsh-downloader": "file:../downloader",
+    "@dsh-workbay/kit": "file:../kit"
   }
 }

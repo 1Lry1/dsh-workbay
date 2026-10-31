@@ -110,7 +110,7 @@ Update later with `pnpm run update` (see below). If `dsh plugin add` one-liners 
 
 Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
 
-**Option A — five independent bundles (recommended, verified)**: in `package.json`:
+**Option A — five independent bundles (the plugin list shows five)**: in `package.json`:
 
 ```jsonc
 {
@@ -134,7 +134,7 @@ pnpm run build          # generate the files page CodeMirror chunk (lib/chunks, 
 pnpm install            # or: dsh plugin --profile desktop add file:...
 ```
 
-**Option B — the suite aggregator (experimental)**: add only `dsh-workbay-suite` to `bundles` and let its patch do the rest. See [packages/suite/README.md](packages/suite/README.md).
+**Option B — the suite aggregator (recommended: one entry in the plugin list)**: add only `dsh-workbay-suite` to `bundles` and let its patch do the rest; `dependencies` still keeps the five packages (they are suite's `file:` deps). See [packages/suite/README.md](packages/suite/README.md).
 
 After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
 

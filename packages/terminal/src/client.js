@@ -1709,7 +1709,7 @@ window.__ModuleLoader__.load({
 .dswt-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:23px;padding:0 9px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .dswt-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1))}
 .dswt-btn.is-small{height:20px;padding:0 7px;font-size:10px}
-.dswt-btn.is-primary{background:var(--dsw-alias-brand-primary,#4d6bfe);border-color:transparent;color:#fff}
+.dswt-btn.is-primary{background:var(--dsw-alias-button-primary-fill,#4d6bfe);border-color:transparent;color:var(--dsw-alias-label-primary-inverted,#fff)}
 .dswt-icon{flex:none;display:block}
 .dswt-empty{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;text-align:center}
 .dswt-emptyIcon{color:var(--dsw-alias-label-tertiary,#8a8f98)}
