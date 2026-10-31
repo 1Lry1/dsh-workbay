@@ -102,6 +102,9 @@ importers:
 
   packages/suite:
     dependencies:
+      '@dsh-workbay/kit':
+        specifier: file:../kit
+        version: link:../kit
       dsh-downloader:
         specifier: file:../downloader
         version: link:../downloader
@@ -111,6 +114,12 @@ importers:
       dsh-workbay-dock:
         specifier: file:../dock
         version: link:../dock
+      dsh-workbay-files:
+        specifier: file:../files
+        version: link:../files
+      dsh-workbay-terminal:
+        specifier: file:../terminal
+        version: link:../terminal
 
   packages/terminal:
     dependencies:
