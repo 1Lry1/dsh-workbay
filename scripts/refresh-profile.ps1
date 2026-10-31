@@ -79,6 +79,18 @@ try {
 $kit = Join-Path $profileDir 'node_modules\@dsh-workbay\kit\package.json'
 if (-not (Test-Path $kit)) { throw '@dsh-workbay/kit is missing from the profile — the dock and gitcraft hosts would fail to load' }
 
+# A `file:` install is a COPY. If a helper (AbSerialHost / DownloaderIpcBridge /
+# WorkbayPty) or DSH still holds one file open, Windows lets pnpm leave a PARTIAL
+# package and still exit 0 — the page then silently disappears. Verify every
+# required file exists and matches the checkout before declaring success.
+Push-Location $repoRoot
+try {
+  node scripts/verify-profile.mjs $profileDir
+  if ($LASTEXITCODE -ne 0) { throw 'the installed profile is incomplete or stale (see above)' }
+} finally {
+  Pop-Location
+}
+
 # Leftover plugin copies from a migration or a rename (e.g. dsh-downloader.old-*)
 # are only deletable once DSH and its helpers have exited, which is exactly the
 # precondition this script already enforces.
