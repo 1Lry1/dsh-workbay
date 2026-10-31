@@ -23,7 +23,7 @@
     - id: workbay-terminal
       name: 'dsh-workbay-terminal'
       config:
-        shell: powershell
+        shell: auto
         pty: auto
         maxSessions: 8
     - id: gitcraft

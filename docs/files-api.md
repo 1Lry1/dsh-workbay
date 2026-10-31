@@ -119,7 +119,7 @@ handle.setContent(text) / handle.destroy()
 |---|---|---|
 | `allowWrite` | `dsh-workbay-files` 的 cordis 行 config | `false`（profile 里显式开） |
 | `maxFileBytes` | 同上 | `1 MiB` |
-| `terminal.shell` | `dsh-workbay-terminal` config | `powershell` |
+| `terminal.shell` | `dsh-workbay-terminal` config | `auto`（Windows 优先 `pwsh.exe`，回退 `powershell.exe`） |
 | `terminal.pty` | 同上 | `auto`（`off` 强制逐命令，`on` 缺 helper 时 500） |
 | `terminal.maxSessions` | 同上 | `8`（硬上限 32） |
 

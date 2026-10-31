@@ -26,7 +26,7 @@ if (baseUrl === undefined || browserExe === undefined) {
 const root = path.resolve(rootArg === undefined ? process.cwd() : rootArg)
 const debugPort = 9500 + Math.floor(Math.random() * 120)
 const profileDir = mkdtempSync(path.join(tmpdir(), 'wbd-ui-e2e-'))
-const shotDir = path.join(profileDir, 'shots')
+const shotDir = path.join(tmpdir(), 'workbay-e2e-shots-' + Date.now())
 mkdirSync(shotDir, { recursive: true })
 
 const browser = spawn(browserExe, [
@@ -199,18 +199,25 @@ try {
   record('markdown content rendered', String(editorText).includes('dsh-workbay'), String(editorText).slice(0, 60))
   await shot('02-files-readme')
 
-  /* ---------- terminal ---------- */
+  /* ---------- terminal (real PTY + tabs) ---------- */
   await clickText('.wbd-tab', ['终端', 'Terminal'])
   await waitFor('document.querySelector(".dswt-root") !== null', 30000, 'terminal page')
-  await clickText('.dswt-btn', ['启动', 'Start'])
-  await waitFor('document.querySelector(".dswt-input") !== null && document.querySelector(".dswt-input").disabled !== true', 30000, 'terminal started')
-  await evaluate('document.querySelector(".dswt-input").focus()')
+  /* The page auto-opens one tab once a root exists; otherwise click "+". */
+  await waitFor('document.querySelector(".dswt-tab") !== null || document.querySelector(".dswt-newTab") !== null', 20000, 'terminal tab bar')
+  if ((await evaluate('document.querySelector(".dswt-tab") !== null')) !== true) {
+    await clickSelector('.dswt-newTab', 'new terminal tab')
+  }
+  await waitFor('document.querySelector(".xterm") !== null', 30000, 'xterm chunk mounted')
+  record('xterm terminal surface is mounted', true)
+
+  /* Focus xterm's helper textarea and type like a user. */
+  await evaluate('(() => { const ta = document.querySelector(".xterm-helper-textarea"); if (ta) ta.focus() })()')
   await type('echo workbay-ui-ok')
   await pressEnter()
   const marker = await (async () => {
     const deadline = Date.now() + 30000
     while (Date.now() < deadline) {
-      const text = await evaluate('[...document.querySelectorAll(".dswt-line")].map((el) => el.textContent).join("\\n")')
+      const text = await evaluate('(document.querySelector(".xterm-rows")?.innerText) || ""')
       if (String(text).includes('workbay-ui-ok')) return true
       await sleep(300)
     }
@@ -218,6 +225,13 @@ try {
   })()
   record('terminal executes a command and shows output', marker === true)
   await shot('03-terminal')
+
+  const tabsBefore = await evaluate('document.querySelectorAll(".dswt-tab").length')
+  await clickSelector('.dswt-newTab', 'new terminal tab')
+  await sleep(1200)
+  const tabsAfter = await evaluate('document.querySelectorAll(".dswt-tab").length')
+  record('a second tab can be opened', tabsAfter === tabsBefore + 1, `${tabsBefore} -> ${tabsAfter}`)
+  await shot('04-terminal-tabs')
 
   /* ---------- other pages still alive ---------- */
   const labelsNow = await evaluate('[...document.querySelectorAll(".wbd-tabLabel")].map((el) => el.textContent.trim())')

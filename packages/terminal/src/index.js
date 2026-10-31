@@ -80,7 +80,7 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 /** Contract defaults — docs/terminal-pty.md §2 (PTY defaults) + §4 (fallback). */
 const DEFAULTS = {
-  shell: 'powershell',
+  shell: 'auto',
   maxSessions: 8,
   idleTimeoutMs: 30 * 60 * 1000,
   pty: 'auto',
@@ -231,9 +231,15 @@ function ptyShellArgs(family) {
  * seen in real screenshots: Windows PowerShell 5.1 encodes redirected stdout in
  * the ANSI/OEM code page unless `Console.OutputEncoding` is set first. cmd needs
  * the equivalent `chcp`; POSIX shells already use the locale's encoding.
+ *
+ * The assignment is wrapped in try/catch on purpose: command-mode children have
+ * pipes instead of a console, where the setter can throw "The handle is
+ * invalid". Unguarded, that aborts the whole `-Command` script and the user's
+ * command never runs (this is what CI hit on the first command after a cold
+ * start). `pwsh` 7 is UTF-8 already, so the fallback is harmless there.
  */
 function commandLineFor(family, line) {
-  if (family === 'powershell') return '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' + line
+  if (family === 'powershell') return 'try { [Console]::OutputEncoding=[Text.Encoding]::UTF8 } catch {}; ' + line
   if (family === 'cmd') return 'chcp 65001>nul & ' + line
   return line
 }
@@ -308,6 +314,21 @@ function binaryNameFor(bare, configured) {
 function resolveShell(configured) {
   if (/[\u0000\r\n]/.test(configured)) {
     throw shellMissing('the shell config contains control characters')
+  }
+  /* `auto` is the default: prefer PowerShell 7 (pwsh, UTF-8 by default) and fall
+     back to Windows PowerShell 5.1, then bash/sh on POSIX. Resolving here keeps
+     `start` deterministic: the returned display name is what the UI shows. */
+  if (configured.trim().toLowerCase() === 'auto') {
+    const candidates = process.platform === 'win32'
+      ? ['pwsh.exe', 'powershell.exe']
+      : ['pwsh', 'bash', 'sh']
+    let picked = null
+    for (const candidate of candidates) {
+      picked = findOnPath(candidate)
+      if (picked !== null) break
+    }
+    if (picked === null) throw shellMissing('no usable shell found on PATH for "auto"')
+    configured = picked
   }
   if (path.isAbsolute(configured)) {
     let stats

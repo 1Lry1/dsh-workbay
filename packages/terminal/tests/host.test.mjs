@@ -251,7 +251,8 @@ async function countHelperProcesses() {
 /** Count PowerShell processes launched by the PTY helper (`-NoExit` shells). */
 async function countPtyShells() {
   if (!IS_WINDOWS) return 0
-  const command = "(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*-NoExit*' } | Measure-Object).Count"
+  /* `shell: auto` prefers pwsh, so count both hosts. */
+  const command = "(Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'powershell.exe' -or $_.Name -eq 'pwsh.exe') -and $_.CommandLine -like '*-NoExit*' } | Measure-Object).Count"
   const text = await execText('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command])
   const count = Number.parseInt(text.trim(), 10)
   return Number.isFinite(count) ? count : 0
@@ -1645,15 +1646,19 @@ test('restart keeps command mode and reuses the cwd', async () => {
 
 /* ============================== default shell ============================== */
 
-test('the default shell is powershell on Windows', async (t) => {
+test('the default shell is PowerShell on Windows (pwsh preferred)', async (t) => {
   if (!IS_WINDOWS) {
-    t.skip('the contract default (powershell.exe) only exists on Windows')
+    t.skip('the default shell resolution under test is Windows-specific')
     return
   }
   const boot = await bootPlugin({})
   const session = await startSession(boot)
   try {
-    assert.equal(session.shell, 'powershell.exe')
+    /* `auto` prefers PowerShell 7 (UTF-8 by default) and falls back to 5.1. */
+    assert.ok(
+      ['pwsh.exe', 'powershell.exe'].includes(String(session.shell).toLowerCase()),
+      'shell = ' + session.shell,
+    )
   } finally {
     await stopSession(boot, session.id)
   }

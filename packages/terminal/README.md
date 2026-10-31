@@ -41,6 +41,10 @@ powershell.exe -NoLogo -NoProfile -NoExit   （真正的控制台进程）
 helper 选择顺序：config `ptyHelper` > 环境变量 `DSH_WORKBAY_TERMINAL_PTY_HELPER` >
 包内 `helper/WorkbayPty.exe`（前两个只用于测试/开发）。
 
+默认 `shell: auto`：Windows 上优先 **PowerShell 7（`pwsh.exe`，默认 UTF-8）**，没有才回退
+`powershell.exe`；其它平台 `pwsh` → `bash` → `sh`。也可以显式写 `pwsh` / `powershell` /
+`cmd` / 绝对路径。
+
 ## 页面
 
 - **多 tab**：`+` 新建、`×` 关闭、中键关闭、双击重命名；切 tab 只隐藏不销毁，

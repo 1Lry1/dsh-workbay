@@ -68,6 +68,7 @@ helper → host（读 helper.stdout）：
 | `restart` | `{ id }` | `{ id, cwd, mode }`（同 cwd 新会话，旧会话被回收） |
 
 `start` 额外可选 `{ cols, rows, shell? }`；`shell` 仅配置里允许时生效（默认沿用配置）。
+配置默认 `shell: auto`：Windows 上按 `pwsh.exe` → `powershell.exe` 解析，其它平台 `pwsh` → `bash` → `sh`。
 
 安全：helper 的 argv 全部来自固定模板 + 配置路径，用户输入只走 PTY stdin；
 `--shell-args` 只接受 JSON 数组；`cwd` 必须是存在的目录。
