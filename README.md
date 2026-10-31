@@ -110,28 +110,32 @@ pnpm install
 
 profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`）。
 
-**方式 A —— 三个独立 bundle（推荐，已验证）**：`package.json` 里
+**方式 A —— 五个独立 bundle（推荐，已验证）**：`package.json` 里
 
 ```jsonc
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
-    "dsh-workbay-dock", "dsh-gitcraft", "dsh-downloader"
+    "dsh-workbay-dock", "dsh-workbay-files", "dsh-workbay-terminal",
+    "dsh-gitcraft", "dsh-downloader"
   ] } },
   "dependencies": {
-    "dsh-workbay-dock": "file:<repo>/packages/dock",
-    "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
-    "dsh-downloader":     "file:<repo>/packages/downloader",
-    "@dsh-workbay/kit": "file:<repo>/packages/kit"
+    "dsh-workbay-dock":     "file:<repo>/packages/dock",
+    "dsh-workbay-files":    "file:<repo>/packages/files",
+    "dsh-workbay-terminal": "file:<repo>/packages/terminal",
+    "dsh-gitcraft":         "file:<repo>/packages/gitcraft",
+    "dsh-downloader":       "file:<repo>/packages/downloader",
+    "@dsh-workbay/kit":     "file:<repo>/packages/kit"
   }
 }
 ```
 
 ```powershell
+pnpm run build          # 生成 files 页的 CodeMirror chunk（lib/chunks，gitignored）
 pnpm install            # 或 dsh plugin --profile desktop add file:...
 ```
 
-**方式 B —— 聚合金（实验性）**：bundles 里只加 `dsh-workbay-suite`，其余交给它的 patch。见 [packages/suite/README.md](packages/suite/README.md)。
+**方式 B —— 聚合金（实验性）**：bundles 里只加 `dsh-workbay-suite`，它一次插入五个 loader 行。见 [packages/suite/README.md](packages/suite/README.md)。
 
 装完**重启 DSH**，左侧栏出现「工作台」。
 

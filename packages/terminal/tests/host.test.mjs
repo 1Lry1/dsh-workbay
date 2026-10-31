@@ -18,6 +18,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -287,7 +288,7 @@ async function stopSession(boot, id, stream) {
   const stopped = await boot.call('stop', { id })
   assert.equal(stopped.ok, true, 'stop failed: ' + JSON.stringify(stopped))
   if (stream !== undefined) {
-    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    const exit = await stream.waitFor((event) => event.type === 'exit', 20_000)
     assert.equal(typeof exit.code, 'number')
   }
   return stopped
@@ -306,6 +307,27 @@ before(async () => {
 
   bootA = await bootPlugin({ shell: TEST_SHELL, maxSessions: 4, idleTimeoutMs: 60_000 })
   bootB = await bootPlugin({ shell: TEST_SHELL, maxSessions: 1, idleTimeoutMs: 1_500 })
+
+  /* Warm the shell once. On a cold CI runner the first PowerShell spawn can take
+     tens of seconds (Defender scan + JIT) while every later spawn is fast; paying
+     that cost here keeps the timing-sensitive command tests from flaking. Best
+     effort: a failure is reported by the real tests, not by the warm-up. */
+  await new Promise((resolve) => {
+    let done = false
+    const finish = () => { if (!done) { done = true; resolve() } }
+    try {
+      const child = spawn(TEST_SHELL, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'echo warmup'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      child.on('close', finish)
+      child.on('error', finish)
+    } catch {
+      finish()
+    }
+    const timer = setTimeout(finish, 120_000)
+    if (typeof timer.unref === 'function') timer.unref()
+  })
 })
 
 after(async () => {
@@ -364,7 +386,7 @@ test('a command line runs in one process and its stdout streams as out', async (
     assert.equal(sent.ok, true, JSON.stringify(sent))
     assert.equal(sent.data.ok, true)
 
-    const output = await stream.waitFor(outContains('workbay-ok'), 20_000).catch(async (error) => {
+    const output = await stream.waitFor(outContains('workbay-ok'), 45_000).catch(async (error) => {
       /* CI-only failures need evidence, not just "timed out": a spawn failure
          shows up as an error event, and a died session disappears from list. */
       let sessions = null
@@ -377,7 +399,7 @@ test('a command line runs in one process and its stdout streams as out', async (
     assert.ok(output.data.length > 0)
 
     /* The command's own exit is an out MARKER; the session stays alive. */
-    const marker = await stream.waitFor(outContains('[exit'), 20_000)
+    const marker = await stream.waitFor(outContains('[exit'), 45_000)
     assert.match(marker.data, /\[exit \d+\]/)
     const listed = await bootA.call('list', {})
     assert.ok(listed.data.sessions.some((item) => item.id === session.id), 'session must outlive the command')
@@ -393,9 +415,9 @@ test('two commands run sequentially in the same session', async () => {
   try {
     await stream.waitFor((event) => event.type === 'hello')
     await bootA.call('input', { id: session.id, data: 'echo first-marker' + TEST_NEWLINE })
-    await stream.waitFor(outContains('first-marker'), 20_000)
+    await stream.waitFor(outContains('first-marker'), 45_000)
     await bootA.call('input', { id: session.id, data: 'echo second-marker' + TEST_NEWLINE })
-    await stream.waitFor(outContains('second-marker'), 20_000)
+    await stream.waitFor(outContains('second-marker'), 45_000)
   } finally {
     await stopSession(bootA, session.id)
     stream.close()
@@ -408,8 +430,8 @@ test('two lines queued in one input call both run, in order', async () => {
   try {
     await stream.waitFor((event) => event.type === 'hello')
     await bootA.call('input', { id: session.id, data: 'echo queue-one\necho queue-two\n' })
-    await stream.waitFor(outContains('queue-one'), 20_000)
-    await stream.waitFor(outContains('queue-two'), 20_000)
+    await stream.waitFor(outContains('queue-one'), 45_000)
+    await stream.waitFor(outContains('queue-two'), 45_000)
     const first = stream.events.findIndex(outContains('queue-one'))
     const second = stream.events.findIndex(outContains('queue-two'))
     assert.ok(first !== -1 && second !== -1 && first < second, 'the queue must preserve line order')
@@ -428,7 +450,7 @@ test('an incomplete line is buffered until its newline arrives', async () => {
     await sleep(700)
     assert.equal(stream.has(outContains('partial-')), false, 'no command may run before the newline')
     await bootA.call('input', { id: session.id, data: 'done' + TEST_NEWLINE })
-    await stream.waitFor(outContains('partial-done'), 20_000)
+    await stream.waitFor(outContains('partial-done'), 45_000)
   } finally {
     await stopSession(bootA, session.id)
     stream.close()
@@ -454,7 +476,7 @@ test('cd updates the session cwd and the next command runs there', async () => {
     const pwd = await stream.waitFor(
       (event) => event.type === 'out' && typeof event.data === 'string'
         && event.data.includes('CWD=') && event.data.includes('nested'),
-      20_000,
+      45_000,
     )
     assert.match(pwd.data, /CWD=/)
   } finally {
@@ -490,7 +512,7 @@ test('stop kills a running command and ends the session', async () => {
   try {
     await stream.waitFor((event) => event.type === 'hello')
     await bootA.call('input', { id: session.id, data: longCommand(flagPath) + TEST_NEWLINE })
-    const started = await waitUntil(() => existsSync(flagPath), 15_000)
+    const started = await waitUntil(() => existsSync(flagPath), 40_000)
     assert.equal(started, true, 'the long command should have started')
 
     const began = Date.now()
@@ -515,7 +537,7 @@ test('stop on an idle session emits exit 0 and removes it', async () => {
     await stream.waitFor((event) => event.type === 'hello')
     const stopped = await bootA.call('stop', { id: session.id })
     assert.equal(stopped.ok, true)
-    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    const exit = await stream.waitFor((event) => event.type === 'exit', 20_000)
     assert.equal(exit.code, 0)
     const listed = await bootA.call('list', {})
     assert.equal(listed.data.sessions.length, 0)
@@ -655,7 +677,7 @@ test('an idle session is stopped automatically', async () => {
   try {
     await stream.waitFor((event) => event.type === 'hello')
     /* bootB's idleTimeoutMs is 1.5 s; no input is sent. */
-    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    const exit = await stream.waitFor((event) => event.type === 'exit', 20_000)
     assert.equal(typeof exit.code, 'number')
     const emptied = await waitUntil(async () => {
       const listed = await bootB.call('list', {})
@@ -680,10 +702,10 @@ test('an idle-timeout stop kills the running command (no orphan writes the survi
     /* The command would write `survivedPath` after 4 s if it were still alive
        when the 1.5 s idle timeout stops the session. */
     await bootB.call('input', { id: session.id, data: longCommand(flagPath, survivedPath) + TEST_NEWLINE })
-    const started = await waitUntil(() => existsSync(flagPath), 15_000)
+    const started = await waitUntil(() => existsSync(flagPath), 40_000)
     assert.equal(started, true, 'the long command should have started')
 
-    const exit = await stream.waitFor((event) => event.type === 'exit', 10_000)
+    const exit = await stream.waitFor((event) => event.type === 'exit', 20_000)
     assert.equal(typeof exit.code, 'number')
     /* Give the killed process more than its remaining sleep: it must never get
        to write the survived marker. */

@@ -110,16 +110,18 @@ Update later with `pnpm run update` (see below). If `dsh plugin add` one-liners 
 
 Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
 
-**Option A — three independent bundles (recommended, verified)**: in `package.json`:
+**Option A — five independent bundles (recommended, verified)**: in `package.json`:
 
 ```jsonc
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
-    "dsh-workbay-dock", "dsh-gitcraft", "dsh-downloader"
+    "dsh-workbay-dock", "dsh-workbay-files", "dsh-workbay-terminal", "dsh-gitcraft", "dsh-downloader"
   ] } },
   "dependencies": {
-    "dsh-workbay-dock": "file:<repo>/packages/dock",
+    "dsh-workbay-dock":     "file:<repo>/packages/dock",
+    "dsh-workbay-files":    "file:<repo>/packages/files",
+    "dsh-workbay-terminal": "file:<repo>/packages/terminal",
     "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
     "dsh-downloader":     "file:<repo>/packages/downloader",
     "@dsh-workbay/kit": "file:<repo>/packages/kit"
@@ -128,6 +130,7 @@ Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `
 ```
 
 ```powershell
+pnpm run build          # generate the files page CodeMirror chunk (lib/chunks, gitignored)
 pnpm install            # or: dsh plugin --profile desktop add file:...
 ```
 

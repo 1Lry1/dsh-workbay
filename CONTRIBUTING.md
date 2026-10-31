@@ -14,10 +14,17 @@ desktop app. Bug reports need a Windows version; so does a useful review.
 | Path | Package | Role | Tests |
 |---|---|---|---|
 | `packages/dock` | `dsh-workbay-dock` | The shell: header button, right-side panel, page registry | e2e only (needs a live DSH) |
+| `packages/files` | `dsh-workbay-files` | Files page: workspace tree, viewers, CodeMirror editor (lazy chunk) | `node --test` + e2e |
+| `packages/terminal` | `dsh-workbay-terminal` | Console page: one process per command, SSE output | `node --test` |
 | `packages/gitcraft` | `dsh-gitcraft` | Git page: branch tree, staging, commit, merge, blame, reflog | `node --test` + e2e |
 | `packages/downloader` | `dsh-downloader` | Flash + 1.5 Mbps serial log page (vendor engine, IPC helpers) | smoke/http scripts (need the vendor engine) |
 | `packages/kit` | `@dsh-workbay/kit` | Shared **host-only** helpers: same-origin fence, bounded JSON body, `{ ok, data }` RPC envelope | `node --test` |
-| `packages/suite` | `dsh-workbay-suite` | One bundle that inserts the other three (experimental) | none |
+| `packages/suite` | `dsh-workbay-suite` | One bundle that inserts the other five (experimental) | none |
+
+The two page bundles with heavy browser dependencies (`packages/files`) keep
+them in `src/chunks/*.js`, bundled by `pnpm run build` into the gitignored
+`lib/chunks/`. `install:profile` builds them before copying; CI builds them
+before running tests, and `node --test` for the chunk asserts the built wrapper.
 
 Each plugin package has a `cordis.patch.yml` that inserts exactly one loader
 row; the `id` inside is globally unique. `packages/downloader/helper/*.exe` and
