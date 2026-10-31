@@ -60,6 +60,50 @@ window.__DSH_WORKBAY__.registerPage({
 
 若 dock 还没加载，短轮询等它出现（现有两个页面插件都这么做）。完整约定与三个已被踩过的坑见 [packages/dock/README.md](packages/dock/README.md)。
 
+## 给别人装（从 GitHub 克隆）
+
+目前**没有发布到 npm**，也没有 Release 包，所以别人只能“克隆 + `file:` 装”。目标机器要求：
+
+| 前置 | 要求 |
+|---|---|
+| 系统 | Windows 10/11（downloader 依赖两个 Windows helper exe 和 COM 串口） |
+| DSH 桌面版 | `>=0.2.1-rc.1 <0.3.0-0` |
+| Git | 任意较新版本（gitcraft 会调用本机 `git`） |
+| Node.js / pnpm | Node `>=18`；pnpm 11（`corepack enable` 会按 `package.json` 的 `packageManager` 取到 11.28.5） |
+
+```powershell
+# 1) 克隆并装好 workspace 依赖
+git clone https://github.com/1Lry1/dsh-workbay.git D:\tools\dsh-workbay
+cd D:\tools\dsh-workbay
+pnpm install
+
+# 2) 生成要粘贴的 profile 片段（路径已按克隆位置展开）
+pnpm run profile:snippet
+```
+
+```powershell
+# 3) 找到自己的 profile（默认叫 desktop；不确定就列一下）
+Get-ChildItem $env:USERPROFILE\.dsh\profiles
+# 编辑 <profile>\package.json：把脚本打印的 bundles 三行和 dependencies 四项粘进去
+```
+
+```powershell
+# 4) 装进 profile，然后“完全退出” DSH 再打开
+cd $env:USERPROFILE\.dsh\profiles\desktop
+pnpm install
+```
+
+左侧栏出现「工作台」即成功。
+
+**downloader 页额外需要**（不设也能装，只是烧录不可用）：
+
+```powershell
+[Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_DIR', '<厂商 Downloader 安装目录>', 'User')
+[Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_WORKSPACE', '<SDK 工程根目录>', 'User')
+```
+
+之后更新用 `pnpm run update`（见下）。想省掉这些手工步骤，需要把包发到 npm 或做 Release tarball——那时 `dsh plugin add` 一行就能装。
+
 ## 安装到 DSH
 
 profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`）。
@@ -136,9 +180,9 @@ node packages/downloader/smoke-test.mjs  # 25 项自检；先设 DSH_DOWNLOADER_
 **改了 `packages/*` 但界面上没变化** — `file:` 依赖是**拷贝**进 profile 的 `node_modules`，不是软链。重启 DSH 前必须先重装 profile：
 
 ```powershell
-# 先退出 DSH（不是最小化），再执行
-pwsh -File scripts/refresh-profile.ps1 -Profile desktop
-# 或：cd C:\Users\<user>\.dsh\profiles\desktop; pnpm install
+# 先退出 DSH（不是最小化），再在克隆目录执行
+pnpm run install:profile
+# 或：cd $env:USERPROFILE\.dsh\profiles\desktop; pnpm install
 ```
 
 **`pnpm install` 报 `ERR_PNPM_EPERM ... rename ... dsh-downloader`** — downloader 的串口 helper `AbSerialHost.exe`（烧录时会再起 `DownloaderIpcBridge.exe`）还活着，文件被占用。退出 DSH 后它们会跟着退出；顽固残留就手动结束：

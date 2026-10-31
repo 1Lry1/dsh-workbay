@@ -60,6 +60,50 @@ window.__DSH_WORKBAY__.registerPage({
 
 If dock has not loaded yet, poll briefly until it appears (both existing page plugins do this). For the complete contract and the three pitfalls already hit in practice, see [packages/dock/README.md](packages/dock/README.md).
 
+## Installing it on someone else's machine (from GitHub)
+
+The packages are **not on npm** and there is no release tarball yet, so a third party installs from a clone through `file:` dependencies. Requirements:
+
+| Prerequisite | Requirement |
+|---|---|
+| OS | Windows 10/11 (the downloader drives two Windows helper executables and COM serial ports) |
+| DSH desktop | `>=0.2.1-rc.1 <0.3.0-0` |
+| Git | any recent version (gitcraft shells out to the local `git`) |
+| Node.js / pnpm | Node `>=18`; pnpm 11 (`corepack enable` picks up the `packageManager` pin, 11.28.5) |
+
+```powershell
+# 1) clone and install the workspace
+git clone https://github.com/1Lry1/dsh-workbay.git D:\tools\dsh-workbay
+cd D:\tools\dsh-workbay
+pnpm install
+
+# 2) print the profile snippet, with paths already resolved
+pnpm run profile:snippet
+```
+
+```powershell
+# 3) find the profile (usually "desktop"; list them if unsure)
+Get-ChildItem $env:USERPROFILE\.dsh\profiles
+# edit <profile>\package.json: paste the three bundle names and the four dependencies
+```
+
+```powershell
+# 4) install into the profile, then quit DSH completely and reopen it
+cd $env:USERPROFILE\.dsh\profiles\desktop
+pnpm install
+```
+
+The "Workbench" entry appears in the left sidebar when it worked.
+
+The downloader page additionally needs (the plugin loads without them, but flashing is unavailable):
+
+```powershell
+[Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_DIR', '<vendor Downloader install dir>', 'User')
+[Environment]::SetEnvironmentVariable('DSH_DOWNLOADER_WORKSPACE', '<SDK project root>', 'User')
+```
+
+Update later with `pnpm run update` (see below). Getting rid of these manual steps requires publishing to npm or shipping release tarballs — then `dsh plugin add` is a one-liner.
+
 ## Installing into DSH
 
 Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
@@ -135,9 +179,9 @@ node packages/downloader/smoke-test.mjs  # 25 checks; set the DSH_DOWNLOADER_* e
 **I changed `packages/*` but the UI shows no difference** — `file:` dependencies are **copied** into the profile's `node_modules`, not symlinked. You must reinstall the profile before restarting DSH:
 
 ```powershell
-# Quit DSH first (not just minimize), then run:
-pwsh -File scripts/refresh-profile.ps1 -Profile desktop
-# or: cd C:\Users\<user>\.dsh\profiles\desktop; pnpm install
+# Quit DSH first (not just minimize), then from the clone:
+pnpm run install:profile
+# or: cd $env:USERPROFILE\.dsh\profiles\desktop; pnpm install
 ```
 
 **`pnpm install` fails with `ERR_PNPM_EPERM ... rename ... dsh-downloader`** — the downloader's serial helper `AbSerialHost.exe` (which in turn starts `DownloaderIpcBridge.exe` during flashing) is still alive and holding the files. They exit together with DSH; for stubborn leftovers, terminate them manually:

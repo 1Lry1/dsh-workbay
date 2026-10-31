@@ -15,8 +15,8 @@
   only ever fast-forwards.
 
 .EXAMPLE
-  pwsh -File scripts/update-from-github.ps1
-  pwsh -File scripts/update-from-github.ps1 -Profile headless -SkipTests
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1 -Profile headless -SkipTests
 #>
 param(
   [string] $Profile = 'desktop',

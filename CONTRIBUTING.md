@@ -91,7 +91,7 @@ alive, and they hold files open inside the plugin directory, which makes
 # From a fully closed DSH:
 pnpm run install:profile
 # or, for a profile not named "desktop":
-pwsh -File scripts/refresh-profile.ps1 -Profile <profile>
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1 -Profile <profile>
 
 # Equivalent manual route:
 cd $env:USERPROFILE\.dsh\profiles\<profile>
@@ -252,7 +252,7 @@ pnpm --filter dsh-gitcraft run test
 ```powershell
 pnpm run install:profile
 # 换个 profile：
-pwsh -File scripts/refresh-profile.ps1 -Profile <profile>
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1 -Profile <profile>
 ```
 
 完成后重启 DSH。

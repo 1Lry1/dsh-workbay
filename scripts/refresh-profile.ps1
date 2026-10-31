@@ -11,8 +11,8 @@
   pnpm then fails with ERR_PNPM_EPERM while renaming the package.
 
 .EXAMPLE
-  pwsh -File scripts/refresh-profile.ps1
-  pwsh -File scripts/refresh-profile.ps1 -Profile desktop
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1 -Profile desktop
 #>
 param(
   [string] $Profile = 'desktop'
