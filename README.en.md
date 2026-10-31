@@ -14,12 +14,12 @@ This repository consolidates the capabilities into a single **pnpm workspace**:
 ```
 packages/
 ├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry
-├─ files/       dsh-workbay-files     page: file tree + viewers + CodeMirror editor (lazy chunk)
-├─ terminal/    dsh-workbay-terminal  page: real ConPTY terminal with tabs (xterm.js, SSE)
+├─ files/       dsh-workbay-files     page: file tree + VSCode-grade content search + viewers + CodeMirror editor (lazy chunk)
+├─ terminal/    dsh-workbay-terminal  page: real ConPTY terminal with tabs (xterm.js, sessions survive page switches)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
 ├─ kit/         @dsh-workbay/kit      shared host helpers: same-origin fence / JSON body / RPC envelope
-└─ suite/       dsh-workbay-suite     aggregator: installs all five at once (experimental)
+└─ suite/       dsh-workbay-suite     the shipped single plugin: vendors the five bundles + one merged client bundle
 ```
 
 ```

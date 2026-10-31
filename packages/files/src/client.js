@@ -42,6 +42,9 @@ window.__ModuleLoader__.load({
     const TREE_ROW_LIMIT = 400
     const SEARCH_LIMIT = 200
     const SEARCH_DEBOUNCE_MS = 280
+    const SEARCH_PANEL_DEBOUNCE_MS = 300
+    const SEARCH_PANEL_MAX_RESULTS = 200
+    const SEARCH_MODES = ['content', 'name']
     const STAT_INTERVAL_MS = 4000
 
     /* ============================== i18n ============================== */
@@ -88,6 +91,41 @@ window.__ModuleLoader__.load({
       'tree.searchEmpty': '没有匹配的文件',
       'tree.searchTruncated': '结果过多，已截断',
       'tree.clearSearch': '清除搜索',
+
+      'search.open': '搜索（Ctrl/Cmd+Shift+F）',
+      'search.title': '搜索',
+      'search.close': '返回资源管理器',
+      'search.placeholder': '搜索',
+      'search.modeContent': '内容',
+      'search.modeName': '文件名',
+      'search.modeContentTitle': '搜索文件内容',
+      'search.modeNameTitle': '按文件名快速打开',
+      'search.caseSensitive': '区分大小写',
+      'search.wholeWord': '全字匹配',
+      'search.regex': '使用正则表达式',
+      'search.include': '包含',
+      'search.exclude': '排除',
+      'search.includePlaceholder': '例如 src/**/*.ts（逗号分隔）',
+      'search.excludePlaceholder': '例如 **/dist/**（逗号分隔）',
+      'search.globHint': '支持 * ? ** 通配与 ! 取反',
+      'search.globCount': '{n} 个 glob',
+      'search.globInvalid': '无效 glob：{items}',
+      'search.globDefault': '留空使用默认排除（node_modules、.git 等）',
+      'search.searching': '搜索中…',
+      'search.summary': '{matches} 个结果，{files} 个文件',
+      'search.elapsed': '{ms} ms',
+      'search.truncated': '已截断',
+      'search.cancel': '取消',
+      'search.empty': '输入内容开始搜索',
+      'search.emptyName': '输入文件名快速打开',
+      'search.noResults': '没有匹配结果',
+      'search.noResultsHint': '试试切换模式、大小写或包含/排除规则。',
+      'search.readyToSearch': '按 Enter 开始搜索',
+      'search.noRoot': '还没有选择工作区',
+      'search.pickRoot': '选择工作区',
+      'search.openAtLine': '打开第 {line} 行',
+      'search.clear': '清除搜索',
+      'search.keyboardHint': '↑↓ 选择 · Enter 打开 · Esc 关闭',
 
       'tabs.empty': '还没有打开文件',
       'tabs.emptyHint': '从左侧文件树或搜索结果中选择一个文件。',
@@ -147,6 +185,7 @@ window.__ModuleLoader__.load({
 
       'error.outsideRoot': '路径超出工作区范围',
       'error.badRequest': '请求无效',
+      'error.badRegex': '正则表达式无效',
       'error.notFound': '文件或目录不存在',
       'error.conflict': '文件已在磁盘上被修改',
       'error.tooLarge': '文件超过大小上限',
@@ -211,6 +250,41 @@ window.__ModuleLoader__.load({
       'tree.searchTruncated': 'Too many results — truncated',
       'tree.clearSearch': 'Clear search',
 
+      'search.open': 'Search (Ctrl/Cmd+Shift+F)',
+      'search.title': 'Search',
+      'search.close': 'Back to explorer',
+      'search.placeholder': 'Search',
+      'search.modeContent': 'Content',
+      'search.modeName': 'Files',
+      'search.modeContentTitle': 'Search file contents',
+      'search.modeNameTitle': 'Quick-open by file name',
+      'search.caseSensitive': 'Match case',
+      'search.wholeWord': 'Match whole word',
+      'search.regex': 'Use regular expression',
+      'search.include': 'files to include',
+      'search.exclude': 'files to exclude',
+      'search.includePlaceholder': 'e.g. src/**/*.ts (comma separated)',
+      'search.excludePlaceholder': 'e.g. **/dist/** (comma separated)',
+      'search.globHint': 'Supports * ? ** globs and ! negation',
+      'search.globCount': '{n} glob(s)',
+      'search.globInvalid': 'Invalid globs: {items}',
+      'search.globDefault': 'Leave empty for the default excludes (node_modules, .git, …)',
+      'search.searching': 'Searching…',
+      'search.summary': '{matches} results in {files} files',
+      'search.elapsed': '{ms} ms',
+      'search.truncated': 'Truncated',
+      'search.cancel': 'Cancel',
+      'search.empty': 'Type to search file contents',
+      'search.emptyName': 'Type a file name to quick-open',
+      'search.noResults': 'No results',
+      'search.noResultsHint': 'Try another mode, case sensitivity or include/exclude globs.',
+      'search.readyToSearch': 'Press Enter to search',
+      'search.noRoot': 'No workspace selected yet',
+      'search.pickRoot': 'Choose workspace',
+      'search.openAtLine': 'Open at line {line}',
+      'search.clear': 'Clear search',
+      'search.keyboardHint': '↑↓ select · Enter open · Esc close',
+
       'tabs.empty': 'No file open',
       'tabs.emptyHint': 'Pick a file in the tree or in the search results.',
       'tabs.close': 'Close',
@@ -269,6 +343,7 @@ window.__ModuleLoader__.load({
 
       'error.outsideRoot': 'That path is outside the workspace',
       'error.badRequest': 'Invalid request',
+      'error.badRegex': 'Invalid regular expression',
       'error.notFound': 'File or folder not found',
       'error.conflict': 'The file changed on disk',
       'error.tooLarge': 'File is over the size limit',
@@ -868,14 +943,338 @@ window.__ModuleLoader__.load({
           })
         case 'reloading':
           return Object.assign({}, tab, { status: 'loading', error: null, conflict: false, externalMtimeMs: null })
+        case 'jump':
+          return Object.assign({}, tab, {
+            line: numberOr(action.line, tab.line || 0),
+            lineToken: numberOr(action.lineToken, (tab.lineToken || 0) + 1),
+            editing: action.editing === true ? true : tab.editing,
+          })
         default:
           return tab
       }
     }
 
+    /* ============================== search panel helpers ============================== */
+
+    function createSearchState() {
+      return {
+        open: false,
+        query: '',
+        mode: 'content',
+        caseSensitive: false,
+        wholeWord: false,
+        regex: false,
+        include: '',
+        exclude: '',
+        includeOpen: false,
+        excludeOpen: false,
+        status: 'idle',
+        seq: 0,
+        data: null,
+        error: '',
+        collapsed: {},
+        focusIndex: -1,
+      }
+    }
+
+    /**
+     * One reducer for the VSCode-like search panel. Every request carries a
+     * monotonic `seq`; a response whose seq no longer matches the state is
+     * dropped, which is what makes stale calls harmless.
+     */
+    function reduceSearchState(state, action) {
+      const base = state !== null && state !== undefined && typeof state === 'object'
+        ? state
+        : createSearchState()
+      if (action === null || action === undefined || typeof action !== 'object') return base
+      switch (action.type) {
+        case 'open':
+          return Object.assign({}, base, { open: true })
+        case 'close':
+          return Object.assign({}, base, {
+            open: false,
+            status: 'idle',
+            data: null,
+            error: '',
+            focusIndex: -1,
+            collapsed: {},
+            seq: numberOr(action.seq, base.seq + 1),
+          })
+        case 'reset':
+          return createSearchState()
+        case 'query': {
+          const query = typeof action.query === 'string' ? action.query : ''
+          return Object.assign({}, base, {
+            query,
+            focusIndex: -1,
+            error: '',
+            status: query.trim() === '' ? 'idle' : 'loading',
+            data: query.trim() === '' ? null : base.data,
+          })
+        }
+        case 'mode': {
+          const mode = SEARCH_MODES.indexOf(action.mode) >= 0 ? action.mode : 'content'
+          return Object.assign({}, base, {
+            mode,
+            status: 'idle',
+            data: null,
+            error: '',
+            focusIndex: -1,
+            collapsed: {},
+            seq: base.seq + 1,
+          })
+        }
+        case 'flag': {
+          const flag = action.flag
+          if (flag !== 'caseSensitive' && flag !== 'wholeWord' && flag !== 'regex') return base
+          return Object.assign({}, base, { [flag]: base[flag] !== true })
+        }
+        case 'glob': {
+          const field = action.field === 'exclude' ? 'exclude' : 'include'
+          return Object.assign({}, base, { [field]: typeof action.value === 'string' ? action.value : '' })
+        }
+        case 'globOpen': {
+          const field = action.field === 'excludeOpen' ? 'excludeOpen' : 'includeOpen'
+          return Object.assign({}, base, { [field]: base[field] !== true })
+        }
+        case 'request':
+          return Object.assign({}, base, {
+            status: 'loading',
+            seq: numberOr(action.seq, base.seq + 1),
+            error: '',
+            focusIndex: -1,
+          })
+        case 'pending':
+          if (typeof base.query !== 'string' || base.query.trim() === '') return base
+          return Object.assign({}, base, { status: 'loading', error: '', focusIndex: -1 })
+        case 'response':
+          if (numberOr(action.seq, -1) !== base.seq) return base
+          return Object.assign({}, base, {
+            status: 'ready',
+            data: action.data !== null && action.data !== undefined ? action.data : null,
+            error: '',
+            focusIndex: -1,
+            collapsed: {},
+          })
+        case 'error':
+          if (numberOr(action.seq, -1) !== base.seq) return base
+          return Object.assign({}, base, {
+            status: 'error',
+            data: null,
+            error: typeof action.message === 'string' ? action.message : '',
+            focusIndex: -1,
+            collapsed: {},
+          })
+        case 'cancel':
+          return Object.assign({}, base, {
+            seq: numberOr(action.seq, base.seq + 1),
+            status: base.data !== null && base.data !== undefined ? 'ready' : 'idle',
+            error: '',
+            focusIndex: -1,
+          })
+        case 'collapse': {
+          const rel = typeof action.rel === 'string' ? action.rel : ''
+          if (rel === '') return base
+          return Object.assign({}, base, {
+            collapsed: Object.assign({}, base.collapsed, { [rel]: base.collapsed[rel] !== true }),
+            focusIndex: -1,
+          })
+        }
+        case 'focus':
+          return Object.assign({}, base, {
+            focusIndex: Number.isInteger(action.index) ? action.index : -1,
+          })
+        default:
+          return base
+      }
+    }
+
+    function moveSearchFocus(index, length, delta) {
+      if (!Number.isInteger(length) || length <= 0) return -1
+      const current = Number.isInteger(index) && index >= 0 && index < length ? index : (delta > 0 ? -1 : length)
+      const next = current + (Number.isFinite(delta) ? delta : 0)
+      if (next < 0) return 0
+      if (next >= length) return length - 1
+      return next
+    }
+
+    function parseGlobInput(text) {
+      const raw = String(text === undefined || text === null ? '' : text).trim()
+      const tokens = raw === '' ? [] : raw.split(',').map((token) => token.trim()).filter((token) => token !== '')
+      const invalid = tokens.filter((token) => token === '!' || /\s/.test(token) || token.length > 400)
+      const valid = invalid.length === 0 && tokens.length <= 50 && raw.length <= 4000
+      return { raw, tokens, invalid, valid, normalized: tokens.join(',') }
+    }
+
+    function buildSearchRequest(state, root) {
+      const source = state !== null && state !== undefined && typeof state === 'object' ? state : createSearchState()
+      const query = typeof source.query === 'string' ? source.query : ''
+      if (typeof root !== 'string' || root === '' || query.trim() === '') return null
+      const request = {
+        root,
+        mode: source.mode === 'name' ? 'name' : 'content',
+        query,
+        maxResults: SEARCH_PANEL_MAX_RESULTS,
+      }
+      if (source.caseSensitive === true) request.caseSensitive = true
+      if (source.wholeWord === true) request.wholeWord = true
+      if (source.regex === true) request.regex = true
+      const include = parseGlobInput(source.include).normalized
+      if (include !== '') request.include = include
+      const excludeRaw = typeof source.exclude === 'string' ? source.exclude : ''
+      if (excludeRaw.trim() !== '') request.exclude = parseGlobInput(excludeRaw).normalized
+      return request
+    }
+
+    function normalizeMatch(rawMatch) {
+      if (rawMatch === null || rawMatch === undefined || typeof rawMatch !== 'object') return null
+      const text = typeof rawMatch.text === 'string' ? rawMatch.text : ''
+      const before = Array.isArray(rawMatch.before) ? rawMatch.before.filter((line) => typeof line === 'string') : undefined
+      const after = Array.isArray(rawMatch.after) ? rawMatch.after.filter((line) => typeof line === 'string') : undefined
+      return {
+        line: Number.isFinite(rawMatch.line) && rawMatch.line > 0 ? Math.floor(rawMatch.line) : 1,
+        column: Number.isFinite(rawMatch.column) && rawMatch.column >= 0 ? Math.floor(rawMatch.column) : 0,
+        length: Number.isFinite(rawMatch.length) && rawMatch.length >= 0 ? Math.floor(rawMatch.length) : 0,
+        text,
+        before,
+        after,
+      }
+    }
+
+    /**
+     * Defensive normaliser for §2.1 responses: drops malformed rows, sorts
+     * files by rel and matches by line/column, and derives counts when the host
+     * omits them. The client must not crash on a partially-written response.
+     */
+    function normalizeSearchResponse(data, requestMode, requestQuery) {
+      const source = data !== null && data !== undefined && typeof data === 'object' ? data : {}
+      const mode = source.mode === 'name' ? 'name' : (requestMode === 'name' ? 'name' : 'content')
+      const files = []
+      if (Array.isArray(source.files)) {
+        for (const rawFile of source.files) {
+          if (rawFile === null || rawFile === undefined || typeof rawFile.rel !== 'string' || rawFile.rel === '') continue
+          const matches = []
+          if (Array.isArray(rawFile.matches)) {
+            for (const rawMatch of rawFile.matches) {
+              const match = normalizeMatch(rawMatch)
+              if (match !== null) matches.push(match)
+            }
+          }
+          matches.sort((left, right) => (left.line - right.line) || (left.column - right.column))
+          files.push({
+            rel: normalizeRel(rawFile.rel),
+            size: numberOr(rawFile.size, 0),
+            mtimeMs: numberOr(rawFile.mtimeMs, 0),
+            matches,
+          })
+        }
+      }
+      files.sort((left, right) => compareNames(left.rel, right.rel))
+      let matchCount = 0
+      for (const file of files) matchCount += file.matches.length
+      return {
+        root: typeof source.root === 'string' ? source.root : '',
+        mode,
+        query: typeof source.query === 'string' ? source.query : (typeof requestQuery === 'string' ? requestQuery : ''),
+        files,
+        totalMatches: Number.isFinite(source.totalMatches) ? source.totalMatches : (mode === 'name' ? files.length : matchCount),
+        scannedFiles: numberOr(source.scannedFiles, 0),
+        truncated: source.truncated === true,
+        elapsedMs: numberOr(source.elapsedMs, 0),
+      }
+    }
+
+    /** Legacy name search (tree sidebar) -> flat entries the tree can open. */
+    function normalizeNameSearchEntries(data) {
+      const source = data !== null && data !== undefined && typeof data === 'object' ? data : {}
+      if (Array.isArray(source.files)) {
+        const entries = []
+        for (const file of source.files) {
+          if (file === null || file === undefined || typeof file.rel !== 'string' || file.rel === '') continue
+          entries.push({
+            name: baseNameOfRel(file.rel),
+            rel: normalizeRel(file.rel),
+            type: 'file',
+            size: numberOr(file.size, 0),
+            mtimeMs: numberOr(file.mtimeMs, 0),
+          })
+        }
+        return sortEntries(entries)
+      }
+      if (Array.isArray(source.matches)) {
+        return sortEntries(source.matches.filter((entry) => entry !== null && entry !== undefined && typeof entry.rel === 'string'))
+      }
+      return []
+    }
+
+    function flattenSearchResults(result, collapsed) {
+      const files = result !== null && result !== undefined && Array.isArray(result.files) ? result.files : []
+      const folded = collapsed !== null && collapsed !== undefined && typeof collapsed === 'object' ? collapsed : {}
+      const rows = []
+      for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+        const file = files[fileIndex]
+        const rel = file.rel
+        const matches = Array.isArray(file.matches) ? file.matches : []
+        const isCollapsed = folded[rel] === true
+        rows.push({
+          kind: 'file',
+          key: 'f:' + rel,
+          rel,
+          name: baseNameOfRel(rel),
+          dir: dirNameOfRel(rel),
+          fileIndex,
+          matchCount: matches.length,
+          collapsed: isCollapsed,
+          size: file.size,
+          mtimeMs: file.mtimeMs,
+          line: 1,
+        })
+        if (isCollapsed) continue
+        for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
+          const match = matches[matchIndex]
+          rows.push({
+            kind: 'match',
+            key: 'm:' + rel + ':' + match.line + ':' + match.column + ':' + matchIndex,
+            rel,
+            name: baseNameOfRel(rel),
+            dir: dirNameOfRel(rel),
+            fileIndex,
+            matchIndex,
+            matchCount: matches.length,
+            line: match.line,
+            column: match.column,
+            length: match.length,
+            text: match.text,
+          })
+        }
+      }
+      return rows
+    }
+
+    /** Split a host-provided line into plain text segments + the highlighted hit. */
+    function splitHighlight(text, column, length) {
+      const source = String(text === undefined || text === null ? '' : text)
+      const rawStart = Number.isFinite(column) ? Math.floor(column) : 0
+      const start = Math.min(source.length, Math.max(0, rawStart))
+      const rawLength = Number.isFinite(length) ? Math.floor(length) : 0
+      const end = Math.min(source.length, start + Math.max(0, rawLength))
+      if (end <= start) return [{ text: source, highlight: false }]
+      const segments = []
+      if (start > 0) segments.push({ text: source.slice(0, start), highlight: false })
+      segments.push({ text: source.slice(start, end), highlight: true })
+      if (end < source.length) segments.push({ text: source.slice(end), highlight: false })
+      return segments
+    }
+
+    function isAbortError(error) {
+      return error !== null && error !== undefined
+        && (error.name === 'AbortError' || error.code === 'aborted')
+    }
+
     const ERROR_KEYS = {
       'outside-root': 'error.outsideRoot',
       'bad-request': 'error.badRequest',
+      'bad-regex': 'error.badRegex',
       'not-found': 'error.notFound',
       'conflict': 'error.conflict',
       'too-large': 'error.tooLarge',
@@ -1166,7 +1565,7 @@ window.__ModuleLoader__.load({
      * file text, and external replacements are pushed through `setContent`.
      */
     function EditorMount(props) {
-      const { tab, t, readOnly, onChange, onSave } = props
+      const { tab, t, readOnly, onChange, onSave, line, lineToken } = props
       const hostRef = useRef(null)
       const handleRef = useRef(null)
       const valueRef = useRef(typeof tab.content === 'string' ? tab.content : '')
@@ -1174,6 +1573,7 @@ window.__ModuleLoader__.load({
       callbacks.current = { onChange, onSave }
       const [state, setState] = useState('loading')
       const [failure, setFailure] = useState(null)
+      const initialLine = typeof line === 'number' && Number.isFinite(line) && line > 0 ? Math.floor(line) : undefined
 
       useEffect(() => {
         let cancelled = false
@@ -1190,6 +1590,8 @@ window.__ModuleLoader__.load({
             content: valueRef.current,
             language: tab.language,
             readOnly: readOnly === true,
+            /* §3: `line` is 1-based and implementation-clamped to the document. */
+            line: initialLine,
             onChange: (text) => {
               const next = typeof text === 'string' ? text : ''
               valueRef.current = next
@@ -1217,7 +1619,9 @@ window.__ModuleLoader__.load({
             } catch (error) { void error }
           }
         }
-      }, [tab.rel, tab.language, readOnly])
+        /* `lineToken` remounts (and re-scrolls) when a search hit lands on a
+           different line of an already-open file. */
+      }, [tab.rel, tab.language, readOnly, lineToken, initialLine])
 
       /* Push content replaced from outside (reload / revert / conflict reload). */
       useEffect(() => {
@@ -1317,21 +1721,23 @@ window.__ModuleLoader__.load({
 
     function Viewer(props) {
       const { tab, t, editing, src, onChange, onSave } = props
+      const line = tab.line
+      const lineToken = tab.lineToken
       if (tab.kind === 'markdown') {
         return editing
-          ? E(EditorMount, { tab, t, readOnly: false, onChange, onSave })
+          ? E(EditorMount, { tab, t, readOnly: false, onChange, onSave, line, lineToken })
           : E(MarkdownView, { tab })
       }
       if (tab.kind === 'json') {
         return editing
-          ? E(EditorMount, { tab, t, readOnly: false, onChange, onSave })
+          ? E(EditorMount, { tab, t, readOnly: false, onChange, onSave, line, lineToken })
           : E(JsonView, { tab, t })
       }
       if (tab.kind === 'image') return E(ImageView, { tab, t, src })
       if (tab.kind === 'pdf') return E(PdfView, { tab, t, src })
       if (tab.kind === 'html') return E(HtmlView, { tab, src })
       if (tab.kind === 'binary') return E(BinaryView, { tab, t, src })
-      return E(EditorMount, { tab, t, readOnly: editing !== true, onChange, onSave })
+      return E(EditorMount, { tab, t, readOnly: editing !== true, onChange, onSave, line, lineToken })
     }
 
     /* ============================== workspace picker ============================== */
@@ -1712,6 +2118,261 @@ window.__ModuleLoader__.load({
         E('div', { className: 'wbf-emptyHint' }, t('tabs.emptyHint')))
     }
 
+    /* ============================== search panel ============================== */
+
+    /**
+     * VSCode-like search surface. It replaces the explorer list while open
+     * (the sidebar root chip stays visible); rows are plain buttons so the
+     * keyboard handler can activate the flattened result at `focusIndex`.
+     *
+     * Keyboard: ↑/↓ moves the flattened focus, Enter opens a focused match (or
+     * toggles a file group), Enter in the empty-focus input runs the search
+     * immediately, Ctrl/Cmd+Enter opens the focused row and closes the panel,
+     * Esc closes the panel.
+     */
+    function SearchPanel(props) {
+      const {
+        t, state, root,
+        onQueryChange, onRun, onCancel, onClose, onModeChange,
+        onToggleFlag, onGlobChange, onToggleGlobOpen, onCollapse,
+        onOpenRow, onFocus, onPickRoot, onClear,
+      } = props
+      const result = state.data
+      const rows = useMemo(() => flattenSearchResults(state.data, state.collapsed), [state.data, state.collapsed])
+      const listRef = useRef(null)
+      const query = state.query
+      const hasResult = result !== null && result !== undefined
+      const fileCount = hasResult && Array.isArray(result.files) ? result.files.length : 0
+      const matchCount = hasResult && Number.isFinite(result.totalMatches) ? result.totalMatches : 0
+      const loading = state.status === 'loading'
+      const emptyQuery = query.trim() === ''
+
+      useEffect(() => {
+        const target = listRef.current
+        if (target === null || target === undefined || typeof target.querySelector !== 'function') return
+        if (!Number.isInteger(state.focusIndex) || state.focusIndex < 0) return
+        const node = target.querySelector('[data-row-index="' + String(state.focusIndex) + '"]')
+        if (node !== null && node !== undefined && typeof node.scrollIntoView === 'function') {
+          try { node.scrollIntoView({ block: 'nearest' }) } catch (error) { void error }
+        }
+      }, [state.focusIndex])
+
+      const onKeyDown = (event) => {
+        if (event === null || event === undefined) return
+        const key = event.key
+        if (key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+          return
+        }
+        if (key === 'ArrowDown' || key === 'ArrowUp') {
+          event.preventDefault()
+          const next = moveSearchFocus(state.focusIndex, rows.length, key === 'ArrowDown' ? 1 : -1)
+          if (next >= 0) onFocus(next)
+          return
+        }
+        if (key === 'Enter') {
+          const row = Number.isInteger(state.focusIndex) && state.focusIndex >= 0 ? rows[state.focusIndex] : undefined
+          if (event.ctrlKey === true || event.metaKey === true) {
+            if (row === undefined) return
+            event.preventDefault()
+            onOpenRow(row)
+            onClose()
+            return
+          }
+          if (row !== undefined) {
+            event.preventDefault()
+            if (row.kind === 'match' || state.mode === 'name') onOpenRow(row)
+            else onCollapse(row.rel)
+            return
+          }
+          event.preventDefault()
+          onRun()
+          return
+        }
+        /* Ctrl/Cmd+Shift+F toggles from anywhere, including the query input. */
+        if ((event.ctrlKey === true || event.metaKey === true) && event.shiftKey === true
+          && String(key).toLowerCase() === 'f') {
+          event.preventDefault()
+          onClose()
+        }
+      }
+
+      const modeButtons = E('div', { className: 'wbf-srModes', role: 'group', 'aria-label': t('search.title') },
+        E('button', {
+          type: 'button',
+          className: cx('wbf-srMode', state.mode === 'content' ? 'is-active' : ''),
+          title: t('search.modeContentTitle'),
+          'aria-pressed': state.mode === 'content',
+          onClick: () => onModeChange('content'),
+        }, t('search.modeContent')),
+        E('button', {
+          type: 'button',
+          className: cx('wbf-srMode', state.mode === 'name' ? 'is-active' : ''),
+          title: t('search.modeNameTitle'),
+          'aria-pressed': state.mode === 'name',
+          onClick: () => onModeChange('name'),
+        }, t('search.modeName')))
+
+      const flagButton = (flag, label, glyph) => E('button', {
+        type: 'button',
+        className: cx('wbf-srFlag', state[flag] === true ? 'is-active' : ''),
+        title: label,
+        'aria-label': label,
+        'aria-pressed': state[flag] === true,
+        onClick: () => onToggleFlag(flag),
+      }, glyph)
+
+      const queryRow = E('div', { className: 'wbf-srQueryRow' },
+        E(Icon, { name: 'search', size: 12, className: 'wbf-srQueryIcon' }),
+        E('input', {
+          className: 'wbf-srQuery',
+          type: 'search',
+          value: query,
+          placeholder: state.mode === 'name' ? t('search.emptyName') : t('search.placeholder'),
+          spellCheck: false,
+          autoFocus: true,
+          disabled: root === null || root === '',
+          'aria-label': t('search.title'),
+          onChange: (event) => onQueryChange(event.target.value),
+        }),
+        query === '' ? null : E(IconButton, { name: 'close', size: 12, label: t('search.clear'), onClick: onClear }))
+
+      const globField = (field, label, placeholder) => {
+        const parsed = parseGlobInput(state[field])
+        const open = state[field + 'Open'] === true
+        return E('div', { className: 'wbf-srGlob' },
+          E('button', {
+            type: 'button',
+            className: 'wbf-srGlobHead',
+            'aria-expanded': open,
+            onClick: () => onToggleGlobOpen(field + 'Open'),
+          },
+          E(Icon, { name: open ? 'chevronDown' : 'chevronRight', size: 10 }),
+          E('span', null, label),
+          parsed.tokens.length === 0 ? null : E('span', { className: 'wbf-badge' }, t('search.globCount', { n: parsed.tokens.length }))),
+          open ? E(Fragment, null,
+            E('input', {
+              className: 'wbf-srGlobInput',
+              type: 'text',
+              value: state[field],
+              placeholder,
+              spellCheck: false,
+              onChange: (event) => onGlobChange(field, event.target.value),
+            }),
+            parsed.invalid.length > 0
+              ? E('div', { className: 'wbf-srGlobInvalid' }, t('search.globInvalid', { items: parsed.invalid.join(', ') }))
+              : parsed.tokens.length > 0
+                ? E('div', { className: 'wbf-srGlobChips' }, parsed.tokens.map((token, index) => E('span', {
+                  key: String(index) + token,
+                  className: 'wbf-srGlobChip',
+                }, token)))
+                : E('div', { className: 'wbf-srHint' }, field === 'exclude' ? t('search.globDefault') : t('search.globHint')),
+            parsed.tokens.length > 0 ? E('div', { className: 'wbf-srHint' }, t('search.globHint')) : null)
+            : null)
+      }
+
+      let statusNode = null
+      if (root === null || root === '') {
+        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.noRoot')),
+          E('button', { type: 'button', className: 'wbf-btn is-small', onClick: onPickRoot }, t('search.pickRoot')))
+      } else if (state.status === 'error') {
+        statusNode = E('div', { className: 'wbf-srStatus is-error', role: 'alert' },
+          E(Icon, { name: 'warning', size: 12 }),
+          E('span', { className: 'wbf-srStatusText' }, state.error === '' ? t('error.unknown', { message: '' }) : state.error))
+      } else if (loading) {
+        statusNode = E('div', { className: 'wbf-srStatus is-busy' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.searching')),
+          E('button', { type: 'button', className: 'wbf-btn is-small', onClick: onCancel }, t('search.cancel')))
+      } else if (hasResult && state.status === 'ready') {
+        statusNode = E('div', { className: 'wbf-srStatus is-ready' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.summary', { matches: matchCount, files: fileCount })),
+          E('span', { className: 'wbf-srStatusMeta' }, t('search.elapsed', { ms: result.elapsedMs })),
+          result.truncated === true ? E('span', { className: 'wbf-srTruncated' }, t('search.truncated')) : null)
+      } else if (emptyQuery) {
+        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
+          E('span', { className: 'wbf-srStatusText' }, state.mode === 'name' ? t('search.emptyName') : t('search.empty')))
+      } else if (state.status === 'idle') {
+        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.readyToSearch')))
+      } else {
+        statusNode = E('div', { className: 'wbf-srStatus is-busy' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.searching')))
+      }
+
+      let listBody = null
+      if (root === null || root === '') {
+        listBody = null
+      } else if (state.status === 'error') {
+        listBody = null
+      } else if (emptyQuery) {
+        listBody = E('div', { className: 'wbf-srEmpty' },
+          E(Icon, { name: 'search', size: 22 }),
+          E('div', null, state.mode === 'name' ? t('search.emptyName') : t('search.empty')))
+      } else if (hasResult && state.status === 'ready' && fileCount === 0) {
+        listBody = E('div', { className: 'wbf-srEmpty' },
+          E(Icon, { name: 'search', size: 22 }),
+          E('div', null, t('search.noResults')),
+          E('div', { className: 'wbf-srHint' }, t('search.noResultsHint')))
+      } else if (hasResult && state.status === 'ready') {
+        listBody = rows.map((row, index) => {
+          const focused = state.focusIndex === index
+          if (row.kind === 'file') {
+            const nameMode = state.mode === 'name'
+            return E('button', {
+              key: row.key,
+              type: 'button',
+              'data-row-index': index,
+              className: cx('wbf-srFile', focused ? 'is-focused' : ''),
+              title: row.rel,
+              onClick: () => {
+                if (nameMode) onOpenRow(row)
+                else onCollapse(row.rel)
+              },
+            },
+            E('span', { className: 'wbf-srChevron' }, nameMode ? null : E(Icon, { name: row.collapsed ? 'chevronRight' : 'chevronDown', size: 10 })),
+            E(Icon, { name: 'file', size: 12 }),
+            E('span', { className: 'wbf-srFileName' }, row.name),
+            row.dir === '' ? null : E('span', { className: 'wbf-srFileDir' }, row.dir),
+            nameMode || row.matchCount <= 0 ? null : E('span', { className: 'wbf-srCount' }, String(row.matchCount)))
+          }
+          const segments = splitHighlight(row.text, row.column, row.length)
+          return E('button', {
+            key: row.key,
+            type: 'button',
+            'data-row-index': index,
+            className: cx('wbf-srMatch', focused ? 'is-focused' : ''),
+            title: row.rel + ':' + String(row.line),
+            onClick: () => onOpenRow(row),
+          },
+          E('span', { className: 'wbf-srLine' }, String(row.line)),
+          E('span', { className: 'wbf-srSnippet' }, segments.map((segment, segmentIndex) => E(
+            'span',
+            { key: segmentIndex, className: segment.highlight ? 'wbf-srHit' : undefined },
+            segment.text,
+          ))))
+        })
+      }
+
+      return E('div', { className: 'wbf-searchPanel', onKeyDown },
+        E('div', { className: 'wbf-srHead' },
+          E(IconButton, { name: 'chevronRight', size: 13, label: t('search.close'), onClick: onClose }),
+          E('span', { className: 'wbf-srTitle' }, t('search.title'))),
+        queryRow,
+        E('div', { className: 'wbf-srControls' }, modeButtons,
+          E('div', { className: 'wbf-srFlags' },
+            flagButton('caseSensitive', t('search.caseSensitive'), 'Aa'),
+            flagButton('wholeWord', t('search.wholeWord'), 'ab'),
+            flagButton('regex', t('search.regex'), '.*'))),
+        globField('include', t('search.include'), t('search.includePlaceholder')),
+        globField('exclude', t('search.exclude'), t('search.excludePlaceholder')),
+        statusNode,
+        E('div', { className: 'wbf-srList', ref: listRef }, listBody),
+        E('div', { className: 'wbf-srFootHint' }, t('search.keyboardHint')))
+    }
+
     /* ============================== page ============================== */
 
     function Page(props) {
@@ -1724,6 +2385,11 @@ window.__ModuleLoader__.load({
       const dirReqRef = useRef(new Map())
       const treeKeyRef = useRef(null)
       const toastTimerRef = useRef(null)
+      const searchSeqRef = useRef(0)
+      const searchAbortRef = useRef(null)
+      const searchTimerRef = useRef(null)
+      const searchPanelRef = useRef(null)
+      const performSearchRef = useRef(null)
 
       const [root, setRoot] = useState(() => readStoredRoot())
       const [showHidden, setShowHidden] = useState(() => readBool(HIDDEN_KEY, false))
@@ -1735,6 +2401,7 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('')
       const [searchNonce, setSearchNonce] = useState(0)
       const [search, setSearch] = useState({ status: 'idle', matches: [], truncated: false, error: null })
+      const [searchPanel, setSearchPanel] = useState(createSearchState)
       const [tabs, setTabs] = useState([])
       const [activeRel, setActiveRel] = useState(null)
       const [pendingClose, setPendingClose] = useState(null)
@@ -1747,6 +2414,7 @@ window.__ModuleLoader__.load({
       tabsRef.current = tabs
       activeRelRef.current = activeRel
       treeRef.current = tree
+      searchPanelRef.current = searchPanel
 
       const activeTab = useMemo(() => {
         for (let index = 0; index < tabs.length; index += 1) {
@@ -1794,6 +2462,16 @@ window.__ModuleLoader__.load({
         setActiveRel(null)
         setQuery('')
         setSearch({ status: 'idle', matches: [], truncated: false, error: null })
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+        if (searchTimerRef.current !== null) {
+          clearTimeout(searchTimerRef.current)
+          searchTimerRef.current = null
+        }
+        searchSeqRef.current += 1
+        setSearchPanel(createSearchState())
         setPendingRoot(null)
         setPendingClose(null)
         setPendingReload(null)
@@ -1921,9 +2599,12 @@ window.__ModuleLoader__.load({
         showToast(t('toast.refreshed'), 'ok')
       }, [loadDir, showToast, t])
 
-      /* ---- search ----------------------------------------------------------- */
+      /* ---- tree filename search (kept when the search panel is closed) ------ */
 
       useEffect(() => {
+        /* The optimistic §2.1 contract puts `mode:'name'` behind the same
+           `search` method; the explorer's inline filter stays one flat list. */
+        if (searchPanel.open === true) return undefined
         const text = query.trim()
         if (root === null || root === '' || text === '') {
           setSearch({ status: 'idle', matches: [], truncated: false, error: null })
@@ -1932,11 +2613,11 @@ window.__ModuleLoader__.load({
         let cancelled = false
         const timer = setTimeout(() => {
           setSearch({ status: 'loading', matches: [], truncated: false, error: null })
-          call('search', { root, query: text, limit: SEARCH_LIMIT }).then((data) => {
+          call('search', { root, mode: 'name', query: text, maxResults: SEARCH_LIMIT }).then((data) => {
             if (cancelled) return
             setSearch({
               status: 'ready',
-              matches: data !== null && data !== undefined && Array.isArray(data.matches) ? data.matches : [],
+              matches: normalizeNameSearchEntries(data),
               truncated: data !== null && data !== undefined && data.truncated === true,
               error: null,
             })
@@ -1949,7 +2630,143 @@ window.__ModuleLoader__.load({
           cancelled = true
           clearTimeout(timer)
         }
-      }, [query, root, searchNonce, t])
+      }, [query, root, searchNonce, t, searchPanel.open])
+
+      /* ---- VSCode-like search panel ----------------------------------------- */
+
+      const openSearchPanel = useCallback(() => {
+        setQuery('')
+        setSearch({ status: 'idle', matches: [], truncated: false, error: null })
+        setSearchPanel((previous) => reduceSearchState(previous, { type: 'open' }))
+      }, [])
+
+      const closeSearchPanel = useCallback(() => {
+        if (searchTimerRef.current !== null) {
+          clearTimeout(searchTimerRef.current)
+          searchTimerRef.current = null
+        }
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+        searchSeqRef.current += 1
+        setSearchPanel((previous) => reduceSearchState(previous, { type: 'close', seq: searchSeqRef.current }))
+      }, [])
+
+      const toggleSearchPanel = useCallback(() => {
+        if (searchPanelRef.current !== null && searchPanelRef.current.open === true) closeSearchPanel()
+        else openSearchPanel()
+      }, [closeSearchPanel, openSearchPanel])
+
+      const performSearch = useCallback(() => {
+        const state = searchPanelRef.current
+        if (state === null || state === undefined || state.open !== true) return
+        const request = buildSearchRequest(state, rootRef.current)
+        if (request === null) {
+          if (searchAbortRef.current !== null) {
+            try { searchAbortRef.current.abort() } catch (error) { void error }
+            searchAbortRef.current = null
+          }
+          searchSeqRef.current += 1
+          setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
+          return
+        }
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+        }
+        const controller = typeof AbortController === 'function' ? new AbortController() : null
+        searchAbortRef.current = controller
+        searchSeqRef.current += 1
+        const seq = searchSeqRef.current
+        setSearchPanel((previous) => reduceSearchState(previous, { type: 'request', seq }))
+        call('search', request, controller === null ? undefined : controller.signal).then((data) => {
+          if (seq !== searchSeqRef.current) return
+          setSearchPanel((previous) => reduceSearchState(previous, {
+            type: 'response',
+            seq,
+            data: normalizeSearchResponse(data, request.mode, request.query),
+          }))
+        }).catch((error) => {
+          if (seq !== searchSeqRef.current || isAbortError(error)) return
+          setSearchPanel((previous) => reduceSearchState(previous, {
+            type: 'error',
+            seq,
+            message: describeError(t, error),
+          }))
+        }).then(() => {
+          if (searchAbortRef.current === controller) searchAbortRef.current = null
+        })
+      }, [t])
+      performSearchRef.current = performSearch
+
+      const cancelSearch = useCallback(() => {
+        if (searchTimerRef.current !== null) {
+          clearTimeout(searchTimerRef.current)
+          searchTimerRef.current = null
+        }
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+        searchSeqRef.current += 1
+        setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
+      }, [])
+
+      const runSearchNow = useCallback(() => {
+        if (searchTimerRef.current !== null) {
+          clearTimeout(searchTimerRef.current)
+          searchTimerRef.current = null
+        }
+        if (performSearchRef.current !== null) performSearchRef.current()
+      }, [])
+
+      /* 300 ms debounce; every dependency change invalidates in-flight work
+         BEFORE the new request starts, so a slow old response can never land. */
+      useEffect(() => {
+        if (searchPanel.open !== true) return undefined
+        const text = searchPanel.query.trim()
+        if (searchTimerRef.current !== null) {
+          clearTimeout(searchTimerRef.current)
+          searchTimerRef.current = null
+        }
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+        searchSeqRef.current += 1
+        if (text === '' || root === null || root === '') {
+          setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
+          return undefined
+        }
+        setSearchPanel((previous) => reduceSearchState(previous, { type: 'pending' }))
+        searchTimerRef.current = setTimeout(() => {
+          searchTimerRef.current = null
+          if (performSearchRef.current !== null) performSearchRef.current()
+        }, SEARCH_PANEL_DEBOUNCE_MS)
+        return () => {
+          if (searchTimerRef.current !== null) {
+            clearTimeout(searchTimerRef.current)
+            searchTimerRef.current = null
+          }
+        }
+      }, [
+        searchPanel.open, searchPanel.query, searchPanel.mode,
+        searchPanel.caseSensitive, searchPanel.wholeWord, searchPanel.regex,
+        searchPanel.include, searchPanel.exclude, root,
+      ])
+
+      useEffect(() => () => {
+        if (searchTimerRef.current !== null) clearTimeout(searchTimerRef.current)
+        searchTimerRef.current = null
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+      }, [])
+
+      const updateSearchState = useCallback((action) => {
+        setSearchPanel((previous) => reduceSearchState(previous, action))
+      }, [])
 
       /* ---- tabs / files ----------------------------------------------------- */
 
@@ -2000,13 +2817,27 @@ window.__ModuleLoader__.load({
         }
       }, [patchTab, t])
 
-      const openEntry = useCallback((entry) => {
+      const openEntry = useCallback((entry, options) => {
         if (entry === null || entry === undefined) return
         if (rootRef.current === null || rootRef.current === '') return
+        const opts = options !== null && options !== undefined ? options : {}
+        const line = typeof opts.line === 'number' && Number.isFinite(opts.line) && opts.line > 0 ? Math.floor(opts.line) : 0
+        const fromSearch = opts.fromSearch === true
         const rel = normalizeRel(typeof entry.rel === 'string' && entry.rel !== '' ? entry.rel : entry.name)
         if (rel === '') return
-        if (tabsRef.current.some((tab) => tab.rel === rel)) {
+        const existing = tabsRef.current.find((tab) => tab.rel === rel)
+        if (existing !== undefined) {
           setActiveRel(rel)
+          if (line > 0) {
+            /* Remount the editor at the requested line without losing the
+               current buffer: content comes from tab.content / valueRef. */
+            patchTab(rel, {
+              type: 'jump',
+              line,
+              lineToken: (existing.lineToken || 0) + 1,
+              editing: fromSearch && (existing.kind === 'markdown' || existing.kind === 'json') ? true : undefined,
+            })
+          }
           return
         }
         const name = typeof entry.name === 'string' && entry.name !== '' ? entry.name : baseNameOfRel(rel)
@@ -2022,7 +2853,7 @@ window.__ModuleLoader__.load({
           savedContent: '',
           dirty: false,
           saving: false,
-          editing: false,
+          editing: fromSearch && (kind === 'markdown' || kind === 'json'),
           conflict: false,
           externalMtimeMs: null,
           mtimeMs: typeof entry.mtimeMs === 'number' ? entry.mtimeMs : 0,
@@ -2030,11 +2861,13 @@ window.__ModuleLoader__.load({
           truncated: false,
           encoding: 'utf8',
           mediaTick: 0,
+          line,
+          lineToken: line > 0 ? 1 : 0,
         }
         setTabs((previous) => previous.concat([tab]))
         setActiveRel(rel)
         void hydrateTab(tab, entry)
-      }, [hydrateTab])
+      }, [hydrateTab, patchTab])
 
       const closeTab = useCallback((rel) => {
         const current = tabsRef.current
@@ -2189,6 +3022,15 @@ window.__ModuleLoader__.load({
         openEntry(entry)
       }, [openEntry, revealRel])
 
+      const openSearchRow = useCallback((row) => {
+        if (row === null || row === undefined || typeof row.rel !== 'string' || row.rel === '') return
+        const line = row.kind === 'match' && Number.isFinite(row.line) && row.line > 0 ? row.line : 1
+        openEntry(
+          { rel: row.rel, name: row.name, size: row.size, mtimeMs: row.mtimeMs },
+          { line, fromSearch: true },
+        )
+      }, [openEntry])
+
       const handleContentChange = useCallback((rel, text) => {
         patchTab(rel, { type: 'content', content: text })
       }, [patchTab])
@@ -2236,6 +3078,36 @@ window.__ModuleLoader__.load({
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
+      }, [])
+
+      /* Ctrl/Cmd+Shift+F opens the search panel from anywhere; Esc closes it.
+         Capture phase so the editor's own keymaps cannot swallow the shortcut. */
+      const searchShortcutRef = useRef({})
+      searchShortcutRef.current = {
+        toggle: toggleSearchPanel,
+        close: closeSearchPanel,
+        open: searchPanel.open,
+        blocked: pickerOpen || pendingRoot !== null || pendingClose !== null || pendingReload !== null,
+      }
+      useEffect(() => {
+        const onKey = (event) => {
+          const command = event.ctrlKey === true || event.metaKey === true
+          if (command && event.shiftKey === true && String(event.key).toLowerCase() === 'f') {
+            if (searchShortcutRef.current.blocked === true) return
+            event.preventDefault()
+            event.stopPropagation()
+            searchShortcutRef.current.toggle()
+            return
+          }
+          if (event.key === 'Escape' && searchShortcutRef.current.open === true) {
+            if (searchShortcutRef.current.blocked === true) return
+            event.preventDefault()
+            event.stopPropagation()
+            searchShortcutRef.current.close()
+          }
+        }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
       }, [])
 
       /* ---- render ----------------------------------------------------------- */
@@ -2319,28 +3191,55 @@ window.__ModuleLoader__.load({
               },
               E(Icon, { name: 'folder', size: 14 }),
               E('span', { className: 'wbf-rootName' }, root === null || root === '' ? t('root.choose') : workspaceNameOf(root)),
-              E(Icon, { name: 'chevronDown', size: 11 }))),
-            E(TreePanel, {
-              t,
-              root,
-              tree,
-              expanded,
-              rows,
-              rowLimit,
-              showHidden,
-              searchQuery: query,
-              search,
-              activeRel,
-              onQueryChange: setQuery,
-              onClearSearch: () => setQuery(''),
-              onToggleHidden: toggleHidden,
-              onRefresh: refreshTree,
-              onToggleDir: toggleDir,
-              onOpenFile: openEntry,
-              onRetryDir: retryDir,
-              onShowMore: () => setRowLimit((value) => value + TREE_ROW_LIMIT),
-              onOpenSearchResult: openSearchResult,
-            })),
+              E(Icon, { name: 'chevronDown', size: 11 })),
+              E('span', { className: 'wbf-sideActions' },
+                E(IconButton, {
+                  name: 'search',
+                  size: 13,
+                  label: t('search.open'),
+                  active: searchPanel.open === true,
+                  onClick: toggleSearchPanel,
+                }))),
+            searchPanel.open === true
+              ? E(SearchPanel, {
+                t,
+                state: searchPanel,
+                root,
+                onQueryChange: (value) => updateSearchState({ type: 'query', query: value }),
+                onRun: runSearchNow,
+                onCancel: cancelSearch,
+                onClose: closeSearchPanel,
+                onModeChange: (mode) => updateSearchState({ type: 'mode', mode }),
+                onToggleFlag: (flag) => updateSearchState({ type: 'flag', flag }),
+                onGlobChange: (field, value) => updateSearchState({ type: 'glob', field, value }),
+                onToggleGlobOpen: (field) => updateSearchState({ type: 'globOpen', field }),
+                onCollapse: (rel) => updateSearchState({ type: 'collapse', rel }),
+                onOpenRow: openSearchRow,
+                onFocus: (index) => updateSearchState({ type: 'focus', index }),
+                onPickRoot: () => setPickerOpen(true),
+                onClear: () => updateSearchState({ type: 'query', query: '' }),
+              })
+              : E(TreePanel, {
+                t,
+                root,
+                tree,
+                expanded,
+                rows,
+                rowLimit,
+                showHidden,
+                searchQuery: query,
+                search,
+                activeRel,
+                onQueryChange: setQuery,
+                onClearSearch: () => setQuery(''),
+                onToggleHidden: toggleHidden,
+                onRefresh: refreshTree,
+                onToggleDir: toggleDir,
+                onOpenFile: openEntry,
+                onRetryDir: retryDir,
+                onShowMore: () => setRowLimit((value) => value + TREE_ROW_LIMIT),
+                onOpenSearchResult: openSearchResult,
+              })),
           E('div', { className: 'wbf-content' },
             E(TabStrip, {
               t,
@@ -2431,6 +3330,52 @@ window.__ModuleLoader__.load({
 .wbf-searchRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .wbf-searchName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wbf-searchDir{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px}
+.wbf-searchPanel{display:flex;flex-direction:column;flex:1;min-height:0;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.wbf-srHead{display:flex;align-items:center;gap:4px;padding:4px 6px}
+.wbf-srTitle{flex:1;min-width:0;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.wbf-srQueryRow{position:relative;display:flex;align-items:center;padding:0 8px 5px}
+.wbf-srQueryIcon{position:absolute;left:15px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.wbf-srQuery{width:100%;min-width:0;height:26px;padding:0 26px 0 23px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
+.wbf-srQuery:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-srQuery:disabled{opacity:.5}
+.wbf-srControls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 8px 5px}
+.wbf-srModes{display:flex;flex:none;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;overflow:hidden}
+.wbf-srMode{border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;padding:3px 8px;cursor:pointer}
+.wbf-srMode.is-active{background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
+.wbf-srFlags{display:flex;gap:2px;margin-left:auto;flex:none}
+.wbf-srFlag{width:22px;height:20px;padding:0;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;line-height:1;cursor:pointer}
+.wbf-srFlag:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+.wbf-srFlag.is-active{color:var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 16%,transparent)}
+.wbf-srGlob{display:flex;flex-direction:column;gap:3px;padding:0 8px 4px}
+.wbf-srGlobHead{display:flex;align-items:center;gap:4px;padding:2px 0;border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;text-align:left;cursor:pointer}
+.wbf-srGlobHead:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbf-srGlobInput{height:24px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:10px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
+.wbf-srGlobInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-srGlobChips{display:flex;flex-wrap:wrap;gap:3px;max-height:54px;overflow:auto}
+.wbf-srGlobChip{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#b6bac1);font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:9px;line-height:15px}
+.wbf-srGlobInvalid{color:var(--dsw-alias-state-error-primary,#ff6b6b);font-size:10px;line-height:1.4;word-break:break-word}
+.wbf-srHint{color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px;line-height:1.4;word-break:break-word}
+.wbf-srStatus{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 9px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.wbf-srStatusText{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.wbf-srStatusMeta{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
+.wbf-srStatus.is-busy{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
+.wbf-srStatus.is-error{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
+.wbf-srTruncated{flex:none;padding:0 5px;border-radius:3px;color:var(--dsw-alias-state-warn-primary,#e2a03f);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 16%,transparent);font-size:9px;line-height:15px}
+.wbf-srList{flex:1;min-height:0;overflow:auto;padding:3px 2px 8px;overscroll-behavior:contain}
+.wbf-srEmpty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:26px 14px;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:11px;line-height:1.5}
+.wbf-srFile,.wbf-srMatch{display:flex;align-items:center;gap:4px;width:100%;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:4px}
+.wbf-srFile{padding:3px 6px;color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px}
+.wbf-srFile:hover,.wbf-srMatch:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.wbf-srFile.is-focused,.wbf-srMatch.is-focused{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18))}
+.wbf-srChevron{display:flex;width:10px;flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.wbf-srFileName{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.wbf-srFileDir{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:9px}
+.wbf-srCount{flex:none;min-width:16px;padding:0 4px;border-radius:8px;text-align:center;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#b6bac1);font-size:9px;line-height:15px}
+.wbf-srMatch{padding:2px 6px 2px 16px;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px}
+.wbf-srLine{flex:none;width:36px;text-align:right;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.wbf-srSnippet{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre}
+.wbf-srHit{border-radius:2px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 34%,transparent);color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbf-srFootHint{flex:none;padding:3px 9px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wbf-content{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;background:var(--dsw-alias-bg-base,#14161a)}
 .wbf-tabs{display:flex;align-items:stretch;flex:none;min-height:29px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));scrollbar-width:thin}
 .wbf-tab{display:flex;align-items:center;gap:5px;flex:none;max-width:180px;padding:0 7px;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer}
@@ -2598,6 +3543,8 @@ window.__ModuleLoader__.load({
     const TEST_API = {
       PAGE_ID,
       TREE_ROW_LIMIT,
+      SEARCH_PANEL_MAX_RESULTS,
+      SEARCH_MODES,
       extensionOf,
       classifyFile,
       languageOf,
@@ -2619,6 +3566,16 @@ window.__ModuleLoader__.load({
       parseStoredRoot,
       browseEntryPath,
       reduceTab,
+      createSearchState,
+      reduceSearchState,
+      moveSearchFocus,
+      parseGlobInput,
+      buildSearchRequest,
+      normalizeSearchResponse,
+      normalizeNameSearchEntries,
+      flattenSearchResults,
+      splitHighlight,
+      isAbortError,
       mediaUrl,
       loadChunk,
       dictionaries: { zh: ZH, en: EN },
@@ -2629,6 +3586,7 @@ window.__ModuleLoader__.load({
         ConflictBar,
         RootPicker,
         TreePanel,
+        SearchPanel,
         Viewer,
         ViewerEmpty,
         EditorMount,

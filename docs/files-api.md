@@ -23,7 +23,7 @@
 | `roots` | `{}` | `{ root, drives:[{name,path}], recent:[string] }` |
 | `browse` | `{ dir }` | `{ dir, parent, entries:[entry] }`（选工作区根用的目录浏览） |
 | `tree` | `{ root, dir='', showHidden=false }` | `{ root, dir, entries:[entry], truncated }` |
-| `search` | `{ root, query, limit=200 }` | `{ matches:[entry], truncated }` |
+| `search` | 见 §2.1（`mode:'content'` 内容搜索 / `mode:'name'` 文件名搜索） | 见 §2.1 |
 | `read` | `{ root, rel, maxBytes? }` | `{ content, size, mtimeMs, encoding:'utf8'|'binary', truncated }` |
 | `write` | `{ root, rel, content, baseMtimeMs? }` | `{ size, mtimeMs }`；mtime 不符 → `409 conflict` |
 | `stat` | `{ root, rel }` | `{ entry }` |
@@ -35,6 +35,64 @@
 ```ts
 { name: string, rel: string, type: 'dir'|'file'|'symlink', size?: number, mtimeMs?: number, hasChildren?: boolean }
 ```
+
+### 2.1 `search`（VSCode 级搜索）
+
+请求：
+
+```ts
+{
+  root: string,                 // 工作区根（与其它方法同一套围栏）
+  mode?: 'content' | 'name',    // 默认 'content'（'name' 为文件名快开）
+  query: string,                // 非空；content 模式按行匹配
+  caseSensitive?: boolean,      // 默认 false
+  wholeWord?: boolean,          // 默认 false（\b 包裹）
+  regex?: boolean,              // 默认 false；非法正则 → 400 bad-regex
+  include?: string,             // 逗号分隔 glob，空 = 全部
+  exclude?: string,             // 逗号分隔 glob；省略 = 默认排除；'' = 不排除
+  maxResults?: number,          // 总匹配条数，默认 200，上限 2000
+  maxFileSize?: number,         // 单文件字节上限，默认 1 MiB，上限 8 MiB
+  contextLines?: number,        // 0..3，匹配行前后各带几行
+}
+```
+
+响应：
+
+```ts
+{
+  root: string, mode: 'content'|'name', query: string,
+  files: Array<{
+    rel: string, size: number, mtimeMs: number,
+    matches: Array<{
+      line: number,            // 1-based
+      column: number,          // 0-based（content 模式）
+      length: number,          // 匹配长度
+      text: string,            // 该行文本（≤400 字符，超长截断并保留匹配附近窗口）
+      before?: string[],       // contextLines>0 时
+      after?: string[],
+    }>,
+  }>,
+  totalMatches: number,
+  scannedFiles: number,
+  truncated: boolean,          // 命中上限 / 扫描上限 / 时间预算
+  elapsedMs: number,
+}
+```
+
+`mode:'name'` 时每个文件一条记录且 `matches` 为空数组（`totalMatches = files.length`），用于
+「快速打开文件」（Ctrl+P 语义）。
+
+规则：
+
+- **默认排除**：`node_modules/**,.git/**,.hg/**,.svn/**`（`exclude:''` 可关闭）。
+  `include` 在默认排除之后做正向过滤；两者都按 POSIX rel 匹配。
+- **glob**：逗号分隔；`*` 匹配任意非 `/` 字符，`**` 跨目录，`?` 单字符，`!` 前缀取反；
+  例：`src/**/*.ts,!src/vendor/**`。
+- **二进制/大文件跳过**：前 8 KiB 含 NUL 视为二进制；超过 `maxFileSize` 跳过；符号链接不跟随。
+- **上限**：最多扫描 20000 个文件、总匹配 `maxResults`、软时间预算 6s；任一触顶置
+  `truncated:true` 并返回已有结果（不报错）。
+- **编码**：UTF-8；非法字节用替换字符，不中断搜索。
+- **顺序**：文件按 rel 自然序（与树一致），文件内按行号升序。
 
 ### 媒体路由（GET）
 

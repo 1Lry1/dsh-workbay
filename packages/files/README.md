@@ -22,7 +22,7 @@
 | `roots` | `{}` | `{ root, drives:[{name,path}], recent:[string] }` |
 | `browse` | `{ dir }` | `{ dir, parent, entries:[dirEntry] }`（只列目录，用于选工作区根） |
 | `tree` | `{ root, dir='', showHidden=false }` | `{ root, dir, entries:[entry], truncated }` |
-| `search` | `{ root, query, limit=200, includeNodeModules=false }` | `{ matches:[entry], truncated }` |
+| `search` | 见下方「搜索」/ `docs/files-api.md` §2.1 | `{ files:[{rel,size,mtimeMs,matches:[{line,column,length,text,before?,after?}]}], totalMatches, scannedFiles, truncated, elapsedMs }` |
 | `read` | `{ root, rel, maxBytes? }` | `{ content, size, mtimeMs, encoding, truncated }` |
 | `write` | `{ root, rel, content, baseMtimeMs? }` | `{ size, mtimeMs }` |
 | `stat` | `{ root, rel }` | `{ entry }` |
@@ -34,6 +34,23 @@
 `rel` 一律是相对 `root` 的 **POSIX** 路径（`a/b/c`），`dir` 输出同理；`root`、`parent`、
 `browse.entries[].path` 是绝对路径，输出时统一成 `/` 分隔。
 
+## 搜索（VSCode 级）
+
+`search` 支持两种模式：
+
+- `mode:'content'`（默认）：按行内容匹配，返回文件分组结果；`Aa` 区分大小写、`ab` 全字、
+  `.*` 正则（非法 → `400 bad-regex`）、`include`/`exclude` glob（`**`、`*`、`?`、`!`、
+  逗号分隔）、`contextLines` 0..3、`maxResults`（默认 200/上限 2000）、`maxFileSize`
+  （默认 1 MiB/上限 8 MiB）。
+- `mode:'name'`：文件名快开（Ctrl+P 语义），每个文件一条记录、`matches` 为空。
+
+默认排除 `node_modules/**,.git/**,.hg/**,.svn/**`（`exclude:''` 关闭）；跳过二进制
+（前 8 KiB 含 NUL）与超限文件；不跟随符号链接；20k 文件 / 6s 软预算，触顶返回
+`truncated:true` 的部分结果。实测在本仓库（排除 node_modules）约 100–200 ms。
+
+页面侧对应一个 VSCode 风格面板：搜索框 + Aa/ab/.* + include/exclude + 内容/文件名切换，
+结果按文件分组、命中高亮，点击跳到编辑器对应行（面板保持打开）；`Ctrl/Cmd+Shift+F` 打开、
+Esc 关闭。
 ## 安全模型（docs/files-api.md §1）
 
 - **root 必须显式传**：绝对路径、已存在、是目录；否则 `400 bad-request`。

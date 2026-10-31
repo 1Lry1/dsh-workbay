@@ -189,6 +189,31 @@ before(async () => {
   writeFileSync(path.join(ws, 'data.unknown'), 'raw')
   writeFileSync(path.join(outside, 'secret.txt'), 'TOP SECRET\n')
 
+  /* Content-search fixtures, kept under search/ so the name tests above stay
+     stable (none of these names contains "needle"). */
+  mkdirSync(path.join(ws, 'search', 'nested', 'deep'), { recursive: true })
+  mkdirSync(path.join(ws, 'search', 'nested', 'other'), { recursive: true })
+  writeFileSync(path.join(ws, 'search', 'alpha.txt'), 'Alpha beta\nsecond line\nthird line\n')
+  writeFileSync(path.join(ws, 'search', 'case.txt'), 'Needle needle NEEDLE\n')
+  writeFileSync(path.join(ws, 'search', 'words.txt'), 'needle in a haystack\nneedles everywhere\n')
+  writeFileSync(path.join(ws, 'search', 'regex.txt'), 'id=42 name=alice\nid=7 name=bob\n')
+  writeFileSync(path.join(ws, 'search', 'context.txt'), 'l1\nl2\nl3\nl4\nl5\nThe target is here\nl7\nl8\nl9\n')
+  writeFileSync(path.join(ws, 'search', 'glob-target.ts'), 'const TARGET = 1\n')
+  writeFileSync(path.join(ws, 'search', 'glob-target.js'), 'const sibling = 1\n')
+  writeFileSync(path.join(ws, 'search', 'nested', 'deep', 'glob-target.ts'), 'deep TARGET\n')
+  writeFileSync(path.join(ws, 'search', 'nested', 'other', 'glob-ignore.md'), 'TARGET markdown\n')
+  writeFileSync(path.join(ws, 'search', 'plain.md'), 'TARGET plain markdown\n')
+  writeFileSync(path.join(ws, 'search', 'long-line.txt'), 'x'.repeat(1000) + 'WINDOW-MARKER' + 'y'.repeat(2000) + '\n')
+  /* A NUL inside the first 8 KiB makes it binary, even though TARGET is in it. */
+  writeFileSync(path.join(ws, 'search', 'binary.bin'), Buffer.concat([Buffer.from('a\u0000'), Buffer.from('TARGET\n')]))
+  /* Over the default 1 MiB maxFileSize, under the 8 MiB cap. */
+  writeFileSync(path.join(ws, 'search', 'large.txt'), 'TARGET\n' + 'x'.repeat(Math.floor(1.5 * MIB)))
+  writeFileSync(path.join(ws, 'node_modules', 'pkg', 'target-dep.js'), 'const TARGET = "dep"\n')
+  /* A SECOND node_modules, one level deeper: the documented `node_modules/**`
+     default must exclude it too (a real workspace has one per package). */
+  mkdirSync(path.join(ws, 'src', 'node_modules'), { recursive: true })
+  writeFileSync(path.join(ws, 'src', 'node_modules', 'nested-dep.js'), 'const TARGET = "nested"\n')
+
   escapeLinkCreated = makeDirLink(outside, path.join(ws, 'escape'))
 
   writeFileSync(path.join(chunksDir, 'demo.js'), 'globalThis.__dshChunks__ = {}\n')
@@ -337,31 +362,282 @@ test('tree resolves a subdirectory and rejects escapes and non-directories', asy
 
 /* ============================== search ============================== */
 
-test('search matches names case-insensitively and skips node_modules by default', async () => {
-  const out = await call('search', { root: ws, query: 'needle' })
+/** Collect the rels of a content-search result, in response order. */
+function relsOf(out) {
+  return out.data.files.map((file) => file.rel)
+}
+
+function fileIn(out, rel) {
+  return out.data.files.find((file) => file.rel === rel)
+}
+
+test('search: content mode reports every line match with column and length', async () => {
+  const out = await call('search', { root: ws, query: 'TARGET' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  const data = out.data
+  assert.equal(data.root, asJson(ws))
+  assert.equal(data.mode, 'content')
+  assert.equal(data.query, 'TARGET')
+  assert.equal(data.truncated, false)
+  assert.equal(typeof data.elapsedMs, 'number')
+  assert.equal(data.scannedFiles >= data.files.length, true)
+  assert.equal(data.totalMatches, 5)
+  /* Files are grouped per file, sorted by rel; node_modules is excluded by default. */
+  assert.deepEqual(relsOf(out), [
+    'search/context.txt',
+    'search/glob-target.ts',
+    'search/nested/deep/glob-target.ts',
+    'search/nested/other/glob-ignore.md',
+    'search/plain.md',
+  ])
+  const context = fileIn(out, 'search/context.txt')
+  assert.equal(typeof context.size, 'number')
+  assert.equal(typeof context.mtimeMs, 'number')
+  assert.deepEqual(context.matches, [{ line: 6, column: 4, length: 6, text: 'The target is here' }])
+  assert.deepEqual(fileIn(out, 'search/glob-target.ts').matches, [{ line: 1, column: 6, length: 6, text: 'const TARGET = 1' }])
+  assert.equal(data.matches.length, 5, 'the legacy flat list mirrors totalMatches')
+  assert.equal(
+    relsOf(out).some((rel) => rel.includes('node_modules')),
+    false,
+    'node_modules is excluded at ANY depth by default',
+  )
+  assert.deepEqual(
+    Object.keys(data.matches[0]).sort(),
+    ['column', 'length', 'line', 'rel', 'text'],
+  )
+})
+
+test('search: caseSensitive and wholeWord narrow the match set', async () => {
+  const insensitive = await call('search', { root: ws, query: 'needle' })
+  assert.equal(insensitive.ok, true, JSON.stringify(insensitive))
+  assert.deepEqual(relsOf(insensitive), ['search/case.txt', 'search/words.txt'])
+  assert.equal(insensitive.data.totalMatches, 5)
+  assert.deepEqual(
+    fileIn(insensitive, 'search/case.txt').matches.map((match) => match.column),
+    [0, 7, 14],
+    'every occurrence on a line is its own match',
+  )
+
+  const sensitive = await call('search', { root: ws, query: 'needle', caseSensitive: true })
+  assert.deepEqual(relsOf(sensitive), ['search/case.txt', 'search/words.txt'])
+  assert.equal(sensitive.data.totalMatches, 3)
+  assert.deepEqual(fileIn(sensitive, 'search/case.txt').matches.map((match) => match.column), [7])
+
+  const word = await call('search', { root: ws, query: 'needle', wholeWord: true })
+  assert.equal(word.data.totalMatches, 4, 'the "needles" line is not a whole-word hit')
+  assert.deepEqual(fileIn(word, 'search/words.txt').matches.map((match) => match.line), [1])
+  assert.deepEqual(fileIn(word, 'search/case.txt').matches.map((match) => match.column), [0, 7, 14])
+})
+
+test('search: regex matches are reported and an invalid regex is a 400 bad-regex', async () => {
+  const out = await call('search', { root: ws, query: 'name=(\\w+)', regex: true })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(relsOf(out), ['search/regex.txt'])
+  assert.deepEqual(out.data.files[0].matches, [
+    { line: 1, column: 6, length: 10, text: 'id=42 name=alice' },
+    { line: 2, column: 5, length: 8, text: 'id=7 name=bob' },
+  ])
+
+  /* Without regex:true the same text is a literal, not a pattern. */
+  const literal = await call('search', { root: ws, query: 'name=(\\w+)' })
+  assert.equal(literal.data.totalMatches, 0)
+
+  const bad = await call('search', { root: ws, query: '([', regex: true })
+  assert.equal(bad.status, 400)
+  assert.equal(bad.error.code, 'bad-regex')
+})
+
+test('search: include/exclude globs filter after the default excludes', async () => {
+  /* include: only .ts files, matched anywhere (`**`), and a bare basename glob. */
+  const ts = await call('search', { root: ws, query: 'TARGET', include: '**/*.ts' })
+  assert.deepEqual(relsOf(ts), ['search/glob-target.ts', 'search/nested/deep/glob-target.ts'])
+  const bare = await call('search', { root: ws, query: 'TARGET', include: 'glob-*.ts' })
+  assert.deepEqual(relsOf(bare), ['search/glob-target.ts', 'search/nested/deep/glob-target.ts'])
+
+  /* `**` crosses any number of directories, including zero. */
+  const crossing = await call('search', { root: ws, query: 'TARGET', include: 'search/**/glob-target.ts' })
+  assert.deepEqual(relsOf(crossing), ['search/glob-target.ts', 'search/nested/deep/glob-target.ts'])
+
+  /* `?` is exactly one non-separator character (a bare pattern matches at any depth). */
+  const single = await call('search', { root: ws, query: 'glob-target', mode: 'name', include: 'glob-target.?s' })
+  assert.deepEqual(relsOf(single), [
+    'search/glob-target.js',
+    'search/glob-target.ts',
+    'search/nested/deep/glob-target.ts',
+  ])
+  const anchored = await call('search', { root: ws, query: 'glob-target', mode: 'name', include: 'search/glob-target.?s' })
+  assert.deepEqual(relsOf(anchored), ['search/glob-target.js', 'search/glob-target.ts'])
+
+  /* An explicit exclude list REPLACES the defaults (node_modules is searchable). */
+  const mdExcluded = await call('search', { root: ws, query: 'TARGET', exclude: '**/*.md' })
+  assert.deepEqual(relsOf(mdExcluded), [
+    'node_modules/pkg/target-dep.js',
+    'search/context.txt',
+    'search/glob-target.ts',
+    'search/nested/deep/glob-target.ts',
+    'src/node_modules/nested-dep.js',
+  ])
+
+  /* `!` re-includes: the nested .md survives while the other one stays excluded. */
+  const negated = await call('search', {
+    root: ws,
+    query: 'TARGET',
+    exclude: 'node_modules/**,**/*.md,!search/nested/**',
+  })
+  assert.deepEqual(relsOf(negated), [
+    'search/context.txt',
+    'search/glob-target.ts',
+    'search/nested/deep/glob-target.ts',
+    'search/nested/other/glob-ignore.md',
+  ])
+
+  /* exclude:'' disables the default excludes completely. */
+  const noExcludes = await call('search', { root: ws, query: 'TARGET', exclude: '' })
+  assert.ok(relsOf(noExcludes).includes('node_modules/pkg/target-dep.js'))
+  assert.ok(relsOf(noExcludes).includes('src/node_modules/nested-dep.js'))
+  assert.ok(relsOf(noExcludes).includes('search/plain.md'))
+
+  /* The documented default set also excludes the nested node_modules, while an
+     explicit `node_modules/**` in the same list keeps that property. */
+  const explicitDefault = await call('search', { root: ws, query: 'TARGET', exclude: 'node_modules/**' })
+  assert.equal(relsOf(explicitDefault).some((rel) => rel.includes('node_modules')), false)
+})
+
+test('search: contextLines adds the surrounding lines', async () => {
+  const two = await call('search', { root: ws, query: 'target is here', contextLines: 2 })
+  assert.equal(two.ok, true, JSON.stringify(two))
+  const match = two.data.files[0].matches[0]
+  assert.equal(match.line, 6)
+  assert.deepEqual(match.before, ['l4', 'l5'])
+  assert.deepEqual(match.after, ['l7', 'l8'])
+
+  const one = await call('search', { root: ws, query: 'target is here', contextLines: 1 })
+  assert.deepEqual(one.data.files[0].matches[0].before, ['l5'])
+  assert.deepEqual(one.data.files[0].matches[0].after, ['l7'])
+
+  /* contextLines is clamped to 0..3. */
+  const clamped = await call('search', { root: ws, query: 'target is here', contextLines: 99 })
+  assert.deepEqual(clamped.data.files[0].matches[0].before, ['l3', 'l4', 'l5'])
+  const none = await call('search', { root: ws, query: 'target is here' })
+  assert.equal('before' in none.data.files[0].matches[0], false)
+})
+
+test('search: a very long line is windowed to 400 chars around the match', async () => {
+  const out = await call('search', { root: ws, query: 'WINDOW-MARKER' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(relsOf(out), ['search/long-line.txt'])
+  const match = out.data.files[0].matches[0]
+  assert.equal(match.line, 1)
+  assert.equal(match.column, 1000)
+  assert.equal(match.length, 13)
+  assert.ok(match.text.length <= 400, 'text was not windowed: ' + match.text.length)
+  assert.ok(match.text.includes('WINDOW-MARKER'))
+})
+
+test('search: binary and oversize files are skipped', async () => {
+  const out = await call('search', { root: ws, query: 'TARGET' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.equal(relsOf(out).includes('search/binary.bin'), false, 'a NUL in the first 8 KiB means binary')
+  assert.equal(relsOf(out).includes('search/large.txt'), false, 'the 1 MiB default skips it')
+
+  /* A raised maxFileSize finds it; the cap is 8 MiB and over-asking is clamped. */
+  const raised = await call('search', { root: ws, query: 'TARGET', maxFileSize: 2 * MIB })
+  assert.ok(relsOf(raised).includes('search/large.txt'))
+  const capped = await call('search', { root: ws, query: 'TARGET', maxFileSize: 999 * MIB })
+  assert.equal(capped.ok, true, JSON.stringify(capped))
+  assert.ok(relsOf(capped).includes('search/large.txt'))
+})
+
+test('search: maxResults truncates instead of failing', async () => {
+  const limited = await call('search', { root: ws, query: 'TARGET', maxResults: 1 })
+  assert.equal(limited.ok, true, JSON.stringify(limited))
+  assert.equal(limited.data.truncated, true)
+  assert.equal(limited.data.totalMatches, 1)
+  assert.equal(limited.data.files.length, 1)
+
+  /* A partial line match set is still grouped under its file. */
+  const partial = await call('search', { root: ws, query: 'needle', maxResults: 2 })
+  assert.equal(partial.data.truncated, true)
+  assert.equal(partial.data.totalMatches, 2)
+  assert.deepEqual(relsOf(partial), ['search/case.txt'])
+  assert.equal(partial.data.files[0].matches.length, 2)
+
+  /* maxResults is clamped to the 2000 hard cap, not rejected. */
+  const capped = await call('search', { root: ws, query: 'needle', maxResults: 99_999 })
+  assert.equal(capped.ok, true, JSON.stringify(capped))
+  assert.equal(capped.data.truncated, false)
+  assert.equal(capped.data.totalMatches, 5)
+})
+
+test('search: name mode returns whole files without content matches', async () => {
+  const out = await call('search', { root: ws, query: 'glob-target', mode: 'name' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.equal(out.data.mode, 'name')
+  assert.deepEqual(relsOf(out), [
+    'search/glob-target.js',
+    'search/glob-target.ts',
+    'search/nested/deep/glob-target.ts',
+  ])
+  for (const file of out.data.files) {
+    assert.deepEqual(file.matches, [])
+    assert.equal(typeof file.size, 'number')
+    assert.equal(typeof file.mtimeMs, 'number')
+  }
+  assert.equal(out.data.totalMatches, 3)
+  /* Legacy projection: name entries with type/rel/name. */
+  assert.deepEqual(out.data.matches.map((entry) => entry.type), ['file', 'file', 'file'])
+
+  const sensitive = await call('search', { root: ws, query: 'GLOB-TARGET', mode: 'name', caseSensitive: true })
+  assert.deepEqual(relsOf(sensitive), [])
+  const insensitive = await call('search', { root: ws, query: 'GLOB-TARGET', mode: 'name' })
+  assert.equal(insensitive.data.files.length, 3)
+
+  const dep = await call('search', { root: ws, query: 'target-dep', mode: 'name' })
+  assert.deepEqual(relsOf(dep), [], 'node_modules is excluded by default in name mode too')
+  const depAll = await call('search', { root: ws, query: 'target-dep', mode: 'name', exclude: '' })
+  assert.deepEqual(relsOf(depAll), ['node_modules/pkg/target-dep.js'])
+
+  const limited = await call('search', { root: ws, query: 'glob-target', mode: 'name', maxResults: 1 })
+  assert.equal(limited.data.files.length, 1)
+  assert.equal(limited.data.truncated, true)
+})
+
+test('search: legacy name search still skips node_modules by default', async () => {
+  const out = await call('search', { root: ws, query: 'needle', mode: 'name' })
   assert.equal(out.ok, true, JSON.stringify(out))
   const rels = out.data.matches.map((entry) => entry.rel)
   assert.deepEqual(rels.sort(), ['needle-a.txt', 'src/deep/Needle-C.txt', 'src/needle-b.js'])
   assert.equal(rels.some((rel) => rel.includes('node_modules')), false)
 
-  const withDeps = await call('search', { root: ws, query: 'needle', includeNodeModules: true })
+  const withDeps = await call('search', { root: ws, query: 'needle', mode: 'name', includeNodeModules: true })
   assert.ok(withDeps.data.matches.some((entry) => entry.rel === 'node_modules/pkg/needle-dep.js'))
 })
 
-test('search honours limit/truncated and requires a query', async () => {
-  const limited = await call('search', { root: ws, query: 'needle', limit: 1 })
-  assert.equal(limited.data.matches.length, 1)
-  assert.equal(limited.data.truncated, true)
+test('search: invalid arguments return 400 without touching the filesystem', async () => {
   const empty = await call('search', { root: ws, query: '   ' })
   assert.equal(empty.status, 400)
   assert.equal(empty.error.code, 'bad-request')
+  const missing = await call('search', { root: ws })
+  assert.equal(missing.status, 400)
+  assert.equal(missing.error.code, 'bad-request')
+  const badMode = await call('search', { root: ws, query: 'x', mode: 'folders' })
+  assert.equal(badMode.status, 400)
+  assert.equal(badMode.error.code, 'bad-request')
+  const relativeRoot = await call('search', { root: 'ws', query: 'x' })
+  assert.equal(relativeRoot.status, 400)
+  assert.equal(relativeRoot.error.code, 'bad-request')
+  const missingRoot = await call('search', { root: path.join(sandbox, 'no-such-root'), query: 'x' })
+  assert.equal(missingRoot.status, 400)
 })
 
 test('search does not walk through a symlink that leaves the root', async (t) => {
   if (!escapeLinkCreated) return t.skip('cannot create a directory link on this account')
-  const out = await call('search', { root: ws, query: 'secret' })
-  assert.equal(out.ok, true, JSON.stringify(out))
-  assert.deepEqual(out.data.matches, [])
+  const content = await call('search', { root: ws, query: 'TOP SECRET' })
+  assert.equal(content.ok, true, JSON.stringify(content))
+  assert.deepEqual(content.data.files, [], 'content search must not follow the escaping link')
+  const byName = await call('search', { root: ws, query: 'secret', mode: 'name' })
+  assert.equal(byName.ok, true, JSON.stringify(byName))
+  assert.deepEqual(byName.data.files, [], 'name search must not follow the escaping link')
 })
 
 /* ============================== read ============================== */

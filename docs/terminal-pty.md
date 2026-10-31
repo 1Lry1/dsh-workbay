@@ -88,6 +88,20 @@ helper → host（读 helper.stdout）：
 - `mode === 'command'` 时：本地回显 + 退格 + 上下历史，回车才发整行（`\r`），
   输出原样打印；状态条标注“非 PTY 模式”。
 
+### 3.1 跨页面切换保持会话（必须）
+
+dock 切页会卸载页面组件；终端必须**恢复**而不是重开：
+
+- 页面卸载时：中止 SSE、销毁 xterm，但**不调用 `api/stop`**，宿主会话继续存活
+  （受 30 分钟空闲超时约束）。
+- tab 元数据持久化到 `localStorage['dsh-workbay.terminal.tabs.v2']`
+  （防抖 300ms）：`{ version:2, tabs:[{ tabId, title, root, sessionId, cwd, mode }] }`。
+- 页面挂载时：读存储 → `api/list` → 对仍存在的 `sessionId` 重新 `GET events` 并重建 xterm
+  （`hello` 校验 mode/cwd）；已消失的 tab 标为 exited 并提供 Restart（`api/restart`）。
+- 新建 tab 的上限 = 宿主 `maxSessions`（默认 8）；恢复时超出上限的 tab 标记 exited。
+- 只有用户显式关闭 tab（`×`/中键）才 `api/stop` 并从存储中删除。
+- 状态条显示恢复数量（如“已恢复 2 个会话”），避免用户误以为新开。
+
 ## 4. 回退与兼容
 
 - helper 不存在 / 非 Windows → `command` 模式，页面功能不缺失（只是不能跑全屏 TUI）。

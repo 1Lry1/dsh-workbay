@@ -827,7 +827,8 @@ function findButtons(node, out) {  const found = out === undefined ? [] : out
   return found
 }
 
-function makeSessionWorld(mode) {
+function makeSessionWorld(mode, worldOptions) {
+  const options = worldOptions === undefined ? {} : worldOptions
   const runtime = createHookRuntime()
   const fetchCalls = []
   const eventSources = []
@@ -836,14 +837,19 @@ function makeSessionWorld(mode) {
   let handleOptions = null
   let chunkEnv = null
 
-  const fakeFetch = async (url, options) => {
+  const fakeFetch = async (url, requestOptions) => {
     const method = String(url).split('/api/')[1] || ''
     let payload = {}
-    try { payload = JSON.parse(options.body) } catch (error) { void error }
+    try { payload = JSON.parse(requestOptions.body) } catch (error) { void error }
     fetchCalls.push({ method, payload })
     let data = { ok: true }
     if (method === 'start') data = { id: 's1', shell: 'pwsh', cwd: payload.root, mode }
     else if (method === 'restart') data = { id: 's2', shell: 'pwsh', cwd: 'C:/w', mode }
+    if (method === 'restart' && options.restartNotFound === true) {
+      return {
+        json: async () => ({ ok: false, error: { code: 'not-found', message: 'unknown session' } }),
+      }
+    }
     return { json: async () => ({ ok: true, data }) }
   }
 
@@ -906,8 +912,8 @@ function makeSessionWorld(mode) {
     ))
   }
 
-  function mount() {
-    runtime.mount(localApi.components.TerminalTab, {
+  function mount(extra) {
+    const base = {
       t,
       tabKey: 'tab-1',
       root: 'C:/w',
@@ -915,7 +921,8 @@ function makeSessionWorld(mode) {
       theme: localApi.themeFromVars(undefined),
       onStatus: (key, patch) => statuses.push(patch),
       onTitle: () => {},
-    })
+    }
+    runtime.mount(localApi.components.TerminalTab, Object.assign(base, extra === undefined ? {} : extra))
   }
 
   function cleanup() {
@@ -938,6 +945,138 @@ function makeSessionWorld(mode) {
     get handleOptions() { return handleOptions },
     text: () => renderText(runtime.tree()),
     buttons: () => findButtons(runtime.tree()),
+  }
+}
+
+/* ---- page-level world (restore / persistence / close) ---- */
+
+function rawNodes(node, out) {
+  const found = out === undefined ? [] : out
+  if (node === null || node === undefined || typeof node !== 'object') return found
+  if (Array.isArray(node)) {
+    for (const child of node) rawNodes(child, found)
+    return found
+  }
+  found.push(node)
+  for (const child of node.children || []) rawNodes(child, found)
+  return found
+}
+
+function makePageWorld(options) {
+  const opts = options === undefined ? {} : options
+  const runtime = createHookRuntime()
+  const fetchCalls = []
+  const eventSources = []
+  const sessions = Array.isArray(opts.sessions) ? opts.sessions : []
+
+  const fakeFetch = async (url, request) => {
+    const method = String(url).split('/api/')[1] || ''
+    let payload = {}
+    try { payload = JSON.parse(request.body) } catch (error) { void error }
+    fetchCalls.push({ method, payload })
+    let data = { ok: true }
+    if (method === 'list') {
+      data = {
+        sessions: sessions.map((session) => ({
+          id: session.id,
+          cwd: session.cwd,
+          startedAt: session.startedAt === undefined ? 1 : session.startedAt,
+          mode: session.mode === 'pty' ? 'pty' : 'command',
+        })),
+      }
+    } else if (method === 'start') {
+      data = { id: 'started-' + String(fetchCalls.length), shell: 'pwsh', cwd: payload.root, mode: 'command' }
+    } else if (method === 'restart') {
+      data = { id: 'restarted-' + String(fetchCalls.length), shell: 'pwsh', cwd: 'C:/w', mode: 'pty' }
+    }
+    return { json: async () => ({ ok: true, data }) }
+  }
+
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url
+      this.closed = false
+      eventSources.push(this)
+    }
+    close() { this.closed = true }
+  }
+
+  const previousEventSource = globalThis.EventSource
+  const previousChunks = globalThis.__dshChunks__
+  globalThis.EventSource = FakeEventSource
+  globalThis.__dshChunks__ = {
+    'dsh-workbay-terminal:xterm': () => ({
+      css: '.xterm{color:red}',
+      createTerminal() {
+        const handle = {
+          writes: [],
+          disposed: false,
+          write(text) { handle.writes.push(String(text)) },
+          writeln(text) { handle.writes.push(String(text) + '\n') },
+          reset() { handle.writes.push('<reset>') },
+          dispose() { handle.disposed = true },
+          focus() {},
+          fit() {},
+          get cols() { return 80 },
+          get rows() { return 24 },
+          getSelection() { return '' },
+        }
+        return handle
+      },
+    }),
+  }
+
+  let local = null
+  try {
+    local = boot({
+      react: () => runtime.React,
+      fetch: fakeFetch,
+      storage: opts.storage === undefined ? {} : opts.storage,
+    })
+  } catch (error) {
+    globalThis.EventSource = previousEventSource
+    if (previousChunks === undefined) delete globalThis.__dshChunks__
+    else globalThis.__dshChunks__ = previousChunks
+    throw error
+  }
+  const localApi = local.testApi
+  const dict = localApi.dictionaries.en
+  const t = (key, values) => {
+    const template = Object.prototype.hasOwnProperty.call(dict, key) ? dict[key] : key
+    return String(template).replace(/\{(\w+)\}/g, (match, name) => (
+      values !== undefined && values[name] !== undefined ? String(values[name]) : match
+    ))
+  }
+
+  return {
+    runtime,
+    api: localApi,
+    fetchCalls,
+    eventSources,
+    t,
+    mount() {
+      runtime.mount(localApi.components.Page, { t })
+      return runtime.tree()
+    },
+    unmount() { runtime.unmount() },
+    dispose() {
+      runtime.unmount()
+      globalThis.EventSource = previousEventSource
+      if (previousChunks === undefined) delete globalThis.__dshChunks__
+      else globalThis.__dshChunks__ = previousChunks
+    },
+    text: () => renderText(runtime.tree()),
+    storageGet(key) { return local.window.localStorage.getItem(key) },
+    elements(type) {
+      return rawNodes(runtime.tree()).filter((node) => node.type === type)
+    },
+    terminalTabs() {
+      return this.elements(localApi.components.TerminalTab)
+    },
+    tabBar() {
+      const bars = this.elements(localApi.components.TabBar)
+      return bars.length === 0 ? null : bars[0]
+    },
   }
 }
 
@@ -992,7 +1131,8 @@ test('command-mode session engine: chunk → start → echo → submit → exit 
   world.cleanup()
   await sleep(30)
   assert.equal(handle.disposed, true)
-  assert.ok(world.fetchCalls.some((call) => call.method === 'stop' && call.payload.id === 's2'))
+  /* §3.1: a page switch unmounts the tab but must NOT stop the host session. */
+  assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'unmount must not call api/stop')
   assert.equal(world.eventSources[1].closed, true)
 })
 
@@ -1038,7 +1178,379 @@ test('pty-mode session engine: raw keys, Ctrl+L, debounced + clamped resize', { 
   world.cleanup()
   await sleep(30)
   assert.equal(handle.disposed, true)
-  assert.ok(world.fetchCalls.some((call) => call.method === 'stop' && call.payload.id === 's1'))
+  assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'unmount must not call api/stop')
+})
+
+/* ============================== tab persistence §3.1 ============================== */
+
+const ROOT_KEY = 'dsh-workbay.root.v1'
+
+function savedTab(tabId, extra) {
+  return Object.assign({
+    tabId,
+    title: 'Tab ' + tabId,
+    root: 'C:/w',
+    sessionId: '',
+    cwd: 'C:/w',
+    mode: 'command',
+  }, extra === undefined ? {} : extra)
+}
+
+test('tab store encodes the v2 shape and decodes it tolerantly', () => {
+  const first = api.createTab('tab-a', 'Alpha', 'C:/w')
+  first.sessionId = 's1'
+  first.cwd = 'C:/w/sub'
+  first.mode = 'pty'
+  const second = api.createTab('tab-b', '', 'D:/other')
+  second.mode = 'weird'
+
+  const encoded = api.encodeTabStore([first, second, { key: '' }, null])
+  assert.equal(encoded.version, api.TAB_STORE_VERSION)
+  assert.equal(encoded.tabs.length, 2)
+  assert.deepEqual(Object.keys(encoded.tabs[0]).sort(), ['cwd', 'mode', 'root', 'sessionId', 'tabId', 'title'])
+  assert.equal(encoded.tabs[0].tabId, 'tab-a')
+  assert.equal(encoded.tabs[0].sessionId, 's1')
+  assert.equal(encoded.tabs[0].mode, 'pty')
+  assert.equal(encoded.tabs[1].title, 'tab-b', 'an empty title falls back to the tab id')
+  assert.equal(encoded.tabs[1].mode, 'command', 'an unknown mode degrades to command')
+
+  const decoded = api.decodeTabStore(JSON.stringify(encoded))
+  assert.deepEqual(decoded, encoded, 'valid stores round-trip unchanged')
+
+  assert.deepEqual(api.decodeTabStore('not json').tabs, [])
+  assert.deepEqual(api.decodeTabStore('').tabs, [])
+  assert.deepEqual(api.decodeTabStore(JSON.stringify({ version: 1, tabs: [savedTab('t')] })).tabs, [])
+  assert.deepEqual(api.decodeTabStore(JSON.stringify({ version: 2, tabs: 'nope' })).tabs, [])
+
+  const messy = api.decodeTabStore(JSON.stringify({
+    version: 2,
+    tabs: [
+      null,
+      { tabId: 't1', title: '  A\nB  ', sessionId: ' s1 ', mode: 'pty', cwd: 'C:/x' },
+      { tabId: 't1', title: 'duplicate id' },
+      { tabId: 't2', mode: 'weird', title: 'x'.repeat(120) },
+      { tabId: '' },
+      'junk',
+    ],
+  }))
+  assert.equal(messy.tabs.length, 2, 'duplicate ids and junk entries are dropped')
+  assert.equal(messy.tabs[0].title, 'A B')
+  assert.equal(messy.tabs[0].sessionId, 's1')
+  assert.equal(messy.tabs[1].mode, 'command')
+  assert.equal(messy.tabs[1].title.length, 64)
+})
+
+test('the debounced writer persists only the latest change and flushes on demand', () => {
+  const writes = []
+  let scheduled = null
+  const writer = api.createDebouncedWriter({
+    write: (value) => writes.push(value),
+    delay: 300,
+    setTimer: (fn) => { scheduled = fn; return 1 },
+    clearTimer: () => { scheduled = null },
+  })
+  writer.schedule(['a'])
+  writer.schedule(['a', 'b'])
+  assert.equal(writes.length, 0, 'nothing is written before the debounce fires')
+  assert.equal(typeof scheduled, 'function')
+  scheduled()
+  assert.deepEqual(writes, [['a', 'b']], 'the merged latest value is written once')
+
+  writer.schedule(['c'])
+  writer.flush()
+  assert.deepEqual(writes[writes.length - 1], ['c'])
+  assert.equal(writer.hasPending(), false)
+
+  writer.schedule(['d'])
+  writer.cancel()
+  assert.equal(writer.hasPending(), false)
+  assert.equal(writes.length, 2)
+})
+
+test('the restore planner attaches, restarts, exits and enforces the cap', () => {
+  const saved = [
+    savedTab('t1', { sessionId: 's1', mode: 'pty', cwd: 'C:/w/a' }),
+    savedTab('t2', { sessionId: 'gone' }),
+    savedTab('t3', { sessionId: '' }),
+    savedTab('t4', { sessionId: 's2' }),
+    savedTab('t5', { sessionId: 's3' }),
+  ]
+  const live = [
+    { id: 's1', cwd: 'C:/w/a' },
+    { id: 's2', cwd: 'C:/w' },
+    { id: 's3', cwd: 'C:/w' },
+    { id: 'extra', cwd: 'C:/other' },
+  ]
+  const plan = api.planRestore(saved, live, 4)
+  assert.equal(plan.attachedCount, 2)
+  assert.deepEqual(plan.tabs.map((entry) => entry.action), ['attach', 'restart', 'restart', 'attach', 'exit'])
+  assert.equal(plan.tabs[0].session.id, 's1')
+  assert.equal(plan.tabs[1].reason, 'gone')
+  assert.equal(plan.tabs[2].reason, 'no-session')
+  assert.equal(plan.tabs[3].session.id, 's2')
+  assert.equal(plan.tabs[4].reason, 'cap')
+  assert.equal(plan.cap, 4)
+
+  const duplicate = api.planRestore(
+    [savedTab('a', { sessionId: 's1' }), savedTab('b', { sessionId: 's1' })],
+    [{ id: 's1' }],
+    8,
+  )
+  assert.deepEqual(duplicate.tabs.map((entry) => entry.action), ['attach', 'exit'])
+  assert.equal(duplicate.tabs[1].reason, 'duplicate')
+  assert.equal(duplicate.tabs[1].entry.sessionId, '', 'a duplicate claim cannot reattach the same session')
+  assert.equal(duplicate.attachedCount, 1)
+
+  const noCap = api.planRestore([savedTab('t1', { sessionId: 's1' })], [{ id: 's1' }], undefined)
+  assert.equal(noCap.cap, api.MAX_TABS)
+  assert.equal(api.planRestore([], [], 8).attachedCount, 0)
+})
+
+test('Page restores saved tabs by reattaching live sessions (and never starts new ones)', async () => {
+  const store = {
+    version: 2,
+    tabs: [
+      savedTab('t1', { title: 'One', sessionId: 's1', cwd: 'C:/w/a', mode: 'pty' }),
+      savedTab('t2', { title: 'Two', sessionId: 'gone' }),
+    ],
+  }
+  const world = makePageWorld({
+    storage: { [ROOT_KEY]: 'C:/w', [api.TAB_STORE_KEY]: JSON.stringify(store) },
+    sessions: [{ id: 's1', cwd: 'C:/w/a', mode: 'pty' }],
+  })
+  try {
+    world.mount()
+    await sleep(80)
+    assert.equal(world.fetchCalls.filter((call) => call.method === 'list').length, 1, 'api/list drives the restore')
+    assert.equal(world.fetchCalls.some((call) => call.method === 'start'), false, 'restore must not start sessions')
+
+    const tabs = world.terminalTabs()
+    assert.equal(tabs.length, 2)
+    assert.equal(tabs[0].props.restored, true)
+    assert.equal(tabs[0].props.restoreSession.id, 's1')
+    assert.equal(tabs[0].props.restoreSession.mode, 'pty')
+    assert.equal(tabs[1].props.restored, false)
+    assert.equal(tabs[1].props.dormant, true, 'a vanished tab waits for Restart instead of auto-starting')
+    assert.equal(tabs[1].props.storedSessionId, 'gone')
+    assert.ok(String(tabs[1].props.restoreNotice).includes('gone'), 'a vanished tab explains itself')
+    assert.ok(world.text().includes('Restored 1 session(s)'), 'the status bar reports the restored count')
+
+    world.unmount()
+    assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'page switch must not stop sessions')
+    const persisted = api.decodeTabStore(world.storageGet(api.TAB_STORE_KEY))
+    assert.equal(persisted.tabs.length, 2)
+    assert.equal(persisted.tabs[0].sessionId, 's1')
+    assert.equal(persisted.tabs[0].mode, 'pty')
+  } finally {
+    world.dispose()
+  }
+})
+
+test('a remount after a page switch reattaches the same sessions instead of starting new ones', async () => {
+  const first = makePageWorld({
+    storage: {
+      [ROOT_KEY]: 'C:/w',
+      [api.TAB_STORE_KEY]: JSON.stringify({ version: 2, tabs: [savedTab('t1', { sessionId: 's1', mode: 'pty' })] }),
+    },
+    sessions: [{ id: 's1', cwd: 'C:/w', mode: 'pty' }],
+  })
+  let persisted = ''
+  try {
+    first.mount()
+    await sleep(60)
+    assert.equal(first.terminalTabs().length, 1)
+    first.unmount()
+    persisted = first.storageGet(api.TAB_STORE_KEY)
+  } finally {
+    first.dispose()
+  }
+
+  const second = makePageWorld({
+    storage: { [ROOT_KEY]: 'C:/w', [api.TAB_STORE_KEY]: persisted },
+    sessions: [{ id: 's1', cwd: 'C:/w', mode: 'pty' }],
+  })
+  try {
+    second.mount()
+    await sleep(60)
+    assert.equal(second.fetchCalls.filter((call) => call.method === 'list').length, 1)
+    assert.equal(second.fetchCalls.some((call) => call.method === 'start'), false)
+    assert.equal(second.fetchCalls.some((call) => call.method === 'stop'), false)
+    const tabs = second.terminalTabs()
+    assert.equal(tabs.length, 1)
+    assert.equal(tabs[0].props.restoreSession.id, 's1')
+  } finally {
+    second.dispose()
+  }
+})
+
+test('an explicit tab close stops the session and removes it from storage', async () => {
+  const world = makePageWorld({
+    storage: {
+      [ROOT_KEY]: 'C:/w',
+      [api.TAB_STORE_KEY]: JSON.stringify({ version: 2, tabs: [savedTab('t1', { sessionId: 's1' })] }),
+    },
+    sessions: [{ id: 's1', cwd: 'C:/w', mode: 'command' }],
+  })
+  try {
+    world.mount()
+    await sleep(60)
+    const bar = world.tabBar()
+    assert.ok(bar !== null)
+    bar.props.onClose('t1')
+    await sleep(40)
+    assert.ok(world.fetchCalls.some((call) => call.method === 'stop' && call.payload.id === 's1'), 'close stops the session')
+    world.unmount()
+    const persisted = api.decodeTabStore(world.storageGet(api.TAB_STORE_KEY))
+    assert.equal(persisted.tabs.length, 0)
+  } finally {
+    world.dispose()
+  }
+})
+
+test('the + button refuses to exceed the tab cap with a localized hint', async () => {
+  const tabs = []
+  const sessions = []
+  for (let index = 0; index < api.MAX_TABS; index += 1) {
+    tabs.push(savedTab('t' + String(index), { sessionId: 's' + String(index) }))
+    sessions.push({ id: 's' + String(index), cwd: 'C:/w', mode: 'command' })
+  }
+  const world = makePageWorld({
+    storage: { [ROOT_KEY]: 'C:/w', [api.TAB_STORE_KEY]: JSON.stringify({ version: 2, tabs }) },
+    sessions,
+  })
+  try {
+    world.mount()
+    await sleep(80)
+    assert.equal(world.terminalTabs().length, api.MAX_TABS)
+    const bar = world.tabBar()
+    bar.props.onNew()
+    await sleep(30)
+    assert.ok(world.text().includes('At most ' + String(api.MAX_TABS)), 'the cap hint is localized and shown')
+    assert.equal(world.terminalTabs().length, api.MAX_TABS, 'no tab is added beyond the cap')
+    assert.equal(world.fetchCalls.some((call) => call.method === 'start'), false)
+  } finally {
+    world.dispose()
+  }
+})
+
+test('TerminalTab reattaches a restored session instead of calling api/start', { timeout: 15000 }, async () => {
+  const world = makeSessionWorld('pty')
+  try {
+    world.mount({
+      restored: true,
+      restoreSession: { id: 's9', cwd: 'C:/r', mode: 'pty' },
+      restartable: true,
+      restoreNotice: '',
+    })
+    await sleep(40)
+    assert.equal(world.fetchCalls.some((call) => call.method === 'start'), false, 'a restored tab must not start a session')
+    assert.equal(world.eventSources.length, 1)
+    assert.ok(world.eventSources[0].url.includes('/dsh-workbay-terminal/events?id=s9'))
+    assert.equal(world.handleOptions.container.tag, 'div')
+
+    const handle = world.handles[0]
+    world.eventSources[0].onmessage({
+      data: JSON.stringify({ type: 'hello', id: 's9', mode: 'pty', cwd: 'C:/host-cwd', shell: 'pwsh' }),
+    })
+    await sleep(20)
+    assert.ok(handle.writes.join('').includes('Session restored'), 'the terminal says the session was restored')
+    assert.ok(world.statuses.some((patch) => patch.phase === 'running' && patch.sessionId === 's9'))
+    assert.ok(world.statuses.some((patch) => patch.cwd === 'C:/host-cwd'), 'hello cwd is validated/adopted over the stored value')
+    assert.ok(world.statuses.some((patch) => patch.mode === 'pty'))
+  } finally {
+    world.cleanup()
+    await sleep(30)
+  }
+  assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'unmount still must not stop the session')
+})
+
+test('a vanished restored tab waits for Restart, then falls back to a fresh session on 404', { timeout: 15000 }, async () => {
+  const world = makeSessionWorld('command', { restartNotFound: true })
+  try {
+    world.mount({
+      dormant: true,
+      restored: false,
+      storedSessionId: 'gone',
+      storedMode: 'command',
+      restartable: true,
+      restoreNotice: 'The previous session is gone',
+    })
+    await sleep(40)
+    assert.equal(world.fetchCalls.some((call) => call.method === 'start'), false, 'a dormant tab must not auto-start')
+    assert.equal(world.fetchCalls.some((call) => call.method === 'restart'), false)
+    assert.equal(world.eventSources.length, 0, 'no stream before the user restarts')
+    assert.ok(world.text().includes('The previous session is gone'))
+
+    const restart = world.buttons().find((button) => renderText(button).includes('Restart'))
+    assert.ok(restart !== undefined, 'the exit bar offers Restart')
+    restart.props.onClick()
+    await sleep(60)
+    assert.ok(
+      world.fetchCalls.some((call) => call.method === 'restart' && call.payload.id === 'gone'),
+      'Restart first tries api/restart with the stored session id',
+    )
+    assert.ok(
+      world.fetchCalls.some((call) => call.method === 'start' && call.payload.root === 'C:/w'),
+      'api/restart 404 falls back to a fresh api/start in the same root: ' + JSON.stringify(world.fetchCalls),
+    )
+    assert.equal(world.eventSources.length, 1)
+  } finally {
+    world.cleanup()
+    await sleep(30)
+  }
+  assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false)
+})
+
+test('an empty store opens one fresh tab when a root exists, and none without a root', async () => {
+  const withRoot = makePageWorld({ storage: { [ROOT_KEY]: 'C:/w' } })
+  try {
+    withRoot.mount()
+    await sleep(80)
+    assert.equal(withRoot.fetchCalls.filter((call) => call.method === 'list').length, 1)
+    const tabs = withRoot.terminalTabs()
+    assert.equal(tabs.length, 1, 'a fresh tab is opened once the restore finds nothing')
+    assert.equal(tabs[0].props.restoreSession, null)
+    assert.equal(tabs[0].props.dormant, false)
+    await sleep(20)
+    assert.equal(withRoot.terminalTabs().length, 1, 'the auto-open must not race into a second tab')
+  } finally {
+    withRoot.dispose()
+  }
+
+  const withoutRoot = makePageWorld({ storage: {} })
+  try {
+    withoutRoot.mount()
+    await sleep(80)
+    assert.equal(withoutRoot.terminalTabs().length, 0)
+    assert.ok(withoutRoot.text().includes('No workspace selected yet'))
+  } finally {
+    withoutRoot.dispose()
+  }
+})
+
+test('saved tabs survive a cleared workspace root (each tab keeps its own root)', async () => {
+  const world = makePageWorld({
+    /* No ROOT_KEY: the Files page has cleared the workspace, but the saved
+       sessions still exist and must come back. */
+    storage: {
+      [api.TAB_STORE_KEY]: JSON.stringify({
+        version: 2,
+        tabs: [savedTab('t1', { sessionId: 's1', root: 'C:/old', cwd: 'C:/old', mode: 'pty' })],
+      }),
+    },
+    sessions: [{ id: 's1', cwd: 'C:/old', mode: 'pty' }],
+  })
+  try {
+    world.mount()
+    await sleep(80)
+    assert.equal(world.text().includes('No workspace selected yet'), false, 'restored tabs are shown even without a current root')
+    const tabs = world.terminalTabs()
+    assert.equal(tabs.length, 1)
+    assert.equal(tabs[0].props.root, 'C:/old', 'the tab keeps its own root')
+    assert.equal(tabs[0].props.restoreSession.id, 's1')
+  } finally {
+    world.dispose()
+  }
 })
 
 /* ============================== i18n / static ============================== */

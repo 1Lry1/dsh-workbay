@@ -67,10 +67,17 @@ const WRITE_MAX_BYTES = 2 * 1024 * 1024
 const MAX_BODY_BYTES = 8 * 1024 * 1024
 
 const TREE_MAX_ENTRIES = 2000
-const SEARCH_DEFAULT_LIMIT = 200
-const SEARCH_MAX_LIMIT = 1000
-const SEARCH_MAX_DEPTH = 12
-const SEARCH_MAX_VISITED = 20_000
+/* search (docs/files-api.md §2.1) */
+const SEARCH_DEFAULT_MAX_RESULTS = 200
+const SEARCH_HARD_MAX_RESULTS = 2000
+const SEARCH_MAX_CONTEXT_LINES = 3
+const SEARCH_MAX_FILES = 20_000
+const SEARCH_TIME_BUDGET_MS = 6000
+/* One match row's `text` never exceeds this; long lines are windowed around the
+   match so the highlighted span stays visible. */
+const SEARCH_TEXT_MAX_CHARS = 400
+const SEARCH_BINARY_SNIFF_BYTES = 8192
+const SEARCH_DEFAULT_EXCLUDES = Object.freeze(['node_modules/**', '.git/**', '.hg/**', '.svn/**'])
 const RECENT_LIMIT = 10
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -267,6 +274,20 @@ function looksBinary(buffer) {
   return sample.length > 0 && control / sample.length > 0.3
 }
 
+/**
+ * Search's binary rule is narrower than `read`'s: docs/files-api.md §2.1 only
+ * says "a NUL in the first 8 KiB". Text full of tabs/control characters is
+ * therefore still searched (and reported with those bytes), which is what a
+ * content search should do.
+ */
+function hasNulByte(buffer) {
+  const end = Math.min(buffer.length, SEARCH_BINARY_SNIFF_BYTES)
+  for (let index = 0; index < end; index += 1) {
+    if (buffer[index] === 0) return true
+  }
+  return false
+}
+
 /** Read at most `length` bytes from the start of a file. */
 function readSlice(filePath, length) {
   if (length <= 0) return Buffer.alloc(0)
@@ -312,6 +333,252 @@ function sendRouteError(res, error) {
     return
   }
   sendJson(res, status, { ok: false, error: { code, message } })
+}
+
+/* ============================== search helpers ============================== */
+
+/**
+ * Glob → anchored RegExp over POSIX workspace-relative paths.
+ *
+ * Documented semantics (docs/files-api.md §2.1): `*` matches anything but `/`,
+ * `**` crosses directories, `?` matches one non-`/` character, a leading `!`
+ * negates a pattern in a comma-separated list. A pattern without any `/` also
+ * matches a basename at any depth (a user typing `*.md` in the VSCode include
+ * box means "markdown anywhere", not "markdown at the root").
+ */
+function globSource(text) {
+  let source = ''
+  let index = 0
+  while (index < text.length) {
+    const char = text[index]
+    if (char === '*') {
+      if (text[index + 1] === '*') {
+        if (text[index + 2] === '/') {
+          /* A double star followed by a slash may also match ZERO directories,
+             so a pattern that begins with one still matches a root-level path. */
+          source += '(?:[^/]+/)*'
+          index += 3
+        } else {
+          source += '.*'
+          index += 2
+        }
+        continue
+      }
+      source += '[^/]*'
+      index += 1
+      continue
+    }
+    if (char === '?') {
+      source += '[^/]'
+      index += 1
+      continue
+    }
+    source += /[.+^${}()|[\]\\]/.test(char) ? '\\' + char : char
+    index += 1
+  }
+  return source
+}
+
+function compileGlob(text) {
+  const normalized = text.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '')
+  if (normalized === '') return null
+  const flags = process.platform === 'win32' ? 'i' : ''
+  const body = globSource(normalized)
+  /* A bare `<name>/**` means "that folder, wherever it is": that is the shape of
+     the documented default excludes (`node_modules/**`), and users mean it at any
+     depth — a workspace normally has one node_modules per package. A pattern
+     with any other shape stays anchored at the root, so `src/**` keeps meaning
+     the root's src folder. Same rule as `*.md` matching a basename at any depth. */
+  const folderAnywhere = /^[^/*?]+\/\*\*$/.test(normalized)
+  let regex
+  try {
+    if (folderAnywhere || !normalized.includes('/')) regex = new RegExp('(?:^|/)' + body + '$', flags)
+    else regex = new RegExp('^' + body + '$', flags)
+  } catch {
+    return null
+  }
+  let dirRegex = null
+  if (normalized.endsWith('/**')) {
+    const prefix = normalized.slice(0, -3)
+    const prefixBody = globSource(prefix)
+    try {
+      dirRegex = new RegExp(folderAnywhere ? '(?:^|/)' + prefixBody + '$' : '^' + prefixBody + '$', flags)
+    } catch {
+      dirRegex = null
+    }
+  }
+  return { regex, dirRegex }
+}
+
+/** Compile a comma-separated glob list into `{ positives, negatives }`. */
+function compileGlobList(source) {
+  const positives = []
+  const negatives = []
+  for (const raw of String(source).split(',')) {
+    let text = raw.trim()
+    if (text === '') continue
+    let negated = false
+    if (text.startsWith('!')) {
+      negated = true
+      text = text.slice(1).trim()
+    }
+    if (text === '') continue
+    const compiled = compileGlob(text)
+    if (compiled === null) continue
+    const pattern = { regex: compiled.regex, dirRegex: compiled.dirRegex }
+    if (negated) negatives.push(pattern)
+    else positives.push(pattern)
+  }
+  return { positives, negatives, negated: negatives.length > 0 }
+}
+
+function anyGlobMatches(patterns, rel) {
+  for (const pattern of patterns) {
+    if (pattern.regex.test(rel)) return true
+  }
+  return false
+}
+
+/** `include`: positives are required (or absent = everything), a `!` wins. */
+function includeAllows(include, rel) {
+  if (anyGlobMatches(include.negatives, rel)) return false
+  return include.positives.length === 0 || anyGlobMatches(include.positives, rel)
+}
+
+/** `exclude`: positives exclude, a `!` pattern re-includes. */
+function excludeHits(exclude, rel) {
+  if (exclude.positives.length === 0) return false
+  if (anyGlobMatches(exclude.negatives, rel)) return false
+  return anyGlobMatches(exclude.positives, rel)
+}
+
+/**
+ * Can the walk skip this directory? Only patterns of the shape `dir/**` can
+ * prove it, and only when the list has no `!` re-include (conservative: a
+ * negated pattern may name a file deeper down). This is what keeps
+ * `node_modules` from being walked at all.
+ */
+function excludesDirectory(exclude, rel) {
+  if (rel === '' || exclude.negated) return false
+  for (const pattern of exclude.positives) {
+    if (pattern.dirRegex !== null && pattern.dirRegex.test(rel)) return true
+  }
+  return false
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Build the matching RegExp for content/name mode; bad user regex → 400. */
+function buildSearchPattern(query, options) {
+  let source = options.regex === true ? query : escapeRegExp(query)
+  if (options.wholeWord === true) source = '\\b(?:' + source + ')\\b'
+  try {
+    return new RegExp(source, options.caseSensitive === true ? 'g' : 'gi')
+  } catch (error) {
+    if (options.regex === true) {
+      throw new ApiError('bad-regex', 'invalid regular expression: ' + messageOf(error), 400)
+    }
+    throw badRequest('query could not be used as a pattern')
+  }
+}
+
+/** Line text for a match row: the whole line, or a ≤400-char window on it. */
+function matchLineText(line, column, length) {
+  if (line.length <= SEARCH_TEXT_MAX_CHARS) return line
+  const span = Math.min(length, SEARCH_TEXT_MAX_CHARS)
+  const half = Math.floor((SEARCH_TEXT_MAX_CHARS - span) / 2)
+  const start = Math.max(0, Math.min(column - half, line.length - SEARCH_TEXT_MAX_CHARS))
+  return line.slice(start, start + SEARCH_TEXT_MAX_CHARS)
+}
+
+function contextAround(lines, index, direction, count) {
+  const rows = []
+  for (let step = 1; step <= count; step += 1) {
+    const at = index + direction * step
+    if (at < 0 || at >= lines.length) break
+    rows.push(lines[at].slice(0, SEARCH_TEXT_MAX_CHARS))
+  }
+  return direction < 0 ? rows.reverse() : rows
+}
+
+/**
+ * All matches of `regex` in one decoded file, ascending by line/column.
+ * `budget` is how many more rows the caller may still accept: reaching it means
+ * the outer response is truncated.
+ */
+function matchContent(text, regex, contextLines, budget) {
+  const rows = []
+  if (budget <= 0) return { rows, truncated: true }
+  const lines = text.split(/\r\n|\n|\r/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line === '') continue
+    regex.lastIndex = 0
+    let match = regex.exec(line)
+    while (match !== null) {
+      const length = match[0].length
+      if (length === 0) {
+        /* A regex such as `^` or `a*` can match the empty string: advance by
+           one character so the loop always makes progress. */
+        regex.lastIndex = match.index + 1
+        if (regex.lastIndex > line.length) break
+        match = regex.exec(line)
+        continue
+      }
+      const row = {
+        line: index + 1,
+        column: match.index,
+        length,
+        text: matchLineText(line, match.index, length),
+      }
+      if (contextLines > 0) {
+        row.before = contextAround(lines, index, -1, contextLines)
+        row.after = contextAround(lines, index, 1, contextLines)
+      }
+      rows.push(row)
+      if (rows.length >= budget) return { rows, truncated: true }
+      if (regex.lastIndex <= match.index) regex.lastIndex = match.index + length
+      match = regex.exec(line)
+    }
+  }
+  return { rows, truncated: false }
+}
+
+/** Natural order of result files: like the tree, but stable for mixed case. */
+function compareRels(a, b) {
+  const primary = a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true })
+  if (primary !== 0) return primary
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/**
+ * The exclude string for this request: an explicit `exclude` (including `''`,
+ * which disables the defaults), or the documented default set. The legacy
+ * `includeNodeModules: true` flag only removes node_modules from those defaults.
+ */
+function searchExcludeSource(payload) {
+  if (Object.prototype.hasOwnProperty.call(payload, 'exclude')
+    && payload.exclude !== undefined && payload.exclude !== null) {
+    return typeof payload.exclude === 'string' ? payload.exclude : ''
+  }
+  const defaults = SEARCH_DEFAULT_EXCLUDES.slice()
+  if (payload.includeNodeModules === true) {
+    return defaults.filter((pattern) => pattern !== 'node_modules/**').join(',')
+  }
+  return defaults.join(',')
+}
+
+/** The legacy `matches` projection, so the old panel keeps rendering meanwhile. */
+function legacySearchRow(rel, name, stats) {
+  return {
+    name,
+    rel,
+    type: 'file',
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+  }
 }
 
 /* ============================== methods ============================== */
@@ -411,58 +678,146 @@ const METHODS = {
   },
 
   /**
-   * Case-insensitive substring match on entry names, breadth-first and bounded.
-   * Directory symlinks are never followed, so a link pointing out of the root
-   * cannot turn a search into a filesystem walk.
+   * VSCode-grade workspace search (docs/files-api.md §2.1).
+   *
+   * `mode:'content'` (default) walks the tree once and reports every line that
+   * matches, grouped per file. `mode:'name'` is the Ctrl+P quick-open: the same
+   * walk, but only entry names are matched and no file is read. Neither mode
+   * follows a symlink, so a link out of the root can never turn a search into a
+   * filesystem walk; the root itself is validated exactly like `tree`/`read`.
+   *
+   * Bounded on purpose: 20 000 files, `maxResults` matches, and a soft 6 s
+   * budget. Hitting any of them returns what was found with `truncated: true`
+   * instead of failing — a search must never turn into an error page.
    */
   async search(payload) {
+    const startedAt = Date.now()
     const root = rootPathOf(payload)
-    const query = typeof payload.query === 'string' ? payload.query.trim() : ''
-    if (query === '') throw badRequest('query is required')
-    const needle = query.toLowerCase()
-    const limit = clampNumber(payload.limit, 1, SEARCH_MAX_LIMIT, SEARCH_DEFAULT_LIMIT)
-    const includeNodeModules = payload.includeNodeModules === true
-    const matches = []
-    const queue = [{ dir: root, depth: 0 }]
-    let visited = 0
+
+    const mode = payload.mode === undefined || payload.mode === null || payload.mode === '' ? 'content' : payload.mode
+    if (mode !== 'content' && mode !== 'name') throw badRequest('mode must be "content" or "name"')
+    const query = typeof payload.query === 'string' ? payload.query : ''
+    if (query.trim() === '') throw badRequest('query is required')
+
+    const caseSensitive = payload.caseSensitive === true
+    const wholeWord = payload.wholeWord === true
+    const useRegex = payload.regex === true
+    /* `limit` is the pre-§2.1 spelling of maxResults; the legacy panel still sends it. */
+    const maxResults = clampNumber(
+      payload.maxResults === undefined ? payload.limit : payload.maxResults,
+      1,
+      SEARCH_HARD_MAX_RESULTS,
+      SEARCH_DEFAULT_MAX_RESULTS,
+    )
+    const maxFileSize = clampNumber(payload.maxFileSize, 1, HARD_READ_MAX_BYTES, DEFAULT_MAX_FILE_BYTES)
+    const contextLines = clampNumber(payload.contextLines, 0, SEARCH_MAX_CONTEXT_LINES, 0)
+
+    const include = compileGlobList(typeof payload.include === 'string' ? payload.include : '')
+    const exclude = compileGlobList(searchExcludeSource(payload))
+    const pattern = buildSearchPattern(query, { regex: useRegex, caseSensitive, wholeWord })
+
+    const files = []
+    const legacyRows = []
+    let totalMatches = 0
+    let scannedFiles = 0
     let truncated = false
+    const deadline = startedAt + SEARCH_TIME_BUDGET_MS
+
+    const queue = [{ dir: root, rel: '' }]
     while (queue.length > 0 && !truncated) {
       const current = queue.shift()
       let dirents
       try {
         dirents = readdirSync(current.dir, { withFileTypes: true })
       } catch {
-        continue
+        continue /* vanished or unreadable: a search skips, it does not fail */
       }
+      /* Deterministic walk order, so a truncated response is reproducible. */
+      dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      const subdirectories = []
       for (const dirent of dirents) {
-        if (visited >= SEARCH_MAX_VISITED) {
+        if (Date.now() > deadline) {
           truncated = true
           break
         }
-        visited += 1
+        if (dirent.isSymbolicLink()) continue /* never follow, per contract */
+        const rel = current.rel === '' ? dirent.name : current.rel + '/' + dirent.name
         const abs = path.join(current.dir, dirent.name)
+
+        if (dirent.isDirectory()) {
+          if (excludesDirectory(exclude, rel)) continue
+          subdirectories.push({ dir: abs, rel })
+          continue
+        }
+        if (!dirent.isFile()) continue
+        if (excludeHits(exclude, rel) || !includeAllows(include, rel)) continue
+        if (scannedFiles >= SEARCH_MAX_FILES) {
+          truncated = true
+          break
+        }
         let stats
         try {
           stats = lstatSync(abs)
         } catch {
           continue
         }
-        const type = stats.isSymbolicLink() ? 'symlink' : stats.isDirectory() ? 'dir' : 'file'
-        if (dirent.name.toLowerCase().includes(needle)) {
-          matches.push(entryFromStats(root, abs, stats))
-          if (matches.length >= limit) {
+        if (stats.isSymbolicLink() || !stats.isFile()) continue
+        scannedFiles += 1
+
+        if (mode === 'name') {
+          pattern.lastIndex = 0
+          if (!pattern.test(dirent.name)) continue
+          files.push({ rel, size: stats.size, mtimeMs: stats.mtimeMs, matches: [] })
+          legacyRows.push(legacySearchRow(rel, dirent.name, stats))
+          totalMatches += 1
+          if (totalMatches >= maxResults) {
             truncated = true
             break
           }
+          continue
         }
-        if (type === 'dir' && current.depth < SEARCH_MAX_DEPTH) {
-          if (dirent.name === '.git' || dirent.name === '.hg' || dirent.name === '.svn') continue
-          if (dirent.name === 'node_modules' && !includeNodeModules) continue
-          queue.push({ dir: abs, depth: current.depth + 1 })
+
+        if (stats.size > maxFileSize) continue /* oversize: skipped, not an error */
+        let buffer
+        try {
+          buffer = readFileSync(abs)
+        } catch {
+          continue
+        }
+        if (hasNulByte(buffer)) continue /* binary */
+        /* Invalid UTF-8 becomes U+FFFD; it must never abort the whole search.
+           A leading BOM is dropped like `read` does, so columns are file-relative. */
+        let text = buffer.toString('utf8')
+        if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
+        const found = matchContent(text, pattern, contextLines, maxResults - totalMatches)
+        if (found.rows.length === 0) continue
+        files.push({ rel, size: stats.size, mtimeMs: stats.mtimeMs, matches: found.rows })
+        for (const row of found.rows) {
+          legacyRows.push({ rel, line: row.line, column: row.column, length: row.length, text: row.text })
+        }
+        totalMatches += found.rows.length
+        if (found.truncated || totalMatches >= maxResults) {
+          truncated = true
+          break
         }
       }
+      if (!truncated && subdirectories.length > 0) queue.push(...subdirectories)
     }
-    return { matches, truncated }
+
+    files.sort((a, b) => compareRels(a.rel, b.rel))
+    return {
+      root: jsonPath(root),
+      mode,
+      query,
+      files,
+      /* Legacy shape kept for the panel build that predates §2.1: file entries in
+         name mode, flat match rows in content mode. */
+      matches: legacyRows,
+      totalMatches,
+      scannedFiles,
+      truncated,
+      elapsedMs: Date.now() - startedAt,
+    }
   },
 
   /** Read a file as UTF-8 text, or base64 when it looks binary. */

@@ -44,6 +44,15 @@ window.__ModuleLoader__.load({
     const COMMAND_PROMPT = '$ '
     const ROOT_POLL_MS = 2000
 
+    /* ---- tab persistence across page switches (docs/terminal-pty.md §3.1) ---- */
+    const TAB_STORE_KEY = 'dsh-workbay.terminal.tabs.v2'
+    const TAB_STORE_VERSION = 2
+    const TAB_PERSIST_DEBOUNCE_MS = 300
+    /* Host maxSessions default; the page cannot read host config, and the
+       contract fixes the client-side cap to it. */
+    const MAX_TABS = 8
+    const MAX_STORED_TABS = 64
+
     /* ============================== i18n ============================== */
 
     const ZH = {
@@ -61,6 +70,11 @@ window.__ModuleLoader__.load({
       'tab.empty': '还没有打开终端',
       'tab.emptyHint': '点击 + 新建一个终端会话；每个标签都是一个独立的 shell。',
       'tab.newShort': '新建终端',
+      'tab.capHint': '最多只能打开 {max} 个终端标签，请先关闭一个。',
+      'tab.noRootHint': '请先在「文件」页面选择一个工作区。',
+      'tab.restoreMissing': '原会话已不存在，可重新启动',
+      'tab.restoreCapExit': '标签数超过上限（{max}），此标签未恢复',
+      'tab.restoredCount': '已恢复 {n} 个会话',
 
       'status.shell': 'Shell',
       'status.cwd': '目录',
@@ -87,6 +101,7 @@ window.__ModuleLoader__.load({
       'terminal.copy': '复制选中内容',
       'terminal.paste': '粘贴',
       'terminal.aria': '终端会话',
+      'terminal.restoredNotice': '会话已恢复',
 
       'error.stream': '输出流已断开，自动重连没有成功。',
       'error.bad-request': '工作区路径无效，请到「文件」页面重新选择。',
@@ -117,6 +132,11 @@ window.__ModuleLoader__.load({
       'tab.empty': 'No terminal open',
       'tab.emptyHint': 'Click + to open a terminal session; every tab is its own shell.',
       'tab.newShort': 'New terminal',
+      'tab.capHint': 'At most {max} terminal tabs can be open — close one first.',
+      'tab.noRootHint': 'Choose a workspace on the Files page first.',
+      'tab.restoreMissing': 'The previous session is gone — restart it',
+      'tab.restoreCapExit': 'Over the tab limit ({max}); this tab was not restored',
+      'tab.restoredCount': 'Restored {n} session(s)',
 
       'status.shell': 'Shell',
       'status.cwd': 'CWD',
@@ -143,6 +163,7 @@ window.__ModuleLoader__.load({
       'terminal.copy': 'Copy selection',
       'terminal.paste': 'Paste',
       'terminal.aria': 'Terminal session',
+      'terminal.restoredNotice': 'Session restored',
 
       'error.stream': 'The output stream dropped and the single reconnect failed.',
       'error.bad-request': 'That workspace path is invalid — pick one on the Files page.',
@@ -346,6 +367,14 @@ window.__ModuleLoader__.load({
         exitCode: null,
         error: '',
         renamed: false,
+        /* persistence / restore */
+        sessionId: '',
+        restoreAttach: false,
+        restoreSession: null,
+        restoreNotice: '',
+        restartable: true,
+        storedSessionId: '',
+        storedMode: 'command',
       }
     }
 
@@ -403,6 +432,195 @@ window.__ModuleLoader__.load({
         default:
           return base
       }
+    }
+
+    /* ---- persisted tab store (docs/terminal-pty.md §3.1) ---- */
+
+    function emptyTabStore() {
+      return { version: TAB_STORE_VERSION, tabs: [] }
+    }
+
+    function cleanTitle(value, fallback) {
+      const text = typeof value === 'string' ? value.replace(/[\r\n\t]/g, ' ').trim().slice(0, 64) : ''
+      return text === '' ? String(fallback) : text
+    }
+
+    /**
+     * UI tabs -> the frozen storage shape. Only the metadata the host can use
+     * for a reattach is stored; phase/exit/error are runtime-only.
+     */
+    function encodeTabStore(tabs) {
+      const source = Array.isArray(tabs) ? tabs : []
+      const out = []
+      for (const tab of source) {
+        if (tab === null || typeof tab !== 'object') continue
+        const tabId = typeof tab.key === 'string' && tab.key !== '' ? tab.key : (typeof tab.tabId === 'string' ? tab.tabId : '')
+        if (tabId === '') continue
+        out.push({
+          tabId,
+          title: cleanTitle(tab.title, tabId),
+          root: typeof tab.root === 'string' ? tab.root : '',
+          sessionId: typeof tab.sessionId === 'string' ? tab.sessionId : '',
+          cwd: typeof tab.cwd === 'string' && tab.cwd !== ''
+            ? tab.cwd
+            : (typeof tab.root === 'string' ? tab.root : ''),
+          mode: tab.mode === 'pty' ? 'pty' : 'command',
+        })
+        if (out.length >= MAX_STORED_TABS) break
+      }
+      return { version: TAB_STORE_VERSION, tabs: out }
+    }
+
+    /**
+     * Storage -> tabs. Tolerant by design: wrong version, malformed JSON,
+     * non-array fields and junk entries all degrade to "no tabs" or skip that
+     * entry, so a broken/stale store can never wedge the page.
+     */
+    function decodeTabStore(raw) {
+      let parsed = raw
+      if (typeof raw === 'string') {
+        const text = raw.trim()
+        if (text === '') return emptyTabStore()
+        try {
+          parsed = JSON.parse(text)
+        } catch (error) {
+          return emptyTabStore()
+        }
+      }
+      if (parsed === null || typeof parsed !== 'object' || parsed.version !== TAB_STORE_VERSION) {
+        return emptyTabStore()
+      }
+      if (!Array.isArray(parsed.tabs)) return emptyTabStore()
+      const seen = new Set()
+      const tabs = []
+      for (const entry of parsed.tabs) {
+        if (entry === null || typeof entry !== 'object') continue
+        const tabId = typeof entry.tabId === 'string' ? entry.tabId.trim() : ''
+        if (tabId === '' || seen.has(tabId)) continue
+        seen.add(tabId)
+        tabs.push({
+          tabId,
+          title: cleanTitle(entry.title, tabId),
+          root: typeof entry.root === 'string' ? entry.root : '',
+          sessionId: typeof entry.sessionId === 'string' ? entry.sessionId.trim() : '',
+          cwd: typeof entry.cwd === 'string'
+            ? entry.cwd
+            : (typeof entry.root === 'string' ? entry.root : ''),
+          mode: entry.mode === 'pty' ? 'pty' : 'command',
+        })
+        if (tabs.length >= MAX_STORED_TABS) break
+      }
+      return { version: TAB_STORE_VERSION, tabs }
+    }
+
+    function loadTabStore(storageLike) {
+      try {
+        return decodeTabStore(storageLike.getItem(TAB_STORE_KEY))
+      } catch (error) {
+        return emptyTabStore()
+      }
+    }
+
+    function saveTabStore(storageLike, tabs) {
+      try {
+        storageLike.setItem(TAB_STORE_KEY, JSON.stringify(encodeTabStore(tabs)))
+        return true
+      } catch (error) {
+        return false
+      }
+    }
+
+    /**
+     * Debounced writer: every change replaces the pending value, and only the
+     * LAST one is persisted after `delay`. `flush` is used on unmount so a quick
+     * page switch still stores the latest metadata.
+     */
+    function createDebouncedWriter(options) {
+      const opts = options === null || options === undefined ? {} : options
+      const write = typeof opts.write === 'function' ? opts.write : () => {}
+      const delay = typeof opts.delay === 'number' && Number.isFinite(opts.delay) ? opts.delay : TAB_PERSIST_DEBOUNCE_MS
+      const startTimer = typeof opts.setTimer === 'function' ? opts.setTimer : setTimeout
+      const stopTimer = typeof opts.clearTimer === 'function' ? opts.clearTimer : clearTimeout
+      let pending = null
+      let timer = null
+      const run = () => {
+        timer = null
+        if (pending === null) return
+        const value = pending
+        pending = null
+        try { write(value) } catch (error) { void error }
+      }
+      return {
+        schedule(value) {
+          pending = value
+          if (timer !== null) return
+          timer = startTimer(run, delay)
+        },
+        flush() {
+          if (timer !== null) {
+            stopTimer(timer)
+            timer = null
+          }
+          run()
+        },
+        cancel() {
+          if (timer !== null) {
+            stopTimer(timer)
+            timer = null
+          }
+          pending = null
+        },
+        hasPending() { return pending !== null },
+      }
+    }
+
+    /**
+     * Restore plan: saved tabs × live host sessions.
+     *
+     *   attach  — sessionId is still in `api/list`; rebuild the xterm + stream
+     *   restart — the session is gone (or never had an id); show Restart
+     *   exit    — over the tab cap, or a duplicate sessionId claim; no reattach
+     */
+    function planRestore(savedTabs, liveSessions, cap) {
+      const saved = Array.isArray(savedTabs) ? savedTabs : []
+      const live = Array.isArray(liveSessions) ? liveSessions : []
+      const limit = typeof cap === 'number' && Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : MAX_TABS
+      const liveById = new Map()
+      for (const session of live) {
+        if (session === null || typeof session !== 'object') continue
+        if (typeof session.id !== 'string' || session.id === '') continue
+        if (!liveById.has(session.id)) liveById.set(session.id, session)
+      }
+      const claimed = new Set()
+      const tabs = []
+      for (let index = 0; index < saved.length; index += 1) {
+        const entry = saved[index]
+        if (entry === null || typeof entry !== 'object') continue
+        if (index >= limit) {
+          tabs.push({ entry, action: 'exit', reason: 'cap' })
+          continue
+        }
+        const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+        if (sessionId !== '' && claimed.has(sessionId)) {
+          tabs.push({
+            entry: Object.assign({}, entry, { sessionId: '' }),
+            action: 'exit',
+            reason: 'duplicate',
+          })
+          continue
+        }
+        if (sessionId !== '' && liveById.has(sessionId)) {
+          claimed.add(sessionId)
+          tabs.push({ entry, action: 'attach', session: liveById.get(sessionId) })
+          continue
+        }
+        tabs.push({
+          entry,
+          action: 'restart',
+          reason: sessionId === '' ? 'no-session' : 'gone',
+        })
+      }
+      return { tabs, attachedCount: claimed.size, cap: limit }
     }
 
     /* ---- SSE payloads ---- */
@@ -819,6 +1037,9 @@ window.__ModuleLoader__.load({
 
     function StatusBar(props) {
       const { t, tab, tabCount } = props
+      const restoredCount = typeof props.restoredCount === 'number' && props.restoredCount > 0
+        ? props.restoredCount
+        : 0
       const mode = tab === null || tab === undefined ? 'command' : tab.mode
       const shell = tab === null || tab === undefined || tab.shell === '' ? '' : tab.shell
       const cwd = tab === null || tab === undefined ? '' : tab.cwd
@@ -834,6 +1055,10 @@ window.__ModuleLoader__.load({
           E('span', { className: 'dswt-statusKey' }, t('status.mode')),
           E('span', { className: cx('dswt-modeBadge', mode === 'pty' ? 'is-pty' : 'is-command') },
             mode === 'pty' ? t('status.pty') : t('status.nonPty'))),
+        restoredCount > 0
+          ? E('span', { className: 'dswt-statusItem dswt-restoredCount', title: t('tab.restoredCount', { n: restoredCount }) },
+            E('span', { className: 'dswt-statusValue' }, t('tab.restoredCount', { n: restoredCount })))
+          : null,
         E('span', { className: 'dswt-statusItem', title: t('status.session') },
           E('span', { className: 'dswt-statusKey' }, t('status.session')),
           E('span', { className: 'dswt-statusValue' }, String(tabCount))),
@@ -856,6 +1081,16 @@ window.__ModuleLoader__.load({
 
     function TerminalTab(props) {
       const { t, tabKey, root, active, theme, onStatus, onTitle } = props
+      const restored = props.restored === true
+      const dormant = props.dormant === true
+      const storedSessionId = typeof props.storedSessionId === 'string' ? props.storedSessionId : ''
+      const storedMode = props.storedMode === 'pty' ? 'pty' : 'command'
+      const restoreSession = props.restoreSession !== null && props.restoreSession !== undefined
+        && typeof props.restoreSession === 'object' ? props.restoreSession : null
+      const restartable = props.restartable !== false
+      const restoreNotice = typeof props.restoreNotice === 'string' ? props.restoreNotice : ''
+      const restoreId = restoreSession !== null && typeof restoreSession.id === 'string' ? restoreSession.id : ''
+      const restoreMode = restoreSession !== null && restoreSession.mode === 'pty' ? 'pty' : 'command'
       const initial = { phase: 'starting', mode: 'command', shell: '', cwd: root, exitCode: null, error: '' }
       const [view, setView] = useState(initial)
       const hostRef = useRef(null)
@@ -914,6 +1149,8 @@ window.__ModuleLoader__.load({
           awaiting: false,
           lineStart: true,
           exited: false,
+          restoredNoticeShown: false,
+          gotHello: false,
         }
 
         function commit(patch) {
@@ -1090,16 +1327,30 @@ window.__ModuleLoader__.load({
           if (payload.type === 'hello') {
             const mode = payload.mode === 'pty' ? 'pty' : 'command'
             core.mode = mode
+            core.gotHello = true
             if (typeof payload.id === 'string' && payload.id !== '') {
               core.session = { id: payload.id, mode }
             }
+            const hostCwd = typeof payload.cwd === 'string' && payload.cwd !== ''
+              ? payload.cwd
+              : statusRef.current.cwd
             commit({
               phase: 'running',
               mode,
+              sessionId: core.session !== null ? core.session.id : statusRef.current.sessionId,
               shell: typeof payload.shell === 'string' ? payload.shell : statusRef.current.shell,
-              cwd: typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : statusRef.current.cwd,
+              cwd: hostCwd,
               error: '',
             })
+            /* Reattached tab: say so inside the terminal, so the user never
+               mistakes the restored shell for a brand-new one. The hello values
+               are authoritative — a stored mode/cwd that disagrees is replaced
+               by what the host actually has. */
+            if (restored && !core.restoredNoticeShown) {
+              core.restoredNoticeShown = true
+              writeTracked('\r\n\u001b[2m' + tRef.current('terminal.restoredNotice') + '\u001b[0m\r\n')
+              core.lineStart = true
+            }
             if (mode === 'command' && !core.promptShown) showPrompt()
             if (mode === 'pty') {
               const handle = handleRef.current
@@ -1164,6 +1415,13 @@ window.__ModuleLoader__.load({
             try { source.close() } catch (error) { void error }
             if (core.cancelled || core.exited) return
             if (core.reconnectUsed) {
+              /* A restored tab whose host session vanished between api/list and
+                 the stream never sees `hello`; show it as an exited tab with
+                 Restart (the Page's exit bar) instead of a generic retry error. */
+              if (restored && !core.gotHello) {
+                commit({ phase: 'exited', exitCode: null, error: '' })
+                return
+              }
               commit({ phase: 'error', error: tRef.current('error.stream') })
               return
             }
@@ -1187,6 +1445,7 @@ window.__ModuleLoader__.load({
           commit({
             phase: 'connecting',
             mode: core.mode,
+            sessionId: core.session.id,
             shell: typeof data.shell === 'string' && data.shell !== '' ? data.shell : statusRef.current.shell,
             cwd: typeof data.cwd === 'string' && data.cwd !== '' ? data.cwd : rootRef.current,
             error: '',
@@ -1208,14 +1467,27 @@ window.__ModuleLoader__.load({
           core.editor = createCommandEditorState()
           const previous = core.session
           core.session = null
-          commit({ phase: 'starting', error: '', exitCode: null })
+          commit({ phase: 'starting', sessionId: '', error: '', exitCode: null })
           if (previous !== null && previous !== undefined && typeof previous.id === 'string') {
             /* Wait for the old session to be reaped: the host enforces a small
                concurrent-session limit and an un-awaited stop can race start. */
             await call('stop', { id: previous.id }).catch(() => {})
             if (core.cancelled) return
           }
-          const handle = handleRef.current
+          let handle = handleRef.current
+          if (handle === null || handle === undefined) {
+            /* A dormant/restored tab may restart before its chunk finished
+               loading: finish the terminal, then start. */
+            try {
+              handle = await ensureTerminal()
+            } catch (error) {
+              if (!core.cancelled) {
+                commit({ phase: 'error', error: tRef.current('error.chunk', { message: error instanceof Error ? error.message : String(error) }) })
+              }
+              return
+            }
+            if (core.cancelled) return
+          }
           if (handle === null || handle === undefined) {
             commit({ phase: 'error', error: tRef.current('error.chunk', { message: 'terminal not ready' }) })
             return
@@ -1240,8 +1512,15 @@ window.__ModuleLoader__.load({
 
         async function restartSession() {
           if (core.cancelled) return
-          const previous = core.session
-          if (previous === null || previous === undefined || typeof previous.id !== 'string') {
+          /* A restored tab that never reattached has no live core.session; its
+             stored id is still worth trying (`api/restart` reuses the cwd), and
+             a 404 means the host forgot it, so fall back to a fresh start. */
+          const previous = core.session !== null && core.session !== undefined
+            ? core.session
+            : (restoreId !== ''
+                ? { id: restoreId, mode: restoreMode }
+                : (storedSessionId !== '' ? { id: storedSessionId, mode: storedMode } : null))
+          if (previous === null) {
             await startSession()
             return
           }
@@ -1254,7 +1533,7 @@ window.__ModuleLoader__.load({
           core.awaiting = false
           core.lineStart = true
           core.editor = createCommandEditorState()
-          commit({ phase: 'starting', error: '', exitCode: null })
+          commit({ phase: 'starting', sessionId: '', error: '', exitCode: null })
           try {
             const data = await call('restart', { id: previous.id })
             if (core.cancelled) {
@@ -1268,7 +1547,13 @@ window.__ModuleLoader__.load({
             }
             adopt(data, previous.mode)
           } catch (error) {
-            if (!core.cancelled) commit({ phase: 'error', error: errorText(tRef.current, error) })
+            if (core.cancelled) return
+            if (error !== null && error !== undefined && error.code === 'not-found') {
+              core.session = null
+              await startSession()
+              return
+            }
+            commit({ phase: 'error', error: errorText(tRef.current, error) })
           }
         }
 
@@ -1307,6 +1592,38 @@ window.__ModuleLoader__.load({
             if (core.cancelled || handle === null) return
             if (activeRef.current) {
               try { handle.focus() } catch (error) { void error }
+            }
+            if (restoreId !== '') {
+              /* Reattach to a session that outlived the page: rebuild the xterm
+                 and stream, never call api/start (that would create a second
+                 shell for the same tab). */
+              core.session = { id: restoreId, mode: restoreMode }
+              core.mode = restoreMode
+              commit({
+                phase: 'connecting',
+                mode: restoreMode,
+                sessionId: restoreId,
+                cwd: restoreSession !== null && typeof restoreSession.cwd === 'string' && restoreSession.cwd !== ''
+                  ? restoreSession.cwd
+                  : rootRef.current,
+                error: '',
+                exitCode: null,
+              })
+              connectStream(restoreId)
+              return
+            }
+            if (dormant) {
+              /* The host session is gone and restore marked this tab exited:
+                 keep the terminal empty and wait for the user's Restart. */
+              commit({
+                phase: 'exited',
+                mode: storedMode,
+                sessionId: storedSessionId,
+                cwd: rootRef.current,
+                error: '',
+                exitCode: null,
+              })
+              return
             }
             await startSession()
           } catch (error) {
@@ -1446,11 +1763,10 @@ window.__ModuleLoader__.load({
           if (observer !== null) {
             try { observer.disconnect() } catch (error) { void error }
           }
-          const session = core.session
+          /* The dock unmounts the page on a page switch; the HOST session must
+             keep running so the page can reattach later (§3.1). Only an explicit
+             user close (Page's closeTab) calls api/stop. */
           core.session = null
-          if (session !== null && session !== undefined && typeof session.id === 'string') {
-            void call('stop', { id: session.id }).catch(() => {})
-          }
           const handle = handleRef.current
           handleRef.current = null
           if (handle !== null && handle !== undefined && typeof handle.dispose === 'function') {
@@ -1462,6 +1778,7 @@ window.__ModuleLoader__.load({
       const exitLabel = view.exitCode === null
         ? t('status.exitedNoCode')
         : t('status.exited', { code: view.exitCode })
+      const exitText = restoreNotice !== '' ? restoreNotice : exitLabel
 
       return E('div', {
         className: cx('dswt-panel', active === true ? 'is-active' : ''),
@@ -1481,12 +1798,14 @@ window.__ModuleLoader__.load({
       E('div', { className: 'dswt-termHost', ref: hostRef }),
       view.phase === 'exited'
         ? E('div', { className: 'dswt-exitBar' },
-          E('span', { className: 'dswt-exitText' }, exitLabel),
-          E('button', {
-            type: 'button',
-            className: 'dswt-btn is-small is-primary',
-            onClick: () => { const actions = actionsRef.current; if (actions !== null) actions.restart() },
-          }, E(Icon, { name: 'restart', size: 12 }), E('span', null, t('terminal.restart'))))
+          E('span', { className: 'dswt-exitText' }, exitText),
+          restartable
+            ? E('button', {
+              type: 'button',
+              className: 'dswt-btn is-small is-primary',
+              onClick: () => { const actions = actionsRef.current; if (actions !== null) actions.restart() },
+            }, E(Icon, { name: 'restart', size: 12 }), E('span', null, t('terminal.restart')))
+            : null)
         : null,
       view.phase === 'starting' || view.phase === 'connecting'
         ? E('div', { className: 'dswt-loading' }, t('terminal.starting'))
@@ -1501,11 +1820,100 @@ window.__ModuleLoader__.load({
       const [tabState, setTabState] = useState({ tabs: [], activeKey: '' })
       const [renamingKey, setRenamingKey] = useState('')
       const [renameDraft, setRenameDraft] = useState('')
+      const [restoredCount, setRestoredCount] = useState(0)
+      const [capHint, setCapHint] = useState('')
+      const [restoring, setRestoring] = useState(true)
       const counterRef = useRef(0)
       const tabsRef = useRef(tabState.tabs)
       tabsRef.current = tabState.tabs
-      const autoOpenedRef = useRef(false)
       const theme = useMemo(() => themeFromVars(readThemeVars()), [])
+      const restoreStartedRef = useRef(false)
+      const pageAliveRef = useRef(false)
+      const restoringRef = useRef(true)
+      restoringRef.current = restoring
+      const autoOpenRef = useRef(false)
+      const previousRootRef = useRef(root)
+      const capHintTimerRef = useRef(null)
+
+      /* Every metadata change (add/close/rename/session/exit) schedules ONE
+         debounced write; the final flush on unmount keeps a fast page switch
+         from losing the last change. */
+      const persisterRef = useRef(null)
+      if (persisterRef.current === null) {
+        persisterRef.current = createDebouncedWriter({
+          write: (tabs) => { saveTabStore(window.localStorage, tabs) },
+          delay: TAB_PERSIST_DEBOUNCE_MS,
+        })
+      }
+      const persister = persisterRef.current
+
+      const showCapHint = useCallback((message) => {
+        setCapHint(message)
+        if (capHintTimerRef.current !== null) clearTimeout(capHintTimerRef.current)
+        capHintTimerRef.current = setTimeout(() => {
+          capHintTimerRef.current = null
+          setCapHint('')
+        }, 4000)
+      }, [])
+
+      /** Turn one restore-plan row into the UI tab model. */
+      const tabFromPlan = useCallback((planned) => {
+        const entry = planned.entry
+        const tab = createTab(entry.tabId, entry.title, entry.root)
+        tab.sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+        tab.cwd = entry.cwd !== '' ? entry.cwd : (entry.root !== '' ? entry.root : '')
+        tab.mode = entry.mode === 'pty' ? 'pty' : 'command'
+        tab.storedSessionId = tab.sessionId
+        tab.storedMode = tab.mode
+        if (planned.action === 'attach') {
+          tab.phase = 'connecting'
+          tab.restoreAttach = true
+          tab.restoreSession = { id: tab.sessionId, cwd: tab.cwd, mode: tab.mode }
+          return tab
+        }
+        tab.phase = 'exited'
+        tab.exitCode = null
+        if (planned.action === 'restart') {
+          tab.restoreNotice = t('tab.restoreMissing')
+          return tab
+        }
+        /* Over the cap / duplicate claim: explain, do not offer a Restart that
+           the host would reject anyway. */
+        tab.restartable = false
+        tab.restoreNotice = planned.reason === 'cap'
+          ? t('tab.restoreCapExit', { max: MAX_TABS })
+          : t('tab.restoreMissing')
+        if (planned.reason === 'duplicate') tab.sessionId = ''
+        return tab
+      }, [t])
+
+      /* ---- mount: reattach live sessions instead of opening new ones ---- */
+      useEffect(() => {
+        pageAliveRef.current = true
+        if (restoreStartedRef.current) {
+          return () => { pageAliveRef.current = false }
+        }
+        restoreStartedRef.current = true
+        const saved = loadTabStore(window.localStorage)
+        const run = async () => {
+          let live = []
+          try {
+            const data = await call('list')
+            live = data !== null && data !== undefined && Array.isArray(data.sessions) ? data.sessions : []
+          } catch (error) {
+            live = []
+          }
+          if (!pageAliveRef.current) return
+          const plan = planRestore(saved.tabs, live, MAX_TABS)
+          const tabs = plan.tabs.map((planned) => tabFromPlan(planned))
+          setTabState({ tabs, activeKey: tabs.length > 0 ? tabs[0].key : '' })
+          setRestoredCount(plan.attachedCount)
+          autoOpenRef.current = tabs.length === 0
+          setRestoring(false)
+        }
+        void run()
+        return () => { pageAliveRef.current = false }
+      }, [tabFromPlan])
 
       /* The Files page owns the root; this page follows it. */
       useEffect(() => {
@@ -1534,39 +1942,65 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer)
       }, [])
 
-      /* A cleared workspace cannot host sessions: close the tabs so their xterm
-         instances and host sessions are torn down with the page's empty state. */
+      /* A workspace appearing after an empty restore opens one fresh tab — but
+         closing the last tab on purpose must stay empty. */
       useEffect(() => {
-        if (root !== '') return
-        setRenamingKey('')
-        setRenameDraft('')
-        if (tabsRef.current.length > 0) setTabState({ tabs: [], activeKey: '' })
+        if (root !== '' && previousRootRef.current === '' && tabsRef.current.length === 0) {
+          autoOpenRef.current = true
+        }
+        previousRootRef.current = root
       }, [root])
 
-      const addTab = useCallback(() => {
-        if (root === '') return
+      const openFreshTab = useCallback((rootValue) => {
         counterRef.current += 1
-        const key = 'tab-' + String(counterRef.current)
-        const tab = createTab(key, t('tab.defaultTitle', { n: counterRef.current }), root)
+        const key = 'tab-' + Date.now().toString(36) + '-' + String(counterRef.current)
+        const tab = createTab(key, t('tab.defaultTitle', { n: counterRef.current }), rootValue)
         setTabState((current) => reduceTabs(current, { type: 'add', tab }))
         setRenamingKey('')
-      }, [root, t])
+      }, [t])
 
-      /* Open the first terminal automatically once a workspace exists. Closing
-         the last tab stays on the empty-tab state (the + button is still there). */
-      useEffect(() => {
+      const addTab = useCallback(() => {
         if (root === '') {
-          autoOpenedRef.current = false
+          showCapHint(t('tab.noRootHint'))
           return
         }
-        if (autoOpenedRef.current) return
-        autoOpenedRef.current = true
-        addTab()
-      }, [root, addTab])
+        if (tabsRef.current.length >= MAX_TABS) {
+          showCapHint(t('tab.capHint', { max: MAX_TABS }))
+          return
+        }
+        openFreshTab(root)
+      }, [root, t, openFreshTab, showCapHint])
+
+      useEffect(() => {
+        if (restoring || root === '') return
+        if (!autoOpenRef.current) return
+        autoOpenRef.current = false
+        if (tabsRef.current.length > 0) return
+        openFreshTab(root)
+      }, [restoring, root, openFreshTab])
+
+      /* Persist only after restore finishes: an early empty write would erase
+         the very store this mount is about to read. */
+      useEffect(() => {
+        if (restoring) return
+        persister.schedule(tabState.tabs)
+      }, [tabState.tabs, restoring, persister])
+
+      useEffect(() => () => {
+        if (capHintTimerRef.current !== null) clearTimeout(capHintTimerRef.current)
+        if (restoringRef.current) persister.flush()
+        else saveTabStore(window.localStorage, tabsRef.current)
+      }, [persister])
 
       const closeTab = useCallback((key) => {
+        autoOpenRef.current = false
+        const tab = tabsRef.current.find((entry) => entry.key === key)
         setRenamingKey((current) => (current === key ? '' : current))
         setTabState((current) => reduceTabs(current, { type: 'close', key }))
+        /* ONLY an explicit user close stops the host session. */
+        if (tab !== undefined && tab !== null && typeof tab.sessionId === 'string' && tab.sessionId !== '') {
+          void call('stop', { id: tab.sessionId }).catch(() => {})
+        }
       }, [])
 
       const activateTab = useCallback((key) => {
@@ -1622,7 +2056,7 @@ window.__ModuleLoader__.load({
         return tabState.tabs.length > 0 ? tabState.tabs[0] : null
       }, [tabState, activeKey])
 
-      if (root === '') {
+      if (root === '' && tabState.tabs.length === 0) {
         return E('div', { className: 'dswt-root' }, E(RootEmpty, { t, onRecheck: () => setRoot(readRoot()) }))
       }
 
@@ -1641,6 +2075,9 @@ window.__ModuleLoader__.load({
           onRenameCommit: commitRename,
           onRenameCancel: cancelRename,
         }),
+        capHint === ''
+          ? null
+          : E('div', { className: 'dswt-capHint', role: 'status' }, capHint),
         E('div', { className: 'dswt-body' },
           tabState.tabs.length === 0
             ? E('div', { className: 'dswt-empty dswt-emptyTabs' },
@@ -1657,8 +2094,22 @@ window.__ModuleLoader__.load({
               theme,
               onStatus: handleStatus,
               onTitle: handleTitle,
+              restored: tab.restoreAttach === true,
+              dormant: tab.phase === 'exited' && tab.restoreAttach !== true,
+              storedSessionId: typeof tab.storedSessionId === 'string' && tab.storedSessionId !== ''
+                ? tab.storedSessionId
+                : (typeof tab.sessionId === 'string' ? tab.sessionId : ''),
+              storedMode: tab.mode === 'pty' ? 'pty' : 'command',
+              restoreSession: tab.restoreSession !== null && tab.restoreSession !== undefined ? tab.restoreSession : null,
+              restartable: tab.restartable !== false,
+              restoreNotice: typeof tab.restoreNotice === 'string' ? tab.restoreNotice : '',
             }))),
-        E(StatusBar, { t, tab: activeTab, tabCount: tabState.tabs.length }))
+        E(StatusBar, {
+          t,
+          tab: activeTab,
+          tabCount: tabState.tabs.length,
+          restoredCount,
+        }))
     }
 
     /* ============================== styles ============================== */
@@ -1666,6 +2117,9 @@ window.__ModuleLoader__.load({
     const CSS = `
 .dswt-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px}
 .dswt-tabbar{display:flex;align-items:stretch;flex:none;min-height:31px;max-height:31px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24);scrollbar-width:thin}
+.dswt-capHint{flex:none;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-state-warn-secondary,rgba(226,160,63,.12));color:var(--dsw-alias-state-warn-primary,#e2a03f);font-size:11px;line-height:1.5}
+.dswt-restoredCount .dswt-statusValue{color:var(--dsw-alias-state-success-primary,#3fb950)}
+.dswt-restoredCount .dswt-statusValue::before{content:'\\2713 '}
 .dswt-tab{display:flex;align-items:center;gap:5px;flex:none;max-width:190px;padding:0 8px;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer;user-select:none}
 .dswt-tab:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
 .dswt-tab.is-active{background:var(--dsw-alias-bg-layer-2,#22262c);color:var(--dsw-alias-label-primary,#e6e6e6);box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary,#4d6bfe)}
@@ -1798,6 +2252,11 @@ window.__ModuleLoader__.load({
       MIN_ROWS,
       MAX_ROWS,
       TAB_PHASES,
+      TAB_STORE_KEY,
+      TAB_STORE_VERSION,
+      TAB_PERSIST_DEBOUNCE_MS,
+      MAX_TABS,
+      MAX_STORED_TABS,
       apiBase,
       eventsUrl,
       call,
@@ -1808,6 +2267,12 @@ window.__ModuleLoader__.load({
       clampDimensions,
       createTab,
       reduceTabs,
+      encodeTabStore,
+      decodeTabStore,
+      loadTabStore,
+      saveTabStore,
+      createDebouncedWriter,
+      planRestore,
       parseSsePayload,
       createCommandEditorState,
       commandEditorReducer,

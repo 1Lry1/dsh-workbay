@@ -53,6 +53,10 @@ helper 选择顺序：config `ptyHelper` > 环境变量 `DSH_WORKBAY_TERMINAL_PT
   `Ctrl+L` 清屏（`\x0c`）；尺寸变化 200ms 防抖后 `resize`。
 - **主题**：从 DSH 的 `--dsw-alias-*` / `--dsw-font-family-mono` 读取，附明暗两套 ANSI 配色。
 - **状态条**：shell / cwd / 模式（PTY、非 PTY）/ tab 数；会话退出保留 scrollback 并可 Restart。
+- **切页保持**：工作台切到其它页面时 dock 会卸载本页；终端在中止 SSE、销毁 xterm 后
+  **不 stop 宿主会话**，把 tab 元数据写入 `localStorage['dsh-workbay.terminal.tabs.v2']`。
+  再进入时 `api/list` 找回存活会话并重新挂 SSE（“会话已恢复”），丢失的会话显示
+  Restart；只有显式关闭 tab 才真正 stop。tab 上限 8（宿主 maxSessions 默认值）。
 - 工作区根由文件页写入 `localStorage['dsh-workbay.root.v1']`；没有根时显示空状态。
 
 ## 宿主路由
@@ -104,6 +108,6 @@ helper 坏掉时是 skip-with-reason，而不是红 CI。
 ## 已知限制
 
 - 没有 session 持久化：关闭 DSH 后 shell 不保留。
-- 切到工作台其它页面会卸载本页并 stop 会话（`docs/terminal-pty.md` §3 的页面生命周期）。
+- 切页时会话保留在宿主侧，但 scrollback 不保留（重进只显示“会话已恢复”）。
 - 剪贴板走浏览器权限；`Ctrl+Shift+C/V` 是显式绑定，不是系统默认。
 - Windows 上 ConPTY 需要 Win10 1809+；更老的系统自动落到 command 模式。

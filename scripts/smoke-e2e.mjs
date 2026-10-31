@@ -109,6 +109,33 @@ const search = await post('/dsh-workbay-files', 'search', { root: repoRoot, quer
 check('search 200', search.status === 200 && search.body.ok === true)
 check('search 有结果', Array.isArray(search.body.data.matches) && search.body.data.matches.length > 0, `${search.body.data?.matches?.length} 条`)
 
+/* VSCode-level content search (docs/files-api.md §2.1). */
+const startedSearch = Date.now()
+const content = await post('/dsh-workbay-files', 'search', {
+  root: repoRoot,
+  mode: 'content',
+  query: 'workbench',
+  caseSensitive: false,
+  wholeWord: true,
+  include: 'packages/**/*.md,docs/**/*.md',
+  exclude: '',
+  maxResults: 50,
+  contextLines: 1,
+})
+const contentMs = Date.now() - startedSearch
+check('content search 200', content.status === 200 && content.body.ok === true, JSON.stringify(content.body.error))
+check('content search returns grouped files', Array.isArray(content.body.data?.files) && content.body.data.files.length > 0, `${content.body.data?.files?.length} 个文件`)
+const firstMatch = content.body.data?.files?.[0]?.matches?.[0]
+check('content match has line/column/text', typeof firstMatch?.line === 'number' && typeof firstMatch?.column === 'number' && typeof firstMatch?.text === 'string')
+check('content search context lines', Array.isArray(firstMatch?.before) && Array.isArray(firstMatch?.after))
+check('content search is fast enough', contentMs < 6000, `${contentMs} ms`)
+
+const nameSearch = await post('/dsh-workbay-files', 'search', { root: repoRoot, mode: 'name', query: 'workbay', maxResults: 10 })
+check('name search 200', nameSearch.status === 200 && nameSearch.body.ok === true && Array.isArray(nameSearch.body.data?.files))
+
+const badRegex = await post('/dsh-workbay-files', 'search', { root: repoRoot, mode: 'content', query: '([', regex: true })
+check('bad regex 400', badRegex.status === 400 && badRegex.body.error?.code === 'bad-regex', JSON.stringify(badRegex.body.error))
+
 const media = await fetch(`${origin}/dsh-workbay-files/media?root=${encodeURIComponent(repoRoot)}&rel=${encodeURIComponent('packages/gitcraft/docs/panel.png')}`)
 check('media png 200', media.status === 200)
 check('media content-type', (media.headers.get('content-type') || '').startsWith('image/png'), media.headers.get('content-type'))
