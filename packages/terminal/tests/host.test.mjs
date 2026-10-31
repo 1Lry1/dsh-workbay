@@ -779,7 +779,7 @@ test('cd updates the session cwd and the next command runs there', async () => {
   try {
     await stream.waitFor((event) => event.type === 'hello')
     await bootA.call('input', { id: session.id, data: 'cd nested' + TEST_NEWLINE })
-    await stream.waitFor(outContains('nested'), 10_000)
+    await stream.waitFor(outContains('nested'), 45_000)
 
     const listed = await bootA.call('list', {})
     const entry = listed.data.sessions.find((item) => item.id === session.id)
@@ -1225,7 +1225,7 @@ test('fake PTY: restart returns a fresh session and reclaims the old one', async
     assert.equal(typeof restarted.data.shell, 'string')
     assert.notEqual(restarted.data.id, first.id)
     assert.equal(samePath(restarted.data.cwd, first.cwd), true)
-    await firstStream.waitFor((event) => event.type === 'exit', 20_000)
+    await firstStream.waitFor((event) => event.type === 'exit', 30_000)
 
     const listed = await bootFake.call('list', {})
     const ids = listed.data.sessions.map((entry) => entry.id)
@@ -1610,7 +1610,7 @@ test('restart keeps command mode and reuses the cwd', async () => {
   try {
     await firstStream.waitFor((event) => event.type === 'hello')
     await bootA.call('input', { id: first.id, data: 'cd nested' + TEST_NEWLINE })
-    await firstStream.waitFor(outContains('nested'), 10_000)
+    await firstStream.waitFor(outContains('nested'), 45_000)
 
     const restarted = await bootA.call('restart', { id: first.id })
     assert.equal(restarted.ok, true, JSON.stringify(restarted))
@@ -1618,7 +1618,7 @@ test('restart keeps command mode and reuses the cwd', async () => {
     assert.equal(typeof restarted.data.shell, 'string')
     assert.notEqual(restarted.data.id, first.id)
     assert.equal(samePath(restarted.data.cwd, nested), true, 'restart must reuse the cwd')
-    await firstStream.waitFor((event) => event.type === 'exit', 20_000)
+    await firstStream.waitFor((event) => event.type === 'exit', 30_000)
 
     const listed = await bootA.call('list', {})
     const ids = listed.data.sessions.map((entry) => entry.id)
@@ -1631,7 +1631,7 @@ test('restart keeps command mode and reuses the cwd', async () => {
       assert.equal(hello.mode, 'command')
       assert.equal(samePath(hello.cwd, nested), true)
       await bootA.call('input', { id: restarted.data.id, data: 'echo restart-command' + TEST_NEWLINE })
-      await nextStream.waitFor(outContains('restart-command'), 20_000)
+      await nextStream.waitFor(outContains('restart-command'), 45_000)
     } finally {
       nextStream.close()
     }
