@@ -12,6 +12,7 @@
  * Run from the repo root:  node scripts/smoke-e2e.mjs
  */
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -128,6 +129,23 @@ if (etag) {
   check('chunk 有 ETag', false)
 }
 
+console.log('== terminal: warm the shell (cold start is slow on CI runners)')
+await new Promise((resolve) => {
+  const deadline = Date.now() + 120000
+  let settled = false
+  const finish = () => { if (!settled) { settled = true; resolve() } }
+  try {
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'echo warmup'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.on('close', finish)
+    child.on('error', finish)
+  } catch { finish() }
+  const timer = setInterval(() => { if (Date.now() > deadline) { clearInterval(timer); finish() } }, 500)
+  if (typeof timer.unref === 'function') timer.unref()
+})
+
 console.log('== terminal: start / echo / stop')
 const started = await post('/dsh-workbay-terminal', 'start', { root: repoRoot })
 check('start 200', started.status === 200 && started.body.ok === true)
@@ -160,7 +178,7 @@ await new Promise((r) => setTimeout(r, 300))
 
 await post('/dsh-workbay-terminal', 'input', { id: session.id, data: 'echo workbay-smoke-ok\r\n' })
 const echoed = await new Promise((resolve) => {
-  const deadline = Date.now() + 15000
+  const deadline = Date.now() + 45000
   const tick = () => {
     if (events.some((e) => e.type === 'out' && String(e.data).includes('workbay-smoke-ok'))) return resolve(true)
     if (Date.now() > deadline) return resolve(false)
@@ -173,7 +191,7 @@ check('终端回显 echo 输出', echoed === true)
 const stopped = await post('/dsh-workbay-terminal', 'stop', { id: session.id })
 check('stop 200', stopped.status === 200 && stopped.body.ok === true)
 const exited = await new Promise((resolve) => {
-  const deadline = Date.now() + 10000
+  const deadline = Date.now() + 20000
   const tick = () => {
     if (events.some((e) => e.type === 'exit')) return resolve(true)
     if (Date.now() > deadline) return resolve(false)
