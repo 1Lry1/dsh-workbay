@@ -28,14 +28,12 @@ if (-not (Test-Path (Join-Path $repoRoot 'packages\dock\package.json'))) {
 }
 
 $posix = $repoRoot.Replace('\', '/')
-$bundles = @('dsh-workbay-dock', 'dsh-workbay-files', 'dsh-workbay-terminal', 'dsh-gitcraft', 'dsh-downloader')
+# One plugin entry: the suite vendors the five bundles (pnpm run build generates
+# vendor/ + client.js). The standalone packages stay in the repo for development,
+# but they must NOT appear in this profile or the plugin list shows them again.
+$bundles = @('dsh-workbay-suite')
 $deps = [ordered]@{
-  'dsh-workbay-dock'     = "file:$posix/packages/dock"
-  'dsh-workbay-files'    = "file:$posix/packages/files"
-  'dsh-workbay-terminal' = "file:$posix/packages/terminal"
-  'dsh-gitcraft'         = "file:$posix/packages/gitcraft"
-  'dsh-downloader'       = "file:$posix/packages/downloader"
-  '@dsh-workbay/kit'     = "file:$posix/packages/kit"
+  'dsh-workbay-suite' = "file:$posix/packages/suite"
 }
 
 if ($Json) {

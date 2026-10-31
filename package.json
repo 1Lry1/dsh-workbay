@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@11.28.5",
   "scripts": {
-    "build": "node scripts/build-chunks.mjs",
+    "build": "node scripts/build-chunks.mjs && node scripts/build-suite.mjs",
     "test": "pnpm -r --if-present run test",
     "test:kit": "pnpm --filter @dsh-workbay/kit run test",
     "test:gitcraft": "pnpm --filter dsh-gitcraft run test",
@@ -22,7 +22,8 @@
     "profile:snippet": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/print-profile-snippet.ps1",
     "smoke:e2e": "node scripts/smoke-e2e.mjs",
     "install:profile:on-exit": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-on-exit.ps1",
-    "verify:profile": "node scripts/verify-profile.mjs"
+    "verify:profile": "node scripts/verify-profile.mjs",
+    "build:suite": "node scripts/build-suite.mjs"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.11.1",

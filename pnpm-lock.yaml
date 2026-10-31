@@ -100,26 +100,7 @@ importers:
 
   packages/kit: {}
 
-  packages/suite:
-    dependencies:
-      '@dsh-workbay/kit':
-        specifier: file:../kit
-        version: link:../kit
-      dsh-downloader:
-        specifier: file:../downloader
-        version: link:../downloader
-      dsh-gitcraft:
-        specifier: file:../gitcraft
-        version: link:../gitcraft
-      dsh-workbay-dock:
-        specifier: file:../dock
-        version: link:../dock
-      dsh-workbay-files:
-        specifier: file:../files
-        version: link:../files
-      dsh-workbay-terminal:
-        specifier: file:../terminal
-        version: link:../terminal
+  packages/suite: {}
 
   packages/terminal:
     dependencies:

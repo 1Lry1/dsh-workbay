@@ -1,61 +1,73 @@
 # dsh-workbay-suite
 
-一键装载整个工作台的**聚合金**（aggregator）。它自己不含代码，只做两件事：
+工作台的**单插件形态**：一个可安装包 = 一个插件条目。
 
-1. `dependencies` 里带上全部 bundle：
+DSH 的插件列表按**已安装包**展示，所以“5 个独立 bundle + 一个聚合金”仍然会出现 5 行
+“未开启”。这个包把 5 个 bundle **物理收进来**：
 
-   ```json
-   "dsh-workbay-dock": "file:../dock",
-   "dsh-workbay-files": "file:../files",
-   "dsh-workbay-terminal": "file:../terminal",
-   "dsh-gitcraft": "file:../gitcraft",
-   "dsh-downloader": "file:../downloader",
-   "@dsh-workbay/kit": "file:../kit"
-   ```
+```
+packages/suite/
+├─ cordis.patch.yml      生成的：只插入 1 行 loader
+├─ lib/index.js          生成的：一个 apply() 依次挂载 5 个宿主半侧
+├─ client.js             生成的：5 个 client 半侧拼接成 1 个 ModuleLoader bundle
+├─ vendor/
+│  ├─ dock/              原 packages/dock 的拷贝（src + package.json）
+│  ├─ files/             … + lib/chunks/editor.js
+│  ├─ terminal/          … + lib/chunks/xterm.js + helper/WorkbayPty.exe
+│  ├─ gitcraft/
+│  ├─ downloader/        … + helper/AbSerialHost.exe + ipc-helper/DownloaderIpcBridge.exe
+│  └─ kit/               宿主辅助库（被其它 5 个 import）
+└─ tests/build.test.mjs  验证生成物
+```
 
-2. 用自己的 [cordis.patch.yml](cordis.patch.yml) 一次插入五行 loader
-   （dock / files / terminal / gitcraft / downloader，含默认 config）。
+生成物是 **gitignored** 的，由 `pnpm run build` 产出（`scripts/build-suite.mjs`）。
 
-## 为什么用它
+## 为什么可以合并
 
-DSH 的插件列表按 **bundle** 展示。分别安装时列表里会看到 5 个条目；用聚合金后
-**列表里只有一个 `dsh-workbay-suite`**，工作台内部仍然是 5 个独立 bundle（故障域、
-发布节奏、依赖范围都不同，见根 README 的架构说明）。
+- 宿主：每个包的 `apply(ctx, config)` 是普通函数，聚合金在一个 ctx 上依次调用它们即可；
+  每个包仍保留自己的路由前缀、自己的失败域。
+- 客户端：`window.__ModuleLoader__.load({ id, factory })` 是**队列** API，一个脚本里可以
+  注册多个模块；拼接时用 IIFE 隔离各自作用域。
+- 路径：files/terminal 用 `import.meta.url` 找自己的 `lib/chunks` / `helper`，downloader 用
+  同样方式找 `helper` —— vendor 保留了包内目录结构，所以这些相对路径继续成立；
+  `@dsh-workbay/kit` 的 import 在拷贝时改写成相对路径。
 
-## 安装（二选一，不要都做）
+## 安装（推荐）
 
 ```jsonc
-// A. 聚合金（推荐，插件列表只显示一个）
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
     "dsh-workbay-suite"
   ] } },
   "dependencies": {
-    "dsh-workbay-suite": "file:<repo>/packages/suite",
-    // 下面这些是 suite 的 file: 依赖，pnpm 会按它自己的 package.json 解析；
-    // 显式写出来可以让 profile 的 node_modules 一定包含它们。
-    "dsh-workbay-dock": "file:<repo>/packages/dock",
-    "dsh-workbay-files": "file:<repo>/packages/files",
-    "dsh-workbay-terminal": "file:<repo>/packages/terminal",
-    "dsh-gitcraft": "file:<repo>/packages/gitcraft",
-    "dsh-downloader": "file:<repo>/packages/downloader",
-    "@dsh-workbay/kit": "file:<repo>/packages/kit"
+    "dsh-workbay-suite": "file:<repo>/packages/suite"
   }
 }
 ```
 
-```jsonc
-// B. 分别安装（插件列表显示 5 个）
-//    bundles 里写 dsh-workbay-dock / dsh-workbay-files / dsh-workbay-terminal /
-//    dsh-gitcraft / dsh-downloader
+```powershell
+pnpm run build              # 生成 vendor/ + client.js + lib/index.js + cordis.patch.yml
+pnpm install                # 或 dsh plugin --profile desktop add file:.../packages/suite
+pnpm run verify:profile     # 校验装进去的副本完整、且没有多余 workbay 包
 ```
 
-**不要同时列 suite 和其中任何一个**：两边都会插入同一条 loader 行，前缀路由注册两次，
-DSH 会以 `duplicate prefix route` 拒绝启动整棵插件树。
+装完重启 DSH：插件列表里只有 **一个** `dsh-workbay-suite`，工作台四个页面照常。
 
-## 状态
+> 不要在同一个 profile 里同时列聚合金和任何单独 bundle：同一条 loader 行会插两次，
+> 前缀路由重复注册，整棵插件树起不来。`verify:profile` 会拦住这种配置。
 
-五行 insert 是 cordis patch 的正常用法（patch 本来就是数组）。安装完成后
-**需要重启 DSH**；插件列表里应只剩一个 `dsh-workbay-suite`，工作台页面照常出现。
-如果启动异常，把 profile 的 `package.json` 换成安装前的备份即可回退。
+## 开发时仍可分开装
+
+源码仍是 5 个独立包（`packages/dock|files|terminal|gitcraft|downloader`），跑各自测试、
+单独调试时用“分别安装”即可；聚合金只是发布形态。改完源码后 `pnpm run build`
+重新生成即可。
+
+## 测试
+
+```powershell
+pnpm --filter dsh-workbay-suite test
+```
+
+4 个用例：生成物齐全（含 helper 与 chunk）、patch 只有一行、client 注册了 5 个模块且 id
+唯一、宿主 apply 在假 ctx 上把每个包的路由前缀各注册一次。

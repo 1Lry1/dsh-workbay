@@ -110,7 +110,29 @@ Update later with `pnpm run update` (see below). If `dsh plugin add` one-liners 
 
 Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
 
-**Option A — five independent bundles (the plugin list shows five)**: in `package.json`:
+**Option A — one plugin (recommended: the plugin list shows a single entry)**: install
+`dsh-workbay-suite`, which physically vendors the five bundles (`vendor/` + generated
+host/client).
+
+```jsonc
+{
+  "dsh": { "profile": { "bundles": [
+    "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
+    "dsh-workbay-suite"
+  ] } },
+  "dependencies": {
+    "dsh-workbay-suite": "file:<repo>/packages/suite"
+  }
+}
+```
+
+```powershell
+pnpm run build          # chunks + suite vendor/client/patch (gitignored)
+pnpm install            # or: dsh plugin --profile desktop add file:<repo>/packages/suite
+pnpm run verify:profile # prove the installed copy is complete and has no extra workbay packages
+```
+
+**Option B — five independent bundles (development: the plugin list shows five)**: in `package.json`:
 
 ```jsonc
 {
@@ -122,19 +144,15 @@ Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `
     "dsh-workbay-dock":     "file:<repo>/packages/dock",
     "dsh-workbay-files":    "file:<repo>/packages/files",
     "dsh-workbay-terminal": "file:<repo>/packages/terminal",
-    "dsh-gitcraft":       "file:<repo>/packages/gitcraft",
-    "dsh-downloader":     "file:<repo>/packages/downloader",
-    "@dsh-workbay/kit": "file:<repo>/packages/kit"
+    "dsh-gitcraft":         "file:<repo>/packages/gitcraft",
+    "dsh-downloader":       "file:<repo>/packages/downloader",
+    "@dsh-workbay/kit":     "file:<repo>/packages/kit"
   }
 }
 ```
 
-```powershell
-pnpm run build          # generate the files page CodeMirror chunk (lib/chunks, gitignored)
-pnpm install            # or: dsh plugin --profile desktop add file:...
-```
-
-**Option B — the suite aggregator (recommended: one entry in the plugin list)**: add only `dsh-workbay-suite` to `bundles` and let its patch do the rest; `dependencies` still keeps the five packages (they are suite's `file:` deps). See [packages/suite/README.md](packages/suite/README.md).
+> Never mix the two layouts: a loader row inserted twice registers the prefix routes
+> twice and the whole plugin tree fails to start. `pnpm run verify:profile` refuses it.
 
 After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
 

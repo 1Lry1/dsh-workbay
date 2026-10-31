@@ -110,7 +110,28 @@ pnpm install
 
 profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`）。
 
-**方式 A —— 五个独立 bundle（插件列表显示 5 个）**：`package.json` 里
+**方式 A —— 单插件（推荐：插件列表只显示一个）**：装 `dsh-workbay-suite`，
+它是把 5 个 bundle 物理收进来的单包（`vendor/` + 合并的 host/client）。
+
+```jsonc
+{
+  "dsh": { "profile": { "bundles": [
+    "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
+    "dsh-workbay-suite"
+  ] } },
+  "dependencies": {
+    "dsh-workbay-suite": "file:<repo>/packages/suite"
+  }
+}
+```
+
+```powershell
+pnpm run build          # 生成 chunk + suite 的 vendor/client/patch（gitignored）
+pnpm install            # 或 dsh plugin --profile desktop add file:<repo>/packages/suite
+pnpm run verify:profile # 校验安装副本完整、且没有多余的 workbay 包
+```
+
+**方式 B —— 五个独立 bundle（开发用，插件列表显示 5 个）**：`package.json` 里
 
 ```jsonc
 {
@@ -130,12 +151,8 @@ profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`
 }
 ```
 
-```powershell
-pnpm run build          # 生成 files 页的 CodeMirror chunk（lib/chunks，gitignored）
-pnpm install            # 或 dsh plugin --profile desktop add file:...
-```
-
-**方式 B —— 聚合金（推荐：插件列表只显示一个）**：bundles 里只加 `dsh-workbay-suite`，它一次插入五个 loader 行；dependencies 里仍要保留五个包（suite 的 `file:` 依赖）。见 [packages/suite/README.md](packages/suite/README.md)。见 [packages/suite/README.md](packages/suite/README.md)。
+> 两种方式**不要混用**：同一条 loader 行插两次会让前缀路由重复注册，整棵插件树起不来。
+> `pnpm run verify:profile` 会拦住这种配置。
 
 装完**重启 DSH**，左侧栏出现「工作台」。
 

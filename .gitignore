@@ -22,3 +22,9 @@ Thumbs.db
 # generated lazy chunks (scripts/build-chunks.mjs); rebuilt by `pnpm run build`
 packages/*/lib/chunks/
 
+
+# generated one-package workbench (scripts/build-suite.mjs)
+packages/suite/vendor/
+packages/suite/client.js
+packages/suite/lib/
+packages/suite/cordis.patch.yml
