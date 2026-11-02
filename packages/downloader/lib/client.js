@@ -17,101 +17,6 @@ window.__ModuleLoader__.load({
 
     const API = '/downloader'
 
-    /* apply(ctx) is the only place this plugin receives the DSH client context
-       (the page component only gets `t`). Keep it for future service calls. */
-    let CLIENT_CTX = null
-
-    /**
-     * The logs live in the host's in-memory ring buffer (up to 50 000 entries);
-     * nothing is written to disk. This formats a /log/recent snapshot into text
-     * that names that cache and the `downloader_logs` tool, so the model knows
-     * where to fetch more (and how to filter) instead of guessing.
-     */
-    function formatLogsForChat(payload, location) {
-      const logs = payload && Array.isArray(payload.logs) ? payload.logs : []
-      const total = payload && typeof payload.total === 'number' ? payload.total : logs.length
-      const header = '[Downloader 日志] 缓存位置：宿主内存环形缓冲（最多 50000 条，不落盘）。' +
-        '需要更多或按来源/关键词筛选时，用工具 downloader_logs(tail/src/q/since)，' +
-        '或 HTTP GET /downloader/log/recent?tail=N。' +
-        (location && typeof location.pointer === 'string' ? '地址清单：' + location.pointer + '（工具/路由/总数）。' : '') +
-        '共 ' + total + ' 条，以下为最近 ' + logs.length + ' 条：'
-      const lines = logs.map((entry) => {
-        const d = new Date((entry && entry.t) || Date.now())
-        const p2 = (n) => String(n).padStart(2, '0')
-        const time = p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds())
-        return time + ' [' + ((entry && entry.src) || 'S') + '] ' + String((entry && entry.text) || '')
-      })
-      let text = header + '\n' + lines.join('\n')
-      if (text.length > 60000) text = text.slice(0, 59000) + '\n…（已截断，可用 downloader_logs 继续取）'
-      return text
-    }
-
-    /** The chat composer (Lexical contenteditable), never this plugin's own page. */
-    function findChatComposer() {
-      if (typeof document === 'undefined' || document === null) return null
-      const candidates = []
-      const nodes = document.querySelectorAll('[contenteditable="true"]')
-      for (let i = 0; i < nodes.length; i += 1) {
-        const el = nodes[i]
-        if (el.closest !== undefined && el.closest('.abw') !== null) continue
-        const rect = el.getBoundingClientRect()
-        if (rect.width < 40 || rect.height < 10) continue
-        candidates.push(el)
-      }
-      const lexical = candidates.find((el) => el.getAttribute('data-lexical-editor') === 'true')
-      return lexical || (candidates.length > 0 ? candidates[candidates.length - 1] : null)
-    }
-
-    /**
-     * Append text to the chat input. Returns 'inserted' | 'no-composer' | 'failed'.
-     * The host composer is a Lexical contenteditable; a real ClipboardEvent with
-     * a DataTransfer is what its paste handler understands, with execCommand as
-     * the older fallback.
-     */
-    function insertTextIntoChat(text) {
-      const el = findChatComposer()
-      if (el === null) return 'no-composer'
-      const before = String(el.textContent || '')
-      try { el.focus() } catch { /* not focusable */ }
-      try {
-        const selection = window.getSelection()
-        if (selection !== null) {
-          const range = document.createRange()
-          range.selectNodeContents(el)
-          range.collapse(false)
-          selection.removeAllRanges()
-          selection.addRange(range)
-        }
-      } catch { /* selection unavailable */ }
-      try {
-        const transfer = new DataTransfer()
-        transfer.setData('text/plain', text)
-        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }))
-      } catch { /* ClipboardEvent not constructible */ }
-      if (String(el.textContent || '') !== before) return 'inserted'
-      try { document.execCommand('insertText', false, text) } catch { /* deprecated path */ }
-      return String(el.textContent || '') !== before ? 'inserted' : 'failed'
-    }
-
-    /** Clipboard fallback when no composer is reachable. */
-    async function copyText(text) {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        try { await navigator.clipboard.writeText(text); return true } catch { /* fall through */ }
-      }
-      try {
-        if (typeof document === 'undefined') return false
-        const area = document.createElement('textarea')
-        area.value = text
-        area.style.position = 'fixed'
-        area.style.left = '-9999px'
-        document.body.appendChild(area)
-        area.select()
-        const ok = document.execCommand('copy')
-        area.remove()
-        return ok
-      } catch { return false }
-    }
-
     const api = {
       get: async (p) => {
         try {
@@ -265,25 +170,6 @@ window.__ModuleLoader__.load({
       const s = st.serial || {}
       const pct = Math.min(100, Math.round((f.progress || 0) / 100))
       const busy = !!f.busy
-
-      /** Put the current log cache into the conversation input (AI reads it). */
-      const addLogsToChat = async () => {
-        setNotice('正在读取日志…')
-        const data = await api.get('/log/recent?tail=300')
-        if (data && data.error) { setNotice('读取日志失败：' + data.error); return }
-        const logs = data && Array.isArray(data.logs) ? data.logs : []
-        if (logs.length === 0) { setNotice('当前没有日志可加入对话'); return }
-        const location = await api.get('/log/location')
-        const text = formatLogsForChat(data, location && !location.error ? location : null)
-        const result = insertTextIntoChat(text)
-        if (result === 'inserted') { setNotice('已把 ' + logs.length + ' 条日志加入对话输入框'); return }
-        const copied = await copyText(text)
-        if (result === 'no-composer') {
-          setNotice(copied ? '未找到对话输入框，已复制日志（Ctrl+V 粘贴到对话）' : '未找到对话输入框，且复制失败')
-        } else {
-          setNotice(copied ? '插入失败，已复制日志（Ctrl+V 粘贴到对话）' : '插入与复制都失败，请查看控制台')
-        }
-      }
 
       const loadPorts = async () => {
         const r = await api.get('/serial/list')
@@ -491,11 +377,7 @@ window.__ModuleLoader__.load({
           h('input', { type: 'checkbox', checked: follow, onChange: e => setFollow(e.target.checked) }),
           '跟随'
         ),
-        h('button', {
-          className: 'abw-btn', 'data-v': 'ghost',
-          title: '把当前日志缓存加入对话输入框（包含缓存位置与 downloader_logs 用法）',
-          onClick: addLogsToChat,
-        }, '加入对话'),
+
         h('button', {
           className: 'abw-btn', 'data-v': 'ghost',
           onClick: () => api.post('/log/clear', {}),
@@ -584,8 +466,7 @@ window.__ModuleLoader__.load({
       // 不 inject betterSidebar：本插件与它无关
       inject: [],
       apply(ctx) {
-        /* Keep the client context: the page component cannot reach services. */
-        CLIENT_CTX = ctx
+
         if (registerWithDock(ctx)) return
         // dock 可能还没加载：短轮询等待，超时后安静放弃（没有 dock 就没有可渲染的位置）
         var attempts = 0
@@ -595,8 +476,7 @@ window.__ModuleLoader__.load({
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      /* Pure helpers for tests; not part of the plugin surface. */
-      __test: { formatLogsForChat, insertTextIntoChat },
+
     }
   },
 })
