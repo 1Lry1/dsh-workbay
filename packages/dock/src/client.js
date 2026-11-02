@@ -554,12 +554,14 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!isOpen) return undefined
         const onKey = (event) => {
-          if (event.key === 'Escape') {
-            const target = event.target
-            if (target !== null && target !== undefined && typeof target.tagName === 'string'
-              && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
-            setOpen(false)
-          }
+          if (event.key !== 'Escape' || event.defaultPrevented) return
+          /* A page's own modal owns Esc while it is open (e.g. the Git diff);
+             otherwise one press would close the diff AND the workbench. */
+          if (document.querySelector('[aria-modal="true"]') !== null) return
+          const target = event.target
+          if (target !== null && target !== undefined && typeof target.tagName === 'string'
+            && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+          setOpen(false)
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)

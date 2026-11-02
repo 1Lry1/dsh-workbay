@@ -819,10 +819,16 @@ window.__ModuleLoader__.load({
       const { title, children, onClose, footer, t, wide } = props
       useEffect(() => {
         const onKey = (event) => {
-          if (event.key === 'Escape') onClose()
+          if (event.key !== 'Escape') return
+          /* Capture + stopPropagation: the dock also listens for Esc on window
+             (registered earlier). Without this one Esc closed both the diff and
+             the whole workbench. */
+          event.stopPropagation()
+          event.preventDefault()
+          onClose()
         }
-        window.addEventListener('keydown', onKey)
-        return () => window.removeEventListener('keydown', onKey)
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
       }, [onClose])
       return E('div', { className: 'gwc-modalBackdrop', role: 'presentation', onMouseDown: (event) => {
         if (event.target === event.currentTarget) onClose()

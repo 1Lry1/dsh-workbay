@@ -331,6 +331,12 @@ test('clicking a file in a commit opens its diff in the history page', () => {
   assert.match(source, /const diffIsHistory = selected === null && historyFile !== null/)
   assert.equal(source.includes("className: 'gwc-historyDiff'"), false)
 })
+test('the diff modal owns Escape so the workbench does not close with it', () => {
+  /* source is the bundle text read at the top of this file. */
+  assert.match(source, /window\.addEventListener\('keydown', onKey, true\)/)
+  assert.match(source, /event\.stopPropagation\(\)/)
+  assert.match(source, /if \(event\.key !== 'Escape'\) return/)
+})
 test('a global surface can snapshot from repoRoot alone (no cwd, no sessionId)', () => {
   /*
    * The docked workbench has neither a cwd nor a sessionId — only the repository
