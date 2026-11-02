@@ -78,6 +78,18 @@ test('/log/file reports the path and occupancy shown in the page', async () => {
   assert.ok(fs.statSync(logFile).size > 0)
 })
 
+test('/log/history pages older lines out of the file', async () => {
+  const all = await (await fetch(base + '/downloader/log/history?limit=10')).json()
+  assert.equal(all.logs.length, 3)
+  assert.equal(all.hasMore, false)
+  const beforeSecond = await (await fetch(base + '/downloader/log/history?before=1700000001500&limit=10')).json()
+  assert.equal(beforeSecond.logs.length, 2)
+  assert.equal(beforeSecond.logs[0].text, '已连接 Downloader')
+  assert.equal(beforeSecond.logs[1].text, 'board boot ok')
+  assert.equal(beforeSecond.hasMore, false)
+  const none = await (await fetch(base + '/downloader/log/history?before=1&limit=10')).json()
+  assert.equal(none.logs.length, 0)
+})
 test('clearing the logs truncates the local file too', async () => {
   const cleared = await (await fetch(base + '/downloader/log/clear', { method: 'POST' })).json()
   assert.equal(cleared.ok, true)

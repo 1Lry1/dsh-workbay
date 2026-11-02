@@ -49,14 +49,14 @@ test('the client registers exactly one module and exports apply(ctx)', () => {
   assert.deepEqual(module.inject, [])
 })
 
-test('both single and batched log events feed the same bounded buffer', () => {
+test('single and batched log events feed one buffer rendered through a virtual window', () => {
   assert.match(source, /e\.ev === 'log'/)
   assert.match(source, /e\.ev === 'logs'/)
-  assert.match(source, /CLIENT_MAX_LOGS = 8000/)
-  assert.match(source, /RENDER_LIMIT = 800/)
-  // windowed rendering: the DOM maps `visible`, never the whole buffer
-  assert.match(source, /visible\.map/)
-  assert.doesNotMatch(source, /shown\.map\(/)
+  assert.match(source, /CLIENT_MAX_LOGS = 300000/)
+  // the log view is virtualized by fixed row height; the 800-row cap is gone
+  assert.match(source, /ROW_HEIGHT = 18/)
+  assert.match(source, /const range = virtualRange\(/)
+  assert.doesNotMatch(source, /RENDER_LIMIT/)
 })
 
 test('appendLogs appends without mutating and trims to the cap', () => {
@@ -78,25 +78,35 @@ test('appendLogs handles a batch larger than the cap', () => {
   assert.deepEqual(next.map((x) => x.t), [6, 7, 8, 9])
 })
 
-test('windowLogs renders only the tail and skips the copy otherwise', () => {
+test('virtualRange renders a bounded slice with spacer heights', () => {
   const { module } = loadClient()
-  const { windowLogs } = module.__test
-  const list = Array.from({ length: 5000 }, (_, i) => i)
-  assert.deepEqual(windowLogs(list, 800).slice(0, 3), [4200, 4201, 4202])
-  assert.equal(windowLogs(list, 800).length, 800)
-  assert.equal(windowLogs(list, 5000), list, 'no copy when under the limit')
+  const { virtualRange } = module.__test
+  const first = virtualRange(0, 360, 10000, 18, 20)
+  assert.equal(first.start, 0)
+  assert.ok(first.end >= 40 && first.end < 100, 'viewport + overscan, not the whole list')
+  assert.equal(first.topPad, 0)
+  assert.equal(first.bottomPad, (10000 - first.end) * 18)
+  const middle = virtualRange(9000, 360, 10000, 18, 20)
+  assert.ok(middle.start > 400 && middle.start <= 480)
+  assert.equal(middle.topPad, middle.start * 18)
+  const end = virtualRange(1e9, 360, 100, 18, 20)
+  assert.equal(end.start, 100)
+  assert.equal(end.end, 100)
+  assert.equal(end.bottomPad, 0)
+  const empty = virtualRange(0, 0, 0, 18, 20)
+  assert.deepEqual([empty.start, empty.end, empty.topPad, empty.bottomPad], [0, 0, 0, 0])
 })
 
 test('20k lines in 60ms-style batches stay fast (no per-line O(n) copy)', () => {
   const { module } = loadClient()
   const { appendLogs } = module.__test
-  const CLIENT_MAX_LOGS = 8000
+  const cap = 20000
   const batch = Array.from({ length: 50 }, (_, i) => ({ t: i, src: 'B', text: 'line' }))
   let logs = []
   const started = Date.now()
-  for (let i = 0; i < 400; i += 1) logs = appendLogs(logs, batch, CLIENT_MAX_LOGS)
+  for (let i = 0; i < 400; i += 1) logs = appendLogs(logs, batch, cap)
   const elapsed = Date.now() - started
-  assert.equal(logs.length, CLIENT_MAX_LOGS)
+  assert.equal(logs.length, cap)
   assert.ok(elapsed < 1500, `400 batches took ${elapsed}ms`)
 })
 
@@ -110,6 +120,11 @@ test('formatBytes renders the local log-file occupancy shown in the page', () =>
   assert.equal(formatBytes(undefined), '0 B')
 })
 
+test('the page pages older logs in from the host JSONL on scroll', () => {
+  assert.match(source, /\/log\/history\?before=/)
+  assert.match(source, /上滚加载更早/)
+  assert.match(source, /node\.scrollTop = beforeTop \+ \(node\.scrollHeight - beforeHeight\)/)
+})
 test('the page shows the local log file size and resets it on clear', () => {
   assert.match(source, /本地 ' \+ formatBytes\(st\.logFile\.size\)/)
   assert.match(source, /const logFile = e\.file \? \{ \.\.\.\(x\.logFile \|\| \{\}\), \.\.\.e\.file \}/)

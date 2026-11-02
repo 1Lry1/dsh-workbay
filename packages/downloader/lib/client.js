@@ -18,11 +18,12 @@ window.__ModuleLoader__.load({
     const API = '/downloader'
 
     /* ★ 满了之后卡不卡，取决于这两条：
-       1) 前端只保留最近 8000 条（宿主仍保留 50000 供 AI 翻页/检索）；
-       2) 一次只渲染最近 800 行，而不是 2 万行 DOM。
+       1) 前端保留最多 30 万条（宿主 5 万供 AI 检索；本地 JSONL 才是全量）；
+       2) 只渲染可视区的行（固定行高 + 上下占位），DOM 数量与总条数无关。
        再配合宿主的 60ms 批量推送，每批只做一次 setState。 */
-    const CLIENT_MAX_LOGS = 8000
-    const RENDER_LIMIT = 800
+    const CLIENT_MAX_LOGS = 300000
+    const ROW_HEIGHT = 18
+    const OVERSCAN = 20
 
     /** 批量追加 + 环形裁剪；返回新数组，不修改入参。 */
     function appendLogs(current, items, max) {
@@ -33,10 +34,14 @@ window.__ModuleLoader__.load({
       return base.concat(items)
     }
 
-    /** 只渲染尾部 N 行（日志是只追加的，窗口化不影响“跟随最新”）。 */
-    function windowLogs(list, limit) {
-      if (!Array.isArray(list) || list.length <= limit) return list
-      return list.slice(-limit)
+    /** 可视区计算：固定行高下返回要渲染的切片与上下占位高度。 */
+    function virtualRange(scrollTop, viewportHeight, count, rowHeight, overscan) {
+      const total = Math.max(0, Number(count) || 0)
+      const top = Math.max(0, Number(scrollTop) || 0)
+      const start = Math.max(0, Math.min(total, Math.floor(top / rowHeight) - overscan))
+      const rows = Math.ceil((Number(viewportHeight) || 0) / rowHeight) + overscan * 2
+      const end = Math.min(total, start + rows)
+      return { start, end, topPad: start * rowHeight, bottomPad: (total - end) * rowHeight }
     }
 
     /** 本地日志文件占用（页面显示用）。 */
@@ -193,7 +198,7 @@ window.__ModuleLoader__.load({
 
     function FlashPanel() {
       injectCss()
-      const [st] = useAbw()
+      const [st, setSt] = useAbw()
       const [ports, setPorts] = React.useState([])
       const [selPort, setSelPort] = React.useState('')
       const [baud, setBaud] = React.useState(1500000)
@@ -201,6 +206,9 @@ window.__ModuleLoader__.load({
       const [follow, setFollow] = React.useState(true)
       const [input, setInput] = React.useState('')
       const logRef = React.useRef(null)
+      const [scrollTop, setScrollTop] = React.useState(0)
+      const [viewH, setViewH] = React.useState(300)
+      const [older, setOlder] = React.useState({ loading: false, hasMore: true })
       // 内联提示（替代 alert）：不弹窗，在界面上就地显示几秒
       const [notice, setNotice] = React.useState('')
       // 提示自动消失（3 秒），不留残在界面上
@@ -226,8 +234,55 @@ window.__ModuleLoader__.load({
       }
       React.useEffect(() => { loadPorts() }, [])
 
+      React.useEffect(() => {
+        const el = logRef.current
+        if (!el) return undefined
+        const measure = () => setViewH(el.clientHeight || 300)
+        measure()
+        if (typeof ResizeObserver === 'function') {
+          const observer = new ResizeObserver(measure)
+          observer.observe(el)
+          return () => observer.disconnect()
+        }
+        window.addEventListener('resize', measure)
+        return () => window.removeEventListener('resize', measure)
+      }, [])
+
+      /* 向上滚动时从本地 JSONL 继续加载更早的日志（内存只是工作集）。 */
+      const loadOlder = React.useCallback(async () => {
+        if (older.loading || !older.hasMore || st.logs.length === 0) return
+        setOlder(current => ({ ...current, loading: true }))
+        const first = st.logs[0]
+        const before = first !== undefined && first !== null && typeof first.t === 'number' ? first.t : Date.now()
+        try {
+          const data = await api.get('/log/history?before=' + encodeURIComponent(before) + '&limit=3000')
+          if (!data || data.error || !Array.isArray(data.logs)) {
+            setOlder(current => ({ ...current, loading: false }))
+            return
+          }
+          if (data.logs.length === 0) {
+            setOlder({ loading: false, hasMore: false })
+            return
+          }
+          const el = logRef.current
+          const beforeHeight = el ? el.scrollHeight : 0
+          const beforeTop = el ? el.scrollTop : 0
+          setSt(current => ({ ...current, logs: data.logs.concat(current.logs) }))
+          setOlder({ loading: false, hasMore: data.hasMore === true })
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+              const node = logRef.current
+              if (!node) return
+              node.scrollTop = beforeTop + (node.scrollHeight - beforeHeight)
+            })
+          }
+        } catch {
+          setOlder(current => ({ ...current, loading: false }))
+        }
+      }, [older.loading, older.hasMore, st.logs, setSt])
+
       const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
-      const visible = windowLogs(shown, RENDER_LIMIT)
+      const range = virtualRange(scrollTop, viewH, shown.length, ROW_HEIGHT, OVERSCAN)
       React.useEffect(() => {
         if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
       }, [shown.length, follow])
@@ -405,7 +460,7 @@ window.__ModuleLoader__.load({
 
       // ---- 下半：日志 ----
       const logBar = h('div', { className: 'abw-lbar' },
-                h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (shown.length > RENDER_LIMIT ? '（显示最近 ' + RENDER_LIMIT + ' 条）' : '')),
+                h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (older.hasMore ? ' · 上滚加载更早' : '') + (older.loading ? ' · 加载中…' : '')),
         st.logFile && st.logFile.size > 0
           ? h('span', {
             className: 'abw-dim',
@@ -445,11 +500,18 @@ window.__ModuleLoader__.load({
       const logBody = shown.length === 0
         ? h('div', { className: 'abw-empty' },
           s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里')
-        : visible.map((l, i) => h('div', { className: 'abw-ll', key: (l.t || 0) + '-' + i },
+        : [
+          h('div', { key: 'pad-top', style: { height: range.topPad } }),
+          ...shown.slice(range.start, range.end).map((l, i) => h('div', {
+            className: 'abw-ll', key: (l.t || 0) + '-' + (range.start + i),
+            style: { height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px' },
+          },
           h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
           h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
           h('span', { className: 'abw-lt' }, l.text)
-        ))
+          )),
+          h('div', { key: 'pad-bottom', style: { height: range.bottomPad } }),
+        ]
 
       const logBox = h('div', {
         className: 'abw-log', ref: logRef,
@@ -457,6 +519,8 @@ window.__ModuleLoader__.load({
           const el = e.currentTarget
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
           if (atBottom !== follow) setFollow(atBottom)
+          setScrollTop(el.scrollTop)
+          if (el.scrollTop < ROW_HEIGHT * 10 && older.hasMore && !older.loading) void loadOlder()
         },
       }, logBody)
 
@@ -528,7 +592,7 @@ window.__ModuleLoader__.load({
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      __test: { appendLogs, windowLogs, formatBytes },
+      __test: { appendLogs, virtualRange, formatBytes },
     }
   },
 })

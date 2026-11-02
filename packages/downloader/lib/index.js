@@ -1610,6 +1610,23 @@ async function handleHttp(req, res, state, api) {
       return json(res, 200, logFileInfo(state))
     }
 
+    // 更早的历史：页面向上滚动时从本地 JSONL 继续加载（内存只留工作集，文件是全量）
+    if (p === '/log/history' && req.method === 'GET') {
+      const before = Number(url.searchParams.get('before') || 0) || (Date.now() + 1)
+      const limit = Math.max(1, Math.min(5000, Number(url.searchParams.get('limit') || 2000)))
+      const size = logFileSize()
+      let logs = []
+      let hasMore = false
+      if (size > 0) {
+        const tail = readLogTail(LOG_FILE, LOG_FILE_LOAD_BYTES)
+        const all = parseLogLines(tail.text).filter((item) => item.t < before)
+        const slice = all.slice(-limit)
+        logs = slice
+        hasMore = all.length > slice.length || (tail.truncated && slice.length > 0)
+      }
+      return json(res, 200, { logs, hasMore, total: state.logs.length, fileSize: size })
+    }
+
     // ★ 日志地址清单：AI 第一步先读这里定位，再按需取内容。
     if (p === '/log/location' && req.method === 'GET') {
       refreshLocation(state)
@@ -1960,7 +1977,7 @@ function publicState(state) {
     serial: { ...state.serial, resumeAfterFlash: state.serial.resumeAfterFlash || null },
     flash: state.flash,
     watch: { on: state.watch.on, path: state.watch.path },
-    logs: state.logs.slice(-2000),
+    logs: state.logs.slice(-20000),
     logFile: logFileInfo(state),
   }
 }
