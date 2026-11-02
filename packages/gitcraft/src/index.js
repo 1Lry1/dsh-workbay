@@ -869,12 +869,20 @@ function operationOf(gitDir) {
  */
 async function snapshotOf(root) {
   const [statusRaw, stagedNumstat, worktreeNumstat] = await Promise.all([
+    /* Builds create thousands of untracked files; --untracked-files=all walks
+       every one and rename detection hashes modified files, which is what made
+       the panel sit on "正在读取仓库…" while a build ran. 
+ormal collapses an
+       untracked directory into one row, --no-renames skips the similarity
+       hashing; both stay well-defined for the UI (a directory row just has no
+       synthetic diff). */
     runGit(root, [
-      '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '-z',
-      '--untracked-files=all', '--ignore-submodules=dirty',
+      '--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2',
+      '--branch', '-z', '--untracked-files=normal', '--no-renames',
+      '--ignore-submodules=dirty',
     ], { timeoutMs: 30_000 }),
-    runGit(root, ['diff', '--cached', '--numstat', '-z'], { timeoutMs: 30_000 }),
-    runGit(root, ['diff', '--numstat', '-z'], { timeoutMs: 30_000 }),
+    runGit(root, ['diff', '--cached', '--numstat', '-z', '--no-renames'], { timeoutMs: 30_000 }),
+    runGit(root, ['diff', '--numstat', '-z', '--no-renames'], { timeoutMs: 30_000 }),
   ])
   if (statusRaw.code !== 0) {
     throw new PanelError('status-failed', statusRaw.stderr.trim() || 'git status failed', 409)

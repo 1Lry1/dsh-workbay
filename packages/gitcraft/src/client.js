@@ -102,6 +102,7 @@ window.__ModuleLoader__.load({
       'status.detached': '分离 HEAD',
       'status.clean': '工作区干净',
       'status.loading': '正在读取仓库…',
+      'status.loadingSlow': '仍在读取：构建进行中或仓库较大时会更慢，可稍后重试',
       'changes.staged': '已暂存 ({n})',
       'changes.unstaged': '更改 ({n})',
       'changes.untracked': '未跟踪 ({n})',
@@ -286,6 +287,7 @@ window.__ModuleLoader__.load({
       'status.detached': 'Detached HEAD',
       'status.clean': 'Working tree clean',
       'status.loading': 'Reading repository…',
+      'status.loadingSlow': 'Still reading - a running build or a large repository slows this down; try again later',
       'changes.staged': 'Staged ({n})',
       'changes.unstaged': 'Changes ({n})',
       'changes.untracked': 'Untracked ({n})',
@@ -1290,6 +1292,7 @@ window.__ModuleLoader__.load({
     function useSnapshot(scope, t, chosenRepo) {
       const [state, setState] = useState({ loading: true, snapshot: null, error: null })
       const [revision, setRevision] = useState(0)
+      const [slow, setSlow] = useState(false)
       const refresh = useCallback(() => setRevision((value) => value + 1), [])
       const cwd = scope === undefined || scope === null ? undefined : scope.cwd
       /* scope.repoRoot is what a session seat passes; the global dock passes
@@ -1317,16 +1320,37 @@ window.__ModuleLoader__.load({
         }
         const controller = new AbortController()
         let cancelled = false
+        let timedOut = false
+        /* Never sit on the spinner forever: after 2 s explain why it may be slow
+           (a build running in the terminal keeps the disk busy), and after 20 s
+           abort with a retryable error instead of hanging. */
+        const slowTimer = setTimeout(() => { if (!cancelled) setSlow(true) }, 2_000)
+        const timeoutTimer = setTimeout(() => { timedOut = true; controller.abort() }, 20_000)
         const payload = hasCwd ? { cwd } : hasSession ? { sessionId } : {}
         if (hasRepo) payload.repoRoot = repoRoot
         call('snapshot', payload, controller.signal)
           .then((snapshot) => {
+            clearTimeout(slowTimer)
+            clearTimeout(timeoutTimer)
             if (cancelled) return
+            setSlow(false)
             setState({ loading: false, snapshot, error: null })
           })
           .catch((error) => {
+            clearTimeout(slowTimer)
+            clearTimeout(timeoutTimer)
             if (cancelled) return
-            if (error instanceof DOMException && error.name === 'AbortError') return
+            if (error instanceof DOMException && error.name === 'AbortError') {
+              if (!timedOut) return
+              setSlow(false)
+              setState((previous) => ({
+                loading: false,
+                snapshot: previous.snapshot,
+                error: new ApiError('timeout', t('error.git-timeout')),
+              }))
+              return
+            }
+            setSlow(false)
             setState((previous) => ({
               loading: false,
               snapshot: previous.snapshot,
@@ -1335,6 +1359,8 @@ window.__ModuleLoader__.load({
           })
         return () => {
           cancelled = true
+          clearTimeout(slowTimer)
+          clearTimeout(timeoutTimer)
           controller.abort()
         }
       }, [cwd, repoRoot, sessionId, revision])
@@ -1342,7 +1368,7 @@ window.__ModuleLoader__.load({
         if (snapshot === null || snapshot === undefined) return
         setState({ loading: false, snapshot, error: null })
       }, [])
-      return { ...state, refresh, apply, t }
+      return { ...state, slow, refresh, apply, t }
     }
 
     /* ============================== panel ============================== */
@@ -2353,7 +2379,14 @@ window.__ModuleLoader__.load({
             E('div', { className: 'gwc-emptyHint' }, t('repo.globalHint')),
             E(TextButton, { primary: true, onClick: () => setPickerOpen(true) }, t('repo.pick')))
         }
-        if (snapshot === null) return E('div', { className: 'gwc-empty' }, t('status.loading'))
+        if (snapshot === null) {
+          return E('div', { className: 'gwc-empty' },
+            t('status.loading'),
+            store.slow
+              ? E('div', { className: 'gwc-emptyHint', style: { fontSize: 11, marginTop: 6, color: 'var(--dsw-fg-3,#888)' } },
+                t('status.loadingSlow'))
+              : null)
+        }
         if (nav === 'changes') {
           /* List and diff scroll INDEPENDENTLY. The diff used to sit after the
              list inside one scroll container, so a 28-file change set pushed it

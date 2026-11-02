@@ -688,7 +688,14 @@ function createService(settings) {
           const payload = buffer.subarray(offset + 5, offset + 5 + length)
           offset += 5 + length
           if (type === 'D') {
-            emitOutput(session, session.outputDecoder.write(payload))
+            if (session.clients.size === 0) {
+              /* Drain only: nobody is watching (page switched away). Skipping
+                 the UTF-8 decode keeps a building terminal from burning the
+                 main process that git / file search share. */
+              session.decoderStale = true
+            } else {
+              emitOutput(session, session.outputDecoder.write(payload))
+            }
           } else if (type === 'X') {
             session.helperExitCode = payload.length >= 4 ? payload.readInt32LE(0) : -1
             /* The helper exits right after `X`; if it lingers, do not keep the
@@ -1224,6 +1231,12 @@ function createService(settings) {
       }, HEARTBEAT_MS),
     }
     if (typeof client.timer.unref === 'function') client.timer.unref()
+    if (session.decoderStale === true) {
+      /* Bytes were skipped while nobody watched: start decoding from a clean
+         state instead of mid-character. */
+      session.outputDecoder = new StringDecoder('utf8')
+      session.decoderStale = false
+    }
     session.clients.add(client)
 
     const cleanup = () => { dropClient(session, client) }
