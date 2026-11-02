@@ -337,11 +337,20 @@ test('chunk source stays browser-only and keeps the DSH contract', () => {
     assert.ok(source.includes(variable), `theme should reference ${variable}`)
   }
 
-  /* Read-only mode uses both facets; line wrapping stays off (horizontal
-   * scroll for code); Ctrl/Cmd+S is bound with preventDefault. */
+  /* Read-only mode uses both facets; long lines soft-wrap to the panel width
+   * (horizontal scrolling hid most of a line in the dock); Ctrl/Cmd+S is bound
+   * with preventDefault. */
   assert.match(source, /EditorState\.readOnly\.of\(true\)/, 'readOnly should set EditorState.readOnly')
   assert.match(source, /EditorView\.editable\.of\(false\)/, 'readOnly should set EditorView.editable(false)')
-  assert.doesNotMatch(source, /EditorView\.lineWrapping/, 'line wrapping must stay off')
+  assert.match(source, /EditorView\.lineWrapping/, 'long lines must soft-wrap to the panel width')
   assert.match(source, /key:\s*'Mod-s'/, 'Ctrl/Cmd+S should be bound')
   assert.match(source, /preventDefault:\s*true/, 'the save binding should prevent the browser default')
+})
+
+test('the editor soft-wraps long lines to the panel width', () => {
+  const source = readFileSync(SOURCE_PATH, 'utf8')
+  assert.match(source, /EditorView\.lineWrapping/)
+  if (existsSync(BUILT_PATH)) {
+    assert.match(readFileSync(BUILT_PATH, 'utf8'), /lineWrapping/)
+  }
 })

@@ -104,6 +104,11 @@ Esc 清空并保留焦点。
   都回来验证一次（发布新构建后客户端立刻拿到新代码）。
 - `lib/chunks/` 不存在时 404（degradation：没有构建 chunk 只是编辑器不可用）。
 
+## 长行显示
+
+查看器/编辑器（CodeMirror）开启 `EditorView.lineWrapping`，长行**按面板宽度自动软换行**
+（左侧行号与 gutter 保持对齐）；JSON/纯文本查看器的 `pre` 也改为 `white-space:pre-wrap`。
+工作台停靠面板较窄，以前长行只能横向滚动，看不到行尾。
 ## 实现说明 / 与契约的边界
 
 - **`read` 的 `encoding`**：文本 → `utf8`；看起来是二进制（前 8 KiB 有 NUL 或控制字符

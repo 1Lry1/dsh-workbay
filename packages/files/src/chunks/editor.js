@@ -522,6 +522,10 @@ export function createEditor(container, options) {
     keymap.of([indentWithTab, ...defaultKeymap, ...searchKeymap, ...historyKeymap]),
     themeConf.of(themeFor(dark)),
     languageConf.of(languageFor(opts.language) || []),
+    /* Soft-wrap long lines to the panel width (viewer and editor alike): the
+       workbench dock is narrow, and horizontal scrolling hid most of a line.
+       CodeMirror keeps line numbers aligned and the gutter fixed. */
+    EditorView.lineWrapping,
     readOnlyConf.of(readOnlyExtensions(!!opts.readOnly)),
     EditorView.contentAttributes.of({
       spellcheck: 'false',

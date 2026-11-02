@@ -3686,7 +3686,7 @@ window.__ModuleLoader__.load({
 .wbf-conflictText{flex:1;min-width:120px}
 .wbf-conflictActions{display:flex;gap:4px;flex:none}
 .wbf-viewer{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto}
-.wbf-pre{margin:0;padding:10px 12px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:12px;line-height:1.55;white-space:pre;overflow:auto;tab-size:2}
+.wbf-pre{margin:0;padding:10px 12px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;tab-size:2}
 .wbf-editor{display:flex;flex-direction:column;flex:1;min-height:0}
 .wbf-editorHost{flex:1;min-height:0;overflow:hidden}
 .wbf-editorFallback.is-hidden{display:none}
