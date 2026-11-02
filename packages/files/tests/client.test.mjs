@@ -1249,6 +1249,12 @@ test('loadChunk calls a pre-registered chunk factory with the host React', async
   }
 })
 
+test('the file tree sidebar is draggable and remembers its width', () => {
+  assert.match(source, /SIDEBAR_WIDTH_KEY/)
+  assert.match(source, /const onSidebarResizeStart = useCallback/)
+  assert.match(source, /className: 'wbf-sidebarGrip'/)
+  assert.match(source, /readSidebarWidth\(\)/)
+})
 test('loadChunk injects /dsh-workbay-files/chunk/editor.js once and reads the registry', async () => {
   const previous = globalThis.__dshChunks__
   delete globalThis.__dshChunks__

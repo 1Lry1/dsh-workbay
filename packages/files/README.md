@@ -104,6 +104,11 @@ Esc 清空并保留焦点。
   都回来验证一次（发布新构建后客户端立刻拿到新代码）。
 - `lib/chunks/` 不存在时 404（degradation：没有构建 chunk 只是编辑器不可用）。
 
+## 目录区宽度
+
+文件树与内容区之间有一条 5px 的拖拽条（鼠标变成左右箭头），拖动即可调整目录区宽度；
+范围 170–900px 且不超过内容区的 62%，宽度存 `localStorage['dsh-workbay.files.sidebar.v1']`，
+下次打开保持。
 ## 长行显示
 
 查看器/编辑器（CodeMirror）开启 `EditorView.lineWrapping`，长行**按面板宽度自动软换行**

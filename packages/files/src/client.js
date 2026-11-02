@@ -40,6 +40,23 @@ window.__ModuleLoader__.load({
     const HIDDEN_KEY = 'dsh-workbay.files.hidden.v1'
     const LOCALE_NS = 'dsh-workbay-files'
     const TREE_ROW_LIMIT = 400
+/* Sidebar width is dragged by the user; null = the CSS default clamp. */
+const SIDEBAR_WIDTH_KEY = 'dsh-workbay.files.sidebar.v1'
+const SIDEBAR_MIN_W = 170
+const SIDEBAR_MAX_W = 900
+function readSidebarWidth() {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const value = raw === null ? Number.NaN : Number(raw)
+    return Number.isFinite(value) && value >= SIDEBAR_MIN_W && value <= SIDEBAR_MAX_W ? Math.round(value) : null
+  } catch (error) {
+    void error
+    return null
+  }
+}
+function writeSidebarWidth(width) {
+  try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)) } catch (error) { void error }
+}
     const SEARCH_LIMIT = 200
     const SEARCH_DEBOUNCE_MS = 200
     const SEARCH_PANEL_DEBOUNCE_MS = 300
@@ -75,6 +92,7 @@ window.__ModuleLoader__.load({
       'root.loadFailed': '无法读取工作区',
 
       'tree.title': '文件',
+      'tree.resizeWidth': '拖动调整文件列表宽度',
       'tree.loading': '正在加载…',
       'tree.empty': '这个目录是空的',
       'tree.retry': '重试',
@@ -226,6 +244,7 @@ window.__ModuleLoader__.load({
       'root.loadFailed': 'Cannot read this workspace',
 
       'tree.title': 'Files',
+      'tree.resizeWidth': 'Drag to resize the file list',
       'tree.loading': 'Loading…',
       'tree.empty': 'This folder is empty',
       'tree.retry': 'Retry',
@@ -2665,6 +2684,32 @@ window.__ModuleLoader__.load({
       const [pendingRoot, setPendingRoot] = useState(null)
       const [pendingReload, setPendingReload] = useState(null)
       const [toast, setToast] = useState(null)
+      const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth())
+      const sidebarDragRef = useRef(null)
+      const onSidebarResizeStart = useCallback((event) => {
+        event.preventDefault()
+        const main = event.currentTarget === null ? null : event.currentTarget.parentElement
+        const sidebar = main === null ? null : main.querySelector('.wbf-sidebar')
+        if (sidebar === null) return
+        const startX = event.clientX
+        const startW = sidebar.getBoundingClientRect().width
+        const maxW = Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, Math.round(main.getBoundingClientRect().width * 0.62)))
+        sidebarDragRef.current = { startX, startW, maxW }
+        const onMove = (moveEvent) => {
+          const drag = sidebarDragRef.current
+          if (drag === null) return
+          const next = Math.max(SIDEBAR_MIN_W, Math.min(drag.maxW, drag.startW + (moveEvent.clientX - drag.startX)))
+          setSidebarWidth(Math.round(next))
+        }
+        const onUp = () => {
+          sidebarDragRef.current = null
+          window.removeEventListener('pointermove', onMove)
+          window.removeEventListener('pointerup', onUp)
+          setSidebarWidth((value) => { if (value !== null) writeSidebarWidth(value); return value })
+        }
+        window.addEventListener('pointermove', onMove)
+        window.addEventListener('pointerup', onUp)
+      }, [])
 
       rootRef.current = root
       showHiddenRef.current = showHidden
@@ -3487,7 +3532,10 @@ window.__ModuleLoader__.load({
 
       return E('div', { className: 'wbf-root' },
         E('div', { className: 'wbf-main' },
-          E('div', { className: 'wbf-sidebar' },
+          E('div', {
+            className: 'wbf-sidebar',
+            style: sidebarWidth === null ? undefined : { width: sidebarWidth + 'px', minWidth: SIDEBAR_MIN_W + 'px' },
+          },
             E('div', { className: 'wbf-sidebarHead' },
               E('button', {
                 type: 'button',
@@ -3526,6 +3574,12 @@ window.__ModuleLoader__.load({
               onRetryDir: retryDir,
               onShowMore: () => setRowLimit((value) => value + TREE_ROW_LIMIT),
             })),
+          E('div', {
+            className: 'wbf-sidebarGrip',
+            title: t('tree.resizeWidth'),
+            'aria-label': t('tree.resizeWidth'),
+            onPointerDown: onSidebarResizeStart,
+          }),
           E('div', { className: 'wbf-content' },
             E(TabStrip, {
               t,
@@ -3574,8 +3628,10 @@ window.__ModuleLoader__.load({
     const CSS = `
 .wbf-root{position:relative;display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-base,#14161a);font:inherit;font-size:12px}
 .wbf-main{display:flex;flex:1;min-height:0;min-width:0}
-.wbf-sidebar{display:flex;flex-direction:column;width:clamp(190px,36%,320px);min-width:170px;min-height:0;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24)}
-.wbf-sidebarHead{display:flex;align-items:center;gap:4px;padding:7px 6px 5px}
+.wbf-sidebar{display:flex;flex-direction:column;width:clamp(190px,36%,320px);max-width:62%;min-width:170px;min-height:0;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));position:relative}
+.wbf-sidebarGrip{flex:0 0 5px;cursor:col-resize;background:transparent;position:relative;z-index:2}
+.wbf-sidebarGrip:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 22%,transparent)}
+.wbf-sidebarGrip:active{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 38%,transparent)}.wbf-sidebarHead{display:flex;align-items:center;gap:4px;padding:7px 6px 5px}
 .wbf-rootChip{display:flex;align-items:center;gap:5px;flex:1;min-width:0;height:26px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:inherit;font:inherit;font-size:11px;cursor:pointer}
 .wbf-rootChip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 .wbf-rootName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
