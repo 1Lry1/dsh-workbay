@@ -38,7 +38,18 @@ window.__ModuleLoader__.load({
     const STORAGE_OPEN = 'dsh-workbay-dock.open.v1'
     const STORAGE_PAGE = 'dsh-workbay-dock.page.v1'
     const STORAGE_GEOM = 'dsh-workbay-dock.geom.v1'
-    const STORAGE_SETTINGS = 'dsh-workbay.settings.v1'
+    /* Default UI scale for the workbench panel (no settings UI; 110% is the
+       comfortable default for the 12-13px page text). */
+    const WORKBENCH_ZOOM = (() => {
+      try {
+        const raw = window.localStorage.getItem('dsh-workbay.zoom.v1')
+        const value = raw === null ? Number.NaN : Number(raw)
+        return Number.isFinite(value) && value >= 0.8 && value <= 1.5 ? value : 1.1
+      } catch (error) {
+        void error
+        return 1.1
+      }
+    })()
     const STORAGE_MODE = 'dsh-workbay-dock.mode.v1'
     const STORAGE_DOCK_W = 'dsh-workbay-dock.dockw.v1'
     const LOCALE_NS = 'dsh-workbay-dock'
@@ -58,39 +69,6 @@ window.__ModuleLoader__.load({
       'pane.docked': '已停靠右侧 · 与会话并排',
       'pane.dock': '停靠到右侧',
       'pane.float': '改为浮动窗口',
-      'settings.title': '设置',
-      'settings.display': '显示',
-      'settings.zoom': '工作台字号',
-      'settings.zoomHint': '100% 为默认，作用于整个工作台面板。',
-      'settings.runtime': '运行信息',
-      'settings.suiteVersion': '工作台版本',
-      'settings.bundles': '组件版本',
-      'settings.dshVersion': 'DSH 版本',
-      'settings.engine': '渲染引擎',
-      'settings.node': 'Node',
-      'settings.platform': '平台',
-      'settings.memory': '宿主内存',
-      'settings.uptime': '运行时长',
-      'settings.data': '本地数据',
-      'settings.logFile': '下载器日志文件',
-      'settings.logSize': '占用',
-      'settings.clearLogs': '清空日志',
-      'settings.logsCleared': '已清空日志文件',
-      'settings.logsClearFailed': '清空失败',
-      'settings.pointer': '日志地址清单',
-      'settings.suggestions': '建议的全局配置（尚未实现）',
-      'settings.suggest.terminalShell': '终端默认 shell：auto / pwsh / powershell / cmd',
-      'settings.suggest.searchExclude': '文件搜索默认排除规则（按仓库覆盖）',
-      'settings.suggest.logRetention': '下载器日志保留上限 / 自动清理策略',
-      'settings.suggest.defaultPage': '启动工作台时默认打开的页面',
-      'settings.suggest.shortcuts': '工作台快捷键一览（当前只保留页面内快捷键）',
-      'settings.suggest.updateCheck': '检查更新（从 GitHub 拉取新版本）',
-      'settings.reset': '重置',
-      'settings.resetBtn': '恢复默认设置',
-      'settings.resetDone': '已恢复默认设置',
-      'settings.loading': '读取中…',
-      'settings.empty': '暂无文件',
-      'settings.failed': '读取失败',
     }
 
     const EN = {
@@ -106,39 +84,6 @@ window.__ModuleLoader__.load({
       'pane.docked': 'Docked beside the conversation',
       'pane.dock': 'Dock to the right',
       'pane.float': 'Float as a window',
-      'settings.title': 'Settings',
-      'settings.display': 'Display',
-      'settings.zoom': 'Workbench scale',
-      'settings.zoomHint': '100% is the default; applies to the whole workbench.',
-      'settings.runtime': 'Runtime',
-      'settings.suiteVersion': 'Workbench version',
-      'settings.bundles': 'Bundles',
-      'settings.dshVersion': 'DSH version',
-      'settings.engine': 'Renderer',
-      'settings.node': 'Node',
-      'settings.platform': 'Platform',
-      'settings.memory': 'Host memory',
-      'settings.uptime': 'Uptime',
-      'settings.data': 'Local data',
-      'settings.logFile': 'Downloader log file',
-      'settings.logSize': 'Size',
-      'settings.clearLogs': 'Clear logs',
-      'settings.logsCleared': 'Log file cleared',
-      'settings.logsClearFailed': 'Failed to clear',
-      'settings.pointer': 'Log location sheet',
-      'settings.suggestions': 'Suggested global settings (not implemented yet)',
-      'settings.suggest.terminalShell': 'Default terminal shell: auto / pwsh / powershell / cmd',
-      'settings.suggest.searchExclude': 'Default file-search excludes (per repository)',
-      'settings.suggest.logRetention': 'Downloader log retention / auto-cleanup',
-      'settings.suggest.defaultPage': 'Page to open when the workbench starts',
-      'settings.suggest.shortcuts': 'Workbench shortcut reference (only page-local keys today)',
-      'settings.suggest.updateCheck': 'Check for updates from GitHub',
-      'settings.reset': 'Reset',
-      'settings.resetBtn': 'Restore defaults',
-      'settings.resetDone': 'Defaults restored',
-      'settings.loading': 'Loading…',
-      'settings.empty': 'No file yet',
-      'settings.failed': 'Failed to read',
     }
 
     const LOCALES = { en: EN }
@@ -203,186 +148,6 @@ window.__ModuleLoader__.load({
       } catch {
         void 0
       }
-    }
-
-    /* ============================== settings ============================== */
-
-    const ZOOM_CHOICES = [0.9, 1, 1.1, 1.2, 1.3]
-    const DEFAULT_SETTINGS = { zoom: 1 }
-
-    function readSettings() {
-      const stored = readJson(STORAGE_SETTINGS)
-      const zoom = stored !== null && ZOOM_CHOICES.includes(stored.zoom) ? stored.zoom : DEFAULT_SETTINGS.zoom
-      return { zoom }
-    }
-
-    function writeSettings(value) {
-      writeJson(STORAGE_SETTINGS, value)
-      try { window.dispatchEvent(new CustomEvent('dsh-workbay:settings', { detail: value })) } catch (error) { void error }
-    }
-
-    /** Settings are shared by the dock and the settings page (one localStorage key). */
-    function useSettings() {
-      const [settings, setSettingsState] = useState(readSettings)
-      useEffect(() => {
-        const onChange = (event) => {
-          const next = event !== null && event !== undefined && event.detail !== undefined ? event.detail : readSettings()
-          const zoom = next !== null && next !== undefined && ZOOM_CHOICES.includes(next.zoom) ? next.zoom : DEFAULT_SETTINGS.zoom
-          setSettingsState({ zoom })
-        }
-        window.addEventListener('dsh-workbay:settings', onChange)
-        return () => window.removeEventListener('dsh-workbay:settings', onChange)
-      }, [])
-      const update = useCallback((next) => {
-        const value = { zoom: ZOOM_CHOICES.includes(next.zoom) ? next.zoom : DEFAULT_SETTINGS.zoom }
-        writeSettings(value)
-        setSettingsState(value)
-      }, [])
-      return [settings, update]
-    }
-
-    function formatBytes(value) {
-      const size = Number(value) || 0
-      if (size < 1024) return size + ' B'
-      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
-      if (size < 1024 * 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB'
-      return (size / 1024 / 1024 / 1024).toFixed(2) + ' GB'
-    }
-
-    function bootRelease() {
-      try {
-        const boot = window.__DSH_BOOT__
-        if (boot === undefined || boot === null) return '-'
-        return String(boot.release || boot.version || '-')
-      } catch (error) {
-        void error
-        return '-'
-      }
-    }
-
-    function engineLabel() {
-      try {
-        const ua = String(navigator.userAgent || '')
-        const electron = /Electron\/([\d.]+)/.exec(ua)
-        const chrome = /Chrome\/([\d.]+)/.exec(ua)
-        const parts = []
-        if (electron !== null) parts.push('Electron ' + electron[1])
-        if (chrome !== null) parts.push('Chromium ' + chrome[1])
-        return parts.length === 0 ? ua.slice(0, 60) : parts.join(' · ')
-      } catch (error) {
-        void error
-        return '-'
-      }
-    }
-
-    function SettingsPanel(props) {
-      const { t } = props
-      const [settings, updateSettings] = useSettings()
-      const [info, setInfo] = useState(null)
-      const [infoError, setInfoError] = useState('')
-      const [logFile, setLogFile] = useState(null)
-      const [pointer, setPointer] = useState('')
-      const [notice, setNotice] = useState('')
-
-      useEffect(() => {
-        let alive = true
-        fetch('/dsh-workbay-suite/api/info', { headers: { accept: 'application/json' } })
-          .then((response) => response.json())
-          .then((body) => {
-            if (!alive) return
-            setInfo(body !== null && body !== undefined && body.ok === true ? body.data : body)
-          })
-          .catch((error) => { if (alive) setInfoError(String((error && error.message) || error)) })
-        fetch('/downloader/log/file', { headers: { accept: 'application/json' } })
-          .then((response) => response.json())
-          .then((data) => { if (alive) setLogFile(data) })
-          .catch((error) => { void error })
-        fetch('/downloader/log/location', { headers: { accept: 'application/json' } })
-          .then((response) => response.json())
-          .then((data) => { if (alive && data !== null && data !== undefined) setPointer(String(data.pointer || '')) })
-          .catch((error) => { void error })
-        return () => { alive = false }
-      }, [])
-
-      const clearLogs = useCallback(async () => {
-        try {
-          const response = await fetch('/downloader/log/clear', {
-            method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-          })
-          const body = await response.json()
-          setNotice(body !== null && body !== undefined && body.ok === true ? t('settings.logsCleared') : t('settings.logsClearFailed'))
-          setLogFile((previous) => ({ ...(previous || {}), size: 0, exists: false }))
-        } catch (error) {
-          void error
-          setNotice(t('settings.logsClearFailed'))
-        }
-      }, [t])
-
-      const reset = useCallback(() => {
-        updateSettings(DEFAULT_SETTINGS)
-        setNotice(t('settings.resetDone'))
-      }, [t, updateSettings])
-
-      const rowStyle = { display: 'flex', gap: 10, fontSize: 12, margin: '4px 0', alignItems: 'baseline' }
-      const labelStyle = { color: 'var(--dsw-alias-label-secondary,#999)', minWidth: 140, flex: '0 0 auto' }
-      const valueStyle = { wordBreak: 'break-all', color: 'var(--dsw-alias-label-primary,#e6e6e6)' }
-      const sectionStyle = { marginBottom: 20 }
-      const titleStyle = { fontSize: 13, margin: '0 0 8px', fontWeight: 600 }
-
-      const row = (label, value) => E('div', { style: rowStyle },
-        E('span', { style: labelStyle }, label),
-        E('span', { style: valueStyle }, value))
-      const section = (title, children) => E('section', { style: sectionStyle },
-        E('h3', { style: titleStyle }, title), children)
-
-      const bundles = info !== null && info !== undefined && info.bundles !== null && typeof info.bundles === 'object'
-        ? Object.keys(info.bundles).map((key) => key + ' ' + String(info.bundles[key] || '?'))
-        : []
-      const runtime = info !== null && info !== undefined && info.runtime !== null && typeof info.runtime === 'object' ? info.runtime : {}
-      const suiteVersion = info !== null && info !== undefined && info.suite !== null && typeof info.suite === 'object'
-        ? String(info.suite.version || '?')
-        : '-'
-
-      return E('div', { style: { padding: '14px 16px 28px', overflow: 'auto', height: '100%', boxSizing: 'border-box', fontSize: 13 } },
-        section(t('settings.display'),
-          E('div', { style: { display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 } },
-            E('span', { style: labelStyle }, t('settings.zoom')),
-            E('select', {
-              value: String(settings.zoom),
-              style: { padding: '3px 6px', borderRadius: 5 },
-              onChange: (event) => updateSettings({ zoom: Number(event.target.value) }),
-            }, ZOOM_CHOICES.map((choice) => E('option', { key: String(choice), value: String(choice) }, Math.round(choice * 100) + '%'))),
-            E('span', { style: { color: 'var(--dsw-alias-label-secondary,#999)' } }, t('settings.zoomHint')))),
-        section(t('settings.runtime'),
-          infoError !== '' ? E('div', { style: { color: 'var(--dsw-alias-state-error-primary,#ff6b6b)', fontSize: 12 } }, t('settings.failed') + ': ' + infoError) : null,
-          row(t('settings.suiteVersion'), info === null ? t('settings.loading') : suiteVersion),
-          row(t('settings.bundles'), bundles.length === 0 ? t('settings.loading') : bundles.join(' · ')),
-          row(t('settings.dshVersion'), bootRelease()),
-          row(t('settings.engine'), engineLabel()),
-          row(t('settings.node'), runtime.node === undefined ? '-' : String(runtime.node)),
-          row(t('settings.platform'), (runtime.platform === undefined ? '-' : String(runtime.platform)) + ' ' + (runtime.arch === undefined ? '' : String(runtime.arch))),
-          row(t('settings.memory'), runtime.memory === undefined ? '-' : formatBytes(runtime.memory.rss)),
-          row(t('settings.uptime'), runtime.uptimeSec === undefined ? '-' : String(Math.round(Number(runtime.uptimeSec) / 60)) + ' min')),
-        section(t('settings.data'),
-          row(t('settings.logFile'), logFile === null ? t('settings.loading') : String(logFile.path || '-')),
-          row(t('settings.logSize'), logFile === null ? '-' : (logFile.exists === true ? formatBytes(logFile.size) : t('settings.empty'))),
-          E('div', { style: { marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' } },
-            E('button', {
-              type: 'button', className: 'wbd-btn',
-              onClick: clearLogs,
-            }, t('settings.clearLogs')),
-            notice === '' ? null : E('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary,#999)' } }, notice)),
-          pointer === '' ? null : row(t('settings.pointer'), pointer)),
-        section(t('settings.suggestions'),
-          E('ul', { style: { margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.8, color: 'var(--dsw-alias-label-secondary,#aaa)' } },
-            E('li', null, t('settings.suggest.terminalShell')),
-            E('li', null, t('settings.suggest.searchExclude')),
-            E('li', null, t('settings.suggest.logRetention')),
-            E('li', null, t('settings.suggest.defaultPage')),
-            E('li', null, t('settings.suggest.shortcuts')),
-            E('li', null, t('settings.suggest.updateCheck')))),
-        section(t('settings.reset'),
-          E('button', { type: 'button', className: 'wbd-btn', onClick: reset }, t('settings.resetBtn'))))
     }
 
     function readFlag(key, fallback) {
@@ -705,16 +470,7 @@ window.__ModuleLoader__.load({
      */
     function WorkbenchOverlay(props) {
       const { t } = props
-      const registeredPages = usePages()
-      const [settings] = useSettings()
-      /* Built-in settings page: not contributed by a plugin, always last. */
-      const pages = useMemo(() => registeredPages.concat([{
-        id: 'settings',
-        title: t('settings.title'),
-        order: 900,
-        icon: (size) => E('span', { style: { fontSize: size || 13, lineHeight: 1 } }, '\u2699'),
-        component: () => E(SettingsPanel, { t }),
-      }]), [registeredPages, t])
+      const pages = usePages()
       const isOpen = useOpenFlag()
 
       /* Float vs docked. Docked is the default because "一边是会话，一边是工作台"
@@ -885,7 +641,7 @@ window.__ModuleLoader__.load({
           E('span', { className: 'wbd-tabLabel' }, page.title))))
 
       if (mode === 'docked') {
-        return E('div', { className: 'wbd-docked', role: 'complementary', 'aria-label': t('pane.title'), style: { zoom: settings.zoom } },
+        return E('div', { className: 'wbd-docked', role: 'complementary', 'aria-label': t('pane.title'), style: { zoom: WORKBENCH_ZOOM } },
           titlebar,
           tabStrip,
           E('div', { className: 'wbd-body' }, body),
@@ -897,7 +653,7 @@ window.__ModuleLoader__.load({
       }
 
       return E('div', { className: 'wbd-overlay', role: 'dialog', 'aria-modal': 'false', 'aria-label': t('pane.title') },
-        E('div', { className: 'wbd-window', style: { width: geometry.w + 'px', height: geometry.h + 'px', zoom: settings.zoom } },
+        E('div', { className: 'wbd-window', style: { width: geometry.w + 'px', height: geometry.h + 'px', zoom: WORKBENCH_ZOOM } },
           titlebar,
           tabStrip,
           E('div', { className: 'wbd-body' }, body),
@@ -1005,8 +761,7 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 .wbd-title{font-weight:600;font-size:13px}
 .wbd-titleHint{flex:1;min-width:0;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wbd-titleActions{display:flex;gap:2px;flex:none}
-.wbd-btn{padding:4px 10px;border-radius:6px;border:1px solid var(--dsw-alias-border-secondary,#3a3a3d);background:var(--dsw-alias-bg-secondary,#252528);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px;cursor:pointer}
-.wbd-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}.wbd-titleBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
+.wbd-titleBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .wbd-titleBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
 .wbd-tabs{display:flex;gap:2px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));flex:none}
 .wbd-tab{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:12px;cursor:pointer}

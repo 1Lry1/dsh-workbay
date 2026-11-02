@@ -13,7 +13,7 @@ This repository consolidates the capabilities into a single **pnpm workspace**:
 
 ```
 packages/
-├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry + built-in settings
+├─ dock/        dsh-workbay-dock      shell: left-sidebar entry + right-side dock overlay + page registry
 ├─ files/       dsh-workbay-files     page: file tree + VSCode-grade content search + viewers + CodeMirror editor (lazy chunk)
 ├─ terminal/    dsh-workbay-terminal  page: real ConPTY terminal with tabs (xterm.js, sessions survive page switches)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)

@@ -142,11 +142,6 @@ function rewriteKitImports() {
   return rewritten
 }
 
-/** Read a vendored package version for the runtime info endpoint. */
-function packageVersion(dir) {
-  try { return JSON.parse(readFileSync(path.join(packagesDir, dir, 'package.json'), 'utf8')).version || null } catch { return null }
-}
-
 function generateHost() {
   const lines = [
     '/**',
@@ -173,21 +168,6 @@ function generateHost() {
   }
   lines.push(']')
   lines.push('')
-  const bundleVersions = {}
-  for (const bundle of PLUGIN_BUNDLES) bundleVersions[bundle.dir] = packageVersion(bundle.dir)
-  const info = {
-    generatedAt: new Date().toISOString(),
-    suite: { name: 'dsh-workbay-suite', version: packageVersion('suite') },
-    bundles: bundleVersions,
-    runtime: {
-      node: process.version,
-      electron: process.versions.electron ?? null,
-      platform: process.platform,
-      arch: process.arch,
-    },
-  }
-  lines.push('const WORKBAY_INFO = ' + JSON.stringify(info, null, 2))
-  lines.push('')
   lines.push('/** Mount every vendored bundle; one failing bundle must not kill the app. */')
   lines.push('export async function apply(ctx, config) {')
   lines.push('  const row = config === undefined || config === null ? {} : config')
@@ -203,20 +183,6 @@ function generateHost() {
   lines.push('      try { ctx.logger?.error?.(`dsh-workbay-suite: ${bundle.name} failed to mount: ${message}`) } catch { /* logger optional */ }')
   lines.push('    }')
   lines.push('  }')
-  lines.push('  /* Runtime/version info for the settings page. Kept here (not in a bundle)')
-  lines.push('     so it survives a single vendored bundle failing to mount. */')
-  lines.push("  ctx.inject(['webServer'], (scoped) => {")
-  lines.push('    scoped.effect(() => scoped.webServer.register({')
-  lines.push("      kind: 'prefix',")
-  lines.push("      path: '/dsh-workbay-suite/api',")
-  lines.push('      handler: (req, res) => {')
-  lines.push("        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })")
-  lines.push('        const runtime = { ...WORKBAY_INFO.runtime, pid: process.pid, uptimeSec: Math.round(process.uptime()), memory: process.memoryUsage() }')
-  lines.push('        res.end(JSON.stringify({ ok: true, data: { ...WORKBAY_INFO, runtime } }))')
-  lines.push('      },')
-  lines.push("    }), 'dsh-workbay-suite: runtime info')")
-  lines.push('  })')
-  lines.push('')
   lines.push('  if (failures.length === BUNDLES.length) {')
   lines.push('    throw new Error(\'the workbench could not mount any bundle: \' + failures.join(\'; \'))')
   lines.push('  }')
