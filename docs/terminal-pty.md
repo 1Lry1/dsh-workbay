@@ -57,6 +57,9 @@ helper → host（读 helper.stdout）：
   当**原始按键**写入（`\r`=回车、`\x03`=Ctrl+C、方向键是 `\x1b[A`…），由 PTY 里的
   shell 回显/编辑；`resize` 发帧 `R`；`stop` 发 `X` 并收尸。
   输出用 `StringDecoder('utf8')` 增量解码，SSE 仍发 `{type:'out',data}` 文本。
+  **推送节流**：输出按 16ms 合并，一个 SSE 事件最多携带 64KiB（不再逐 4KiB 分片）；
+  **没有 SSE 订阅者时直接丢弃输出**（页面切走后终端会话继续存活，但不再构造/序列化事件，
+  避免和同进程的 Git / 文件搜索抢事件循环）。重进页面时按既有逻辑重新挂 SSE。
 - `command`（非 Windows / 没有 helper）：保留现有逐命令模型作为回退，
   `hello.mode` 里告知客户端。客户端据此决定要不要本地回显和行编辑。
 

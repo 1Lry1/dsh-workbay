@@ -89,8 +89,10 @@ const DEFAULTS = {
 const MAX_BODY_BYTES = 64 * 1024
 const MAX_SESSIONS = 32
 const MAX_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000
-/** SSE `out` events carry at most this many characters (the contract's 4 KiB). */
-const MAX_OUTPUT_CHUNK = 4096
+/** Coalesced SSE `out` events carry at most this many characters (64 KiB). */
+const MAX_OUTPUT_EVENT = 64 * 1024
+/** Coalesce PTY output for this many ms before sending one SSE frame. */
+const OUTPUT_FLUSH_MS = 16
 /** A command line larger than this is dropped with an error, not buffered forever. */
 const MAX_LINE_CHARS = 64 * 1024
 /** A single helper frame larger than this is treated as corruption. */
@@ -438,6 +440,10 @@ function createService(settings) {
   /* ---------------------------------------------------------------- SSE ---- */
 
   function writeEvent(session, payload) {
+    /* No subscribers: skip the serialization entirely. A backgrounded terminal
+       (page switched away) must cost ~nothing — this used to stringify every
+       frame and compete with git / file search in the same process. */
+    if (session.clients.size === 0) return
     const line = 'data: ' + JSON.stringify(payload) + '\n\n'
     for (const client of [...session.clients]) {
       try {
@@ -456,10 +462,40 @@ function createService(settings) {
     session.clients.delete(client)
   }
 
+  /**
+   * Forward PTY output to subscribers.
+   *
+   * Two costs used to hit the shared main process for every frame: splitting a
+   * burst into 4 KiB events and JSON-stringifying each one even with zero
+   * clients. Now:
+   *   - no clients -> return immediately (a backgrounded terminal is free; the
+   *     PTY keeps draining, which is all the child needs);
+   *   - clients -> accumulate and flush once per 16 ms window as one event of up
+   *     to 64 KiB, which cuts SSE frames/JSON by an order of magnitude.
+   */
   function emitOutput(session, text) {
     if (typeof text !== 'string' || text === '') return
-    for (let at = 0; at < text.length; at += MAX_OUTPUT_CHUNK) {
-      let end = Math.min(at + MAX_OUTPUT_CHUNK, text.length)
+    if (session.clients.size === 0) return
+    session.pendingOutput += text
+    if (session.pendingOutput.length >= MAX_OUTPUT_EVENT) {
+      flushOutput(session)
+      return
+    }
+    if (session.outputTimer === null) {
+      session.outputTimer = setTimeout(() => flushOutput(session), OUTPUT_FLUSH_MS)
+    }
+  }
+
+  function flushOutput(session) {
+    if (session.outputTimer !== null) {
+      clearTimeout(session.outputTimer)
+      session.outputTimer = null
+    }
+    const text = session.pendingOutput
+    session.pendingOutput = ''
+    if (text === '' || session.clients.size === 0) return
+    for (let at = 0; at < text.length; at += MAX_OUTPUT_EVENT) {
+      let end = Math.min(at + MAX_OUTPUT_EVENT, text.length)
       /* Never split a surrogate pair across two events. */
       if (end < text.length) {
         const code = text.charCodeAt(end - 1)
@@ -470,6 +506,11 @@ function createService(settings) {
   }
 
   function clearTimers(session) {
+    if (session.outputTimer !== null) {
+      clearTimeout(session.outputTimer)
+      session.outputTimer = null
+    }
+    session.pendingOutput = ''
     if (session.idleTimer !== null) {
       clearTimeout(session.idleTimer)
       session.idleTimer = null
@@ -495,6 +536,7 @@ function createService(settings) {
     clearTimers(session)
     session.lineBuffer = ''
     session.queue.length = 0
+    flushOutput(session)
     writeEvent(session, { type: 'exit', code })
     for (const client of [...session.clients]) {
       dropClient(session, client)
@@ -712,6 +754,8 @@ function createService(settings) {
       startedAt: Date.now(),
       lastActivityAt: Date.now(),
       clients: new Set(),
+      pendingOutput: '',
+      outputTimer: null,
       exitWaiters: [],
       exited: false,
       stopRequested: false,
