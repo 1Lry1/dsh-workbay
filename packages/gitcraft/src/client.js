@@ -816,7 +816,7 @@ window.__ModuleLoader__.load({
     }
 
     function Modal(props) {
-      const { title, children, onClose, footer, t } = props
+      const { title, children, onClose, footer, t, wide } = props
       useEffect(() => {
         const onKey = (event) => {
           if (event.key === 'Escape') onClose()
@@ -827,7 +827,7 @@ window.__ModuleLoader__.load({
       return E('div', { className: 'gwc-modalBackdrop', role: 'presentation', onMouseDown: (event) => {
         if (event.target === event.currentTarget) onClose()
       } },
-      E('div', { className: 'gwc-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      E('div', { className: 'gwc-modal' + (wide === true ? ' is-wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
         E('div', { className: 'gwc-modalHead' },
           E('span', { className: 'gwc-modalTitle' }, title),
           E(IconButton, { name: 'close', label: t('dialog.cancel'), onClick: onClose })),
@@ -2126,42 +2126,37 @@ window.__ModuleLoader__.load({
             renderGroup('unstaged', t('changes.unstaged', { n: changeGroups.unstaged.length }), changeGroups.unstaged),
             renderGroup('untracked', t('changes.untracked', { n: changeGroups.untracked.length }), changeGroups.untracked)))
 
-      const diffPane = selected === null ? null : E('div', { className: 'gwc-diffPane' },
+      const closeDiff = useCallback(() => {
+        setSelected(null)
+        setLineSelection(null)
+        setDiffState({ path: null, patch: '', loading: false, binary: false })
+      }, [])
+
+      /* 变更页的 diff 用居中大弹窗（历史页保持分栏）。 */
+      const diffModal = selected === null ? null : E(Modal, {
+        t,
+        title: selected.path,
+        wide: true,
+        onClose: closeDiff,
+      },
+        E('div', { className: 'gwc-diffModal' },
           E('div', { className: 'gwc-diffHead' },
             E('span', { className: 'gwc-diffTitle', title: selected.path }, selected.path),
-            E(TextButton, { onClick: () => setDiffMode(diffMode === 'split' ? 'unified' : 'split') }, diffMode === 'split' ? t('diff.split') : t('diff.unified'))),
-          E(DiffView, {
-            patch: diffState.patch,
-            mode: diffMode,
-            t,
-            loading: diffState.loading,
-            hunkActions: diffHunkActions,
-            selection: lineSelection,
-            onToggle: selected.group === 'history' ? undefined : toggleLine,
-          }))
+            E('span', { className: 'gwc-historyDiffActions' },
+              E(TextButton, { onClick: () => setDiffMode(diffMode === 'split' ? 'unified' : 'split') }, diffMode === 'split' ? t('diff.split') : t('diff.unified')),
+              E(TextButton, { onClick: closeDiff }, t('diff.close')))),
+          E('div', { className: 'gwc-diffScroll' },
+            E('div', { className: 'gwc-diffPane' },
+              E(DiffView, {
+                patch: diffState.patch,
+                mode: diffMode,
+                t,
+                loading: diffState.loading,
+                hunkActions: diffHunkActions,
+                selection: lineSelection,
+                onToggle: selected.group === 'history' ? undefined : toggleLine,
+              })))))
 
-      /* Fraction of the changes area given to the file list; the diff takes the
-         rest. Dragged from the splitter and remembered for the session. */
-      /* null = auto-fit (no ratio chosen yet); a number = the user's own split. */
-      const [listRatio, setListRatio] = useState(null)
-
-      const onSplitDrag = useCallback((event) => {
-        event.preventDefault()
-        const wrap = event.currentTarget === null ? null : event.currentTarget.parentElement
-        if (wrap === null) return
-        const rect = wrap.getBoundingClientRect()
-        if (rect.height <= 0) return
-        const move = (moveEvent) => {
-          const ratio = (moveEvent.clientY - rect.top) / rect.height
-          setListRatio(Math.max(0.12, Math.min(0.82, ratio)))
-        }
-        const up = () => {
-          window.removeEventListener('pointermove', move)
-          window.removeEventListener('pointerup', up)
-        }
-        window.addEventListener('pointermove', move)
-        window.addEventListener('pointerup', up)
-      }, [])
 
       const commitBox = snapshot === null ? null : E('div', { className: 'gwc-commitBox' },
         E('textarea', {
@@ -2414,23 +2409,7 @@ window.__ModuleLoader__.load({
              below the fold and reading a file meant scrolling past all of them. */
           return E('div', { className: 'gwc-changesWrap' },
             conflictBanner,
-            E('div', {
-              className: 'gwc-changeListPane'
-                + (diffPane === null ? ' is-solo' : '')
-                + (diffPane !== null && listRatio === null ? ' is-auto' : ''),
-              style: diffPane === null || listRatio === null
-                ? undefined
-                : { flex: '0 0 ' + Math.round(listRatio * 100) + '%' },
-            }, changesView),
-            diffPane === null ? null : E('div', {
-              className: 'gwc-splitBar',
-              title: t('diff.resize'),
-              'aria-label': t('diff.resize'),
-              onPointerDown: onSplitDrag,
-            }, E('div', { className: 'gwc-splitGrip' })),
-            diffPane === null ? null : E('div', {
-              className: 'gwc-diffScroll' + (listRatio === null ? ' is-auto' : ''),
-            }, diffPane),
+            E('div', { className: 'gwc-changeListPane is-solo' }, changesView),
             commitBox)
         }
         if (nav === 'history') return historyView
@@ -2517,6 +2496,7 @@ window.__ModuleLoader__.load({
         E('div', { className: 'gwc-body' }, bodyFor()),
         toast === null ? null : E('div', { className: cx('gwc-toast', toast.kind === 'error' ? 'is-error' : 'is-ok') }, toast.message),
         busy === null ? null : E('div', { className: 'gwc-busy', 'aria-live': 'polite' }, busy),
+        diffModal,
         dialogNode,
         pickerNode)
     }
@@ -2825,7 +2805,10 @@ window.__ModuleLoader__.load({
 .gwc-busy{position:absolute;top:6px;right:10px;font-size:10px;padding:2px 7px;border-radius:8px;background:var(--dsw-alias-bg-layer-3,rgba(255,255,255,.1));color:var(--dsw-alias-label-tertiary,#8a8f98);z-index:20}
 .gwc-root{position:relative}
 .gwc-modalBackdrop{position:fixed;inset:0;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.5));display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px}
-.gwc-modal{width:min(440px,100%);max-height:80vh;display:flex;flex-direction:column;border-radius:var(--dsw-radius-lg,12px);border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.16));background:var(--dsw-alias-bg-layer-2,#22262c);box-shadow:var(--dsw-elevation-prominent,0 12px 40px rgba(0,0,0,.5))}
+.gwc-modal.is-wide{width:min(1100px,92vw);max-height:86vh}
+.gwc-modal.is-wide .gwc-modalBody{flex:1 1 auto;min-height:0;overflow:hidden;padding:0}
+.gwc-diffModal{display:flex;flex-direction:column;min-height:0;height:min(70vh,720px)}
+.gwc-diffModal .gwc-diffScroll{flex:1 1 auto;min-height:0}.gwc-modal{width:min(440px,100%);max-height:80vh;display:flex;flex-direction:column;border-radius:var(--dsw-radius-lg,12px);border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.16));background:var(--dsw-alias-bg-layer-2,#22262c);box-shadow:var(--dsw-elevation-prominent,0 12px 40px rgba(0,0,0,.5))}
 .gwc-modalHead{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .gwc-modalTitle{font-weight:600;font-size:13px}
 .gwc-modalBody{padding:12px;display:flex;flex-direction:column;gap:9px;overflow:auto}
