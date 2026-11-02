@@ -1,11 +1,10 @@
 /**
- * The downloader client bundle contract.
+ * The downloader client bundle contract + log-buffer performance guards.
  *
  * The client half is one `window.__ModuleLoader__.load({ id, factory })` file.
  * These tests materialize it against a stub loader/React and assert the plugin
- * surface. The old "加入对话" chat-insertion path was removed at the user's
- * request (the AI reads the log route/tool directly), so a regression guard
- * keeps it out.
+ * surface, the batched/windowed log path (which is what keeps the page fast
+ * once the cache fills), and that the removed "加入对话" path stays removed.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -35,19 +34,70 @@ function loadClient() {
   } finally {
     globalThis.window = previousWindow
   }
-  return { registrations, React }
-}
-
-test('the client registers exactly one module and exports apply(ctx)', () => {
-  const { registrations, React } = loadClient()
-  assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].id, 'dsh-downloader')
   const module = registrations[0].factory((specifier) => {
     if (specifier === 'react') return React
     throw new Error('unexpected require: ' + specifier)
   })
+  return { registrations, module }
+}
+
+test('the client registers exactly one module and exports apply(ctx)', () => {
+  const { registrations, module } = loadClient()
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].id, 'dsh-downloader')
   assert.equal(typeof module.apply, 'function')
   assert.deepEqual(module.inject, [])
+})
+
+test('both single and batched log events feed the same bounded buffer', () => {
+  assert.match(source, /e\.ev === 'log'/)
+  assert.match(source, /e\.ev === 'logs'/)
+  assert.match(source, /CLIENT_MAX_LOGS = 8000/)
+  assert.match(source, /RENDER_LIMIT = 800/)
+  // windowed rendering: the DOM maps `visible`, never the whole buffer
+  assert.match(source, /visible\.map/)
+  assert.doesNotMatch(source, /shown\.map\(/)
+})
+
+test('appendLogs appends without mutating and trims to the cap', () => {
+  const { module } = loadClient()
+  const { appendLogs } = module.__test
+  const base = [{ t: 1 }, { t: 2 }, { t: 3 }]
+  const next = appendLogs(base, [{ t: 4 }], 3)
+  assert.deepEqual(next.map((x) => x.t), [2, 3, 4])
+  assert.deepEqual(base.map((x) => x.t), [1, 2, 3], 'input array must not be mutated')
+  const empty = []
+  assert.equal(appendLogs(empty, [], 10), empty)
+})
+
+test('appendLogs handles a batch larger than the cap', () => {
+  const { module } = loadClient()
+  const { appendLogs } = module.__test
+  const items = Array.from({ length: 10 }, (_, i) => ({ t: i }))
+  const next = appendLogs([], items, 4)
+  assert.deepEqual(next.map((x) => x.t), [6, 7, 8, 9])
+})
+
+test('windowLogs renders only the tail and skips the copy otherwise', () => {
+  const { module } = loadClient()
+  const { windowLogs } = module.__test
+  const list = Array.from({ length: 5000 }, (_, i) => i)
+  assert.deepEqual(windowLogs(list, 800).slice(0, 3), [4200, 4201, 4202])
+  assert.equal(windowLogs(list, 800).length, 800)
+  assert.equal(windowLogs(list, 5000), list, 'no copy when under the limit')
+})
+
+test('20k lines in 60ms-style batches stay fast (no per-line O(n) copy)', () => {
+  const { module } = loadClient()
+  const { appendLogs } = module.__test
+  const CLIENT_MAX_LOGS = 8000
+  const batch = Array.from({ length: 50 }, (_, i) => ({ t: i, src: 'B', text: 'line' }))
+  let logs = []
+  const started = Date.now()
+  for (let i = 0; i < 400; i += 1) logs = appendLogs(logs, batch, CLIENT_MAX_LOGS)
+  const elapsed = Date.now() - started
+  assert.equal(logs.length, CLIENT_MAX_LOGS)
+  assert.ok(elapsed < 1500, `400 batches took ${elapsed}ms`)
 })
 
 test('the bundle no longer carries the chat-insertion button', () => {

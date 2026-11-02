@@ -17,6 +17,27 @@ window.__ModuleLoader__.load({
 
     const API = '/downloader'
 
+    /* ★ 满了之后卡不卡，取决于这两条：
+       1) 前端只保留最近 8000 条（宿主仍保留 50000 供 AI 翻页/检索）；
+       2) 一次只渲染最近 800 行，而不是 2 万行 DOM。
+       再配合宿主的 60ms 批量推送，每批只做一次 setState。 */
+    const CLIENT_MAX_LOGS = 8000
+    const RENDER_LIMIT = 800
+
+    /** 批量追加 + 环形裁剪；返回新数组，不修改入参。 */
+    function appendLogs(current, items, max) {
+      if (!Array.isArray(items) || items.length === 0) return current
+      if (items.length >= max) return items.slice(items.length - max)
+      const overflow = current.length + items.length - max
+      const base = overflow > 0 ? current.slice(overflow) : current
+      return base.concat(items)
+    }
+
+    /** 只渲染尾部 N 行（日志是只追加的，窗口化不影响“跟随最新”）。 */
+    function windowLogs(list, limit) {
+      if (!Array.isArray(list) || list.length <= limit) return list
+      return list.slice(-limit)
+    }
     const api = {
       get: async (p) => {
         try {
@@ -127,7 +148,12 @@ window.__ModuleLoader__.load({
           try { e = JSON.parse(m.data) } catch { return }
           setSt(x => {
             if (e.ev === 'hello') return { ...x, ...e.state }
-            if (e.ev === 'log') return { ...x, logs: [...x.logs.slice(-20000), e.item] }
+            if (e.ev === 'log') return { ...x, logs: appendLogs(x.logs, [e.item], CLIENT_MAX_LOGS) }
+            if (e.ev === 'logs') {
+              return Array.isArray(e.items) && e.items.length > 0
+                ? { ...x, logs: appendLogs(x.logs, e.items, CLIENT_MAX_LOGS) }
+                : x
+            }
             if (e.ev === 'flash') return { ...x, flash: { ...x.flash, ...e.state } }
             if (e.ev === 'serial-state') return { ...x, serial: e.serial }
             // ★ 清空时后端会广播 log-clear，前端必须一起清，
@@ -183,6 +209,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { loadPorts() }, [])
 
       const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
+      const visible = windowLogs(shown, RENDER_LIMIT)
       React.useEffect(() => {
         if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
       }, [shown.length, follow])
@@ -360,7 +387,7 @@ window.__ModuleLoader__.load({
 
       // ---- 下半：日志 ----
       const logBar = h('div', { className: 'abw-lbar' },
-        h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length),
+        h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (shown.length > RENDER_LIMIT ? '（显示最近 ' + RENDER_LIMIT + ' 条）' : '')),
         h('span', { className: 'abw-sp' }),
         h('select', {
           className: 'abw-sel', value: filter, onChange: e => setFilter(e.target.value),
@@ -393,7 +420,7 @@ window.__ModuleLoader__.load({
       const logBody = shown.length === 0
         ? h('div', { className: 'abw-empty' },
           s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里')
-        : shown.map((l, i) => h('div', { className: 'abw-ll', key: (l.t || 0) + '-' + i },
+        : visible.map((l, i) => h('div', { className: 'abw-ll', key: (l.t || 0) + '-' + i },
           h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
           h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
           h('span', { className: 'abw-lt' }, l.text)
@@ -476,7 +503,7 @@ window.__ModuleLoader__.load({
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-
+      __test: { appendLogs, windowLogs },
     }
   },
 })

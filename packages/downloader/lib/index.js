@@ -473,6 +473,8 @@ export function apply(ctx) {
     serial: { open: false, port: null, baud: 1500000, opening: false, lastError: null, dupCount: 0, suppressed: 0 },
     flash: { status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null, busy: false, burnSeq: 0, doneSeq: 0, launching: false, launchAt: 0 },
     logs: [],                   // 环形日志（最近 N 条）
+    logBatch: [],               // SSE 合并推送：每 60ms 一批，避免逐行 setState
+    logBatchTimer: null,
     // 自动烧录：监听编译产物 dcf 的变化
     watch: { on: false, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
   }
@@ -480,6 +482,11 @@ export function apply(ctx) {
   // 50000 条大约是几百次烧录 / 数小时板卡输出；每条实体约 100B，总内存约 5MB。
   const MAX_LOGS = 50000
   const sseClients = new Set()
+  /* 插件卸载时清掉未 flush 的日志批次定时器。 */
+  ctx.effect(() => () => {
+    if (state.logBatchTimer !== null) { clearTimeout(state.logBatchTimer); state.logBatchTimer = null }
+    state.logBatch = []
+  }, 'downloader: log batch flush')
   /* Write the address sheet once at mount so it exists before any log line. */
   refreshLocation(state)
 
@@ -500,7 +507,17 @@ export function apply(ctx) {
     if (state.logs.length > MAX_LOGS + LOG_TRIM_SLACK) {
       state.logs.splice(0, state.logs.length - MAX_LOGS)
     }
-    broadcast({ ev: 'log', item })
+    /* ★ 批量推送：高波特率下每秒可能上千行，逐行 SSE + 逐行 setState 会把主进程
+       和前端都拖慢。这里按 60ms 合并成 { ev:'logs', items }，单行仍是 1 条。 */
+    state.logBatch.push(item)
+    if (state.logBatchTimer === null) {
+      state.logBatchTimer = setTimeout(() => {
+        state.logBatchTimer = null
+        const items = state.logBatch
+        state.logBatch = []
+        if (items.length > 0) broadcast({ ev: 'logs', items })
+      }, 60)
+    }
     /* Keep the address sheet's counter warm without writing on every line. */
     const now = Date.now()
     if (!state._locationAt || now - state._locationAt > 5000) {
@@ -1440,6 +1457,9 @@ async function handleHttp(req, res, state, api) {
     // 清空前端日志（Host 侧环形缓冲一并清，避免刷新后又出现旧的）
     if (p === '/log/clear' && req.method === 'POST') {
       state.logs.length = 0
+      // 还没 flush 的批次也要丢掉，否则清空后旧行会被补推回来。
+      state.logBatch = []
+      if (state.logBatchTimer !== null) { clearTimeout(state.logBatchTimer); state.logBatchTimer = null }
       broadcast({ ev: 'log-clear' })
       return json(res, 200, { ok: true })
     }
