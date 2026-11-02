@@ -61,6 +61,11 @@ helper → host（读 helper.stdout）：
   **没有 SSE 订阅者时直接丢弃输出**（页面切走后终端会话继续存活，但不再做 UTF-8 解码、
   切分或 JSON 序列化——这正是“终端在 build 时 Git/文件搜索被拖慢”的根因）。重进页面时
   按既有逻辑重新挂 SSE，并重置解码器以避免半字符。
+  **流控（参考 VSCode 终端）**：`hello` 带 `flow:true`；客户端用 xterm 的
+  `write(data, callback)` 统计未解析字符数，超过 **100k** 发 `flow {paused:true}`，
+  低于 **5k** 发 `flow {paused:false}`。宿主收到暂停后停止转发并 `pause()` helper 的
+  stdout，让 ConPTY 反压到 shell（build 会变慢而不是把内存/事件循环吃满）；恢复时
+  `resume()` 并冲刷。最后一个订阅者断开时宿主**强制恢复**，避免 build 永久卡在写管道。
 - `command`（非 Windows / 没有 helper）：保留现有逐命令模型作为回退，
   `hello.mode` 里告知客户端。客户端据此决定要不要本地回显和行编辑。
 
@@ -70,6 +75,7 @@ helper → host（读 helper.stdout）：
 |---|---|---|
 | `resize` | `{ id, cols, rows }` | `{ ok:true }` |
 | `restart` | `{ id }` | `{ id, cwd, mode }`（同 cwd 新会话，旧会话被回收） |
+| `flow` | `{ id, paused }` | `{ id, paused }`（客户端 xterm 积压时暂停/恢复 PTY 读取） |
 
 `start` 额外可选 `{ cols, rows, shell? }`；`shell` 仅配置里允许时生效（默认沿用配置）。
 配置默认 `shell: auto`：Windows 上按 `pwsh.exe` → `powershell.exe` 解析，其它平台 `pwsh` → `bash` → `sh`。

@@ -460,6 +460,15 @@ function createService(settings) {
       client.timer = null
     }
     session.clients.delete(client)
+    /* Never leave the PTY paused when nobody is left to acknowledge: the build
+       would block on write forever. */
+    if (session.clients.size === 0 && session.flowPaused === true) {
+      session.flowPaused = false
+      session.pendingOutput = ''
+      if (session.helper !== null && session.helper !== undefined && session.helper.stdout !== null && session.helper.stdout !== undefined) {
+        try { session.helper.stdout.resume() } catch { /* helper gone */ }
+      }
+    }
   }
 
   /**
@@ -476,6 +485,8 @@ function createService(settings) {
   function emitOutput(session, text) {
     if (typeof text !== 'string' || text === '') return
     if (session.clients.size === 0) return
+    /* Flow control: the client's xterm backlog is over its high water mark. */
+    if (session.flowPaused === true) return
     session.pendingOutput += text
     if (session.pendingOutput.length >= MAX_OUTPUT_EVENT) {
       flushOutput(session)
@@ -494,6 +505,7 @@ function createService(settings) {
     const text = session.pendingOutput
     session.pendingOutput = ''
     if (text === '' || session.clients.size === 0) return
+    if (session.flowPaused === true) return
     for (let at = 0; at < text.length; at += MAX_OUTPUT_EVENT) {
       let end = Math.min(at + MAX_OUTPUT_EVENT, text.length)
       /* Never split a surrogate pair across two events. */
@@ -763,6 +775,7 @@ function createService(settings) {
       clients: new Set(),
       pendingOutput: '',
       outputTimer: null,
+      flowPaused: false,
       exitWaiters: [],
       exited: false,
       stopRequested: false,
@@ -1131,6 +1144,32 @@ function createService(settings) {
     return { sessions: entries }
   }
 
+  /**
+   * Flow control (the same idea as VSCode's terminal flow control: high/low
+   * water marks over the renderer's parse backlog). When the client says it is
+   * behind, we pause the helper's stdout, so ConPTY backpressure reaches the
+   * shell instead of growing our buffers or starving the rest of DSH.
+   */
+  async function flow(payload) {
+    const session = sessionOf(payload === undefined || payload === null ? undefined : payload.id)
+    const paused = payload !== undefined && payload !== null && payload.paused === true
+    session.flowPaused = paused
+    if (paused) {
+      if (session.outputTimer !== null) { clearTimeout(session.outputTimer); session.outputTimer = null }
+      /* The queued fragment is stale once we stop forwarding. */
+      session.pendingOutput = ''
+      if (session.helper !== null && session.helper !== undefined && session.helper.stdout !== null && session.helper.stdout !== undefined) {
+        try { session.helper.stdout.pause() } catch { /* helper gone */ }
+      }
+    } else {
+      if (session.helper !== null && session.helper !== undefined && session.helper.stdout !== null && session.helper.stdout !== undefined) {
+        try { session.helper.stdout.resume() } catch { /* helper gone */ }
+      }
+      flushOutput(session)
+    }
+    return { id: session.id, paused }
+  }
+
   async function resize(payload) {
     const session = sessionOf(payload.id)
     if (typeof payload.cols !== 'number' || !Number.isFinite(payload.cols)) {
@@ -1218,6 +1257,7 @@ function createService(settings) {
       mode: session.mode,
       cols: session.cols,
       rows: session.rows,
+      flow: true,
     }) + '\n\n')
 
     const client = {
@@ -1354,7 +1394,7 @@ function createService(settings) {
   }
 
   return {
-    methods: { start, input, stop, list, resize, restart },
+    methods: { start, input, stop, list, resize, restart, flow },
     handleEvents,
     handleChunk,
     dispose,

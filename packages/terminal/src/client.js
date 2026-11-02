@@ -33,6 +33,11 @@ window.__ModuleLoader__.load({
 
     const DEFAULT_COLS = 80
     const DEFAULT_ROWS = 24
+/* VSCode-style flow control over the xterm parse backlog. When the renderer
+   falls behind, the client asks the host to pause the PTY (ConPTY backpressure
+   reaches the shell) until it catches up. */
+const FLOW_HIGH_WATER = 100000
+const FLOW_LOW_WATER = 5000
     const MIN_COLS = 20
     const MAX_COLS = 400
     const MIN_ROWS = 5
@@ -1148,6 +1153,9 @@ window.__ModuleLoader__.load({
           promptShown: false,
           awaiting: false,
           lineStart: true,
+          flowEnabled: false,
+          pendingChars: 0,
+          flowPaused: false,
           exited: false,
           restoredNoticeShown: false,
           gotHello: false,
@@ -1163,16 +1171,43 @@ window.__ModuleLoader__.load({
           if (typeof callback === 'function') callback(tabKey, patch)
         }
 
+        function sendFlow(paused) {
+          const session = core.session
+          if (session === null || session === undefined || typeof session.id !== 'string') return
+          void call('flow', { id: session.id, paused }).catch(() => {})
+        }
+
         function writeTracked(text) {
           if (typeof text !== 'string' || text === '') return
-          const handle = handleRef.current
-          if (handle !== null && handle !== undefined) handle.write(text)
           core.lineStart = text.charAt(text.length - 1) === '\n'
+          const handle = handleRef.current
+          if (handle === null || handle === undefined) return
+          if (core.flowEnabled !== true) {
+            handle.write(text)
+            return
+          }
+          /* xterm calls back when the chunk has been parsed: the only reliable
+             backlog signal available on this face. */
+          core.pendingChars += text.length
+          handle.write(text, function () {
+            core.pendingChars = Math.max(0, core.pendingChars - text.length)
+            if (core.flowPaused === true && core.pendingChars <= FLOW_LOW_WATER) {
+              core.flowPaused = false
+              sendFlow(false)
+            }
+          })
+          if (core.flowPaused !== true && core.pendingChars > FLOW_HIGH_WATER) {
+            core.flowPaused = true
+            sendFlow(true)
+          }
         }
 
         function closeStream() {
           const source = core.es
           core.es = null
+          core.flowEnabled = false
+          core.pendingChars = 0
+          core.flowPaused = false
           if (source !== null && source !== undefined) {
             try { source.close() } catch (error) { void error }
           }
@@ -1328,6 +1363,9 @@ window.__ModuleLoader__.load({
             const mode = payload.mode === 'pty' ? 'pty' : 'command'
             core.mode = mode
             core.gotHello = true
+            core.flowEnabled = payload.flow === true
+            core.pendingChars = 0
+            core.flowPaused = false
             if (typeof payload.id === 'string' && payload.id !== '') {
               core.session = { id: payload.id, mode }
             }
@@ -1412,6 +1450,9 @@ window.__ModuleLoader__.load({
           source.onerror = () => {
             if (core.es !== source) return
             core.es = null
+          core.flowEnabled = false
+          core.pendingChars = 0
+          core.flowPaused = false
             try { source.close() } catch (error) { void error }
             if (core.cancelled || core.exited) return
             if (core.reconnectUsed) {
