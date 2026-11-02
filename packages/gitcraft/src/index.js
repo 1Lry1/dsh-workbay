@@ -1217,14 +1217,22 @@ function watcherFor(root) {
     if (existing.idleTimer !== null) { clearTimeout(existing.idleTimer); existing.idleTimer = null }
     return existing
   }
-  const state = { revision: 0, listeners: new Set(), watcher: null, idleTimer: null, lastPollAt: Date.now() }
+  const state = { revision: 0, listeners: new Set(), watcher: null, idleTimer: null, bumpTimer: null, lastPollAt: Date.now() }
   try {
     state.watcher = watch(root, { recursive: true, persistent: false }, (eventType, filename) => {
       if (isNoisyPath(filename)) return
-      state.revision += 1
-      for (const listener of [...state.listeners]) {
-        try { listener() } catch { /* a listener must not break the watcher */ }
-      }
+      /* A build touches thousands of files. Bumping the revision (and waking the
+         long-poll) per event made the client restart its snapshot continuously,
+         so the first load never finished. One bump per 300 ms is plenty. */
+      if (state.bumpTimer !== null) return
+      state.bumpTimer = setTimeout(() => {
+        state.bumpTimer = null
+        state.revision += 1
+        for (const listener of [...state.listeners]) {
+          try { listener() } catch { /* a listener must not break the watcher */ }
+        }
+      }, 300)
+      if (typeof state.bumpTimer.unref === 'function') state.bumpTimer.unref()
     })
     state.watcher.on('error', () => { /* the watcher degrades to "always changed" */ })
   } catch {
@@ -1239,6 +1247,7 @@ function scheduleWatcherIdle(root, state) {
   state.idleTimer = setTimeout(() => {
     if (state.listeners.size > 0) return
     if (Date.now() - state.lastPollAt < WATCH_IDLE_MS / 2) return
+    if (state.bumpTimer !== null) { clearTimeout(state.bumpTimer); state.bumpTimer = null }
     if (state.watcher !== null) { try { state.watcher.close() } catch { /* gone */ } }
     watchState.delete(root)
   }, WATCH_IDLE_MS)
