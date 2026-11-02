@@ -40,7 +40,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/host.test.mjs tests/client.test.mjs tests/workspace.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/host.test.mjs tests/client.test.mjs tests/workspace.test.mjs"
   },
   "dependencies": {
     "@dsh-workbay/kit": "file:../kit"

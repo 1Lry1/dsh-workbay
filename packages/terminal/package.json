@@ -46,7 +46,7 @@
     }
   },
   "scripts": {
-    "test": "node --test tests/host.test.mjs tests/client.test.mjs tests/pty-helper.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/host.test.mjs tests/client.test.mjs tests/pty-helper.test.mjs"
   },
   "keywords": [
     "dsh",

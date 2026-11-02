@@ -113,12 +113,25 @@ test('searchParts splits a line into hit/plain segments for highlighting', () =>
   assert.deepEqual(searchParts('x', '(', false, false, true), [{ text: 'x', hit: false }])
 })
 
-test('clicking a search hit opens the surrounding log context', () => {
+test('clicking a search hit merges its context back into the live stream', () => {
   assert.match(source, /\/log\/context\?/)
   assert.match(source, /const locate = React\.useCallback/)
+  assert.match(source, /mergeLogs\(logsRef\.current, data\.logs/)
   assert.match(source, /is-target/)
-  assert.match(source, /返回搜索结果/)
-  assert.match(source, /onClick: searching && jump\.logs === null/)
+  assert.match(source, /已定位到实时日志/)
+  assert.match(source, /onClick: searching \?/)
+})
+
+test('mergeLogs dedupes, sorts and caps the live buffer', () => {
+  const { module } = loadClient()
+  const { mergeLogs } = module.__test
+  const live = [{ t: 3, src: 'S', text: 'c' }, { t: 4, src: 'S', text: 'd' }]
+  const merged = mergeLogs(live, [{ t: 1, src: 'S', text: 'a' }, { t: 4, src: 'S', text: 'd' }, { t: 2, src: 'S', text: 'b' }], 100)
+  assert.deepEqual(merged.map((x) => x.text), ['a', 'b', 'c', 'd'])
+  assert.equal(live.length, 2, 'input array must not be mutated')
+  const capped = mergeLogs([{ t: 1, src: 'S', text: 'a' }], [{ t: 2, src: 'S', text: 'b' }, { t: 3, src: 'S', text: 'c' }], 2)
+  assert.deepEqual(capped.map((x) => x.text), ['b', 'c'])
+  assert.equal(mergeLogs(live, [], 10), live, 'no incoming leaves the array identity')
 })
 test('the page has a Notepad++-style search bar over the full log file', () => {
   assert.match(source, /placeholder: '搜索日志/)
