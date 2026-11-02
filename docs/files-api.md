@@ -79,8 +79,21 @@
 }
 ```
 
-`mode:'name'` 时每个文件一条记录且 `matches` 为空数组（`totalMatches = files.length`），用于
-「快速打开文件」（Ctrl+P 语义）。
+`mode:'name'` 是 **VSCode Quick Open 风格**的文件名搜索（每个文件一条记录，`matches` 为空数组，
+`totalMatches = files.length`）：
+
+- query 按空白切成多个 token；**每个 token 都必须按顺序是 `rel` 的子序列**
+  （大小写：`caseSensitive` 控制，默认不敏感）。例：`func a` 命中
+  `app/projects/standard/functions/func_alarm.c`；token 之间不要求相邻。
+- 每个文件额外返回：
+  - `score: number`：排序分。评分 = 命中落在 basename（最后一个 `/` 之后）的 token 每个 +100；
+    token 首个字符位于段首（`rel` 开头或 `/ _ - .` 之后）+20；token 命中包含连续字符 +
+    每连续 2 个字符 +10；最后减去 `rel.length * 0.01`。
+  - `indices: number[]`：命中字符在 `rel` 中的下标（升序去重），供高亮用。
+- 排序：`score` 降序，其次 `rel` 自然序；仍需遵守 `maxResults`、默认排除、二进制/超限跳过
+  与 6s 预算。
+- 客户端在拿到结果后，可把**最近打开过的文件**排在最前（VSCode 的“最近打开”分组），这属于
+  客户端排序，不影响宿主返回顺序。
 
 规则：
 

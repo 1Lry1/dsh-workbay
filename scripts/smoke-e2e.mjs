@@ -133,6 +133,12 @@ check('content search is fast enough', contentMs < 6000, `${contentMs} ms`)
 const nameSearch = await post('/dsh-workbay-files', 'search', { root: repoRoot, mode: 'name', query: 'workbay', maxResults: 10 })
 check('name search 200', nameSearch.status === 200 && nameSearch.body.ok === true && Array.isArray(nameSearch.body.data?.files))
 
+/* Quick Open fuzzy tokens: whitespace is a separator, not a literal character. */
+const fuzzy = await post('/dsh-workbay-files', 'search', { root: repoRoot, mode: 'name', query: 'workbay suite', maxResults: 5 })
+const fuzzyFirst = fuzzy.body.data?.files?.[0]
+check('fuzzy name search returns matches', fuzzy.status === 200 && Array.isArray(fuzzy.body.data?.files) && fuzzy.body.data.files.length > 0)
+check('fuzzy match carries score/indices', typeof fuzzyFirst?.score === 'number' && Array.isArray(fuzzyFirst?.indices) && fuzzyFirst.indices.length > 0)
+
 const badRegex = await post('/dsh-workbay-files', 'search', { root: repoRoot, mode: 'content', query: '([', regex: true })
 check('bad regex 400', badRegex.status === 400 && badRegex.body.error?.code === 'bad-regex', JSON.stringify(badRegex.body.error))
 

@@ -641,7 +641,7 @@ test('normalizeSearchResponse groups, normalises and sorts per §2.1', () => {
   const name = api.normalizeSearchResponse({ files: [{ rel: 'b.txt', matches: [] }, { rel: 'a.txt', matches: [] }] }, 'name', 'txt')
   assert.equal(name.mode, 'name')
   assert.equal(name.totalMatches, 2)
-  assert.deepEqual(name.files.map((file) => file.rel), ['a.txt', 'b.txt'])
+  assert.deepEqual(name.files.map((file) => file.rel), ['b.txt', 'a.txt'], 'name mode keeps the host score order')
 })
 
 test('flattenSearchResults creates collapsible file groups with stable keys', () => {
@@ -772,12 +772,15 @@ test('moveSearchFocus clamps and enters the list from both directions', () => {
 })
 
 test('normalizeNameSearchEntries supports the §2.1 shape and the legacy tree response', () => {
-  const current = api.normalizeNameSearchEntries({ files: [{ rel: 'src/b.ts', size: 4, mtimeMs: 7 }, { rel: 'src/a.ts' }] })
-  assert.deepEqual(current.map((entry) => entry.rel), ['src/a.ts', 'src/b.ts'])
-  assert.equal(current[1].name, 'b.ts')
-  assert.equal(current[1].size, 4)
-  assert.equal(current[1].mtimeMs, 7)
-  assert.equal(current[1].type, 'file')
+  const current = api.normalizeNameSearchEntries({ files: [{ rel: 'src/b.ts', size: 4, mtimeMs: 7, score: 42, indices: [0, 4, 5] }, { rel: 'src/a.ts', score: 7 }] })
+  assert.deepEqual(current.map((entry) => entry.rel), ['src/b.ts', 'src/a.ts'], 'host score order is preserved')
+  assert.equal(current[0].name, 'b.ts')
+  assert.equal(current[0].size, 4)
+  assert.equal(current[0].mtimeMs, 7)
+  assert.equal(current[0].type, 'file')
+  assert.equal(current[0].score, 42)
+  assert.deepEqual(current[0].indices, [0, 4, 5])
+  assert.deepEqual(current[1].indices, [])
 
   const legacy = api.normalizeNameSearchEntries({ matches: [{ rel: 'b.txt', name: 'b.txt', type: 'file' }, { rel: 'a.txt', name: 'a.txt', type: 'file' }] })
   assert.deepEqual(legacy.map((entry) => entry.rel), ['a.txt', 'b.txt'])
@@ -1359,4 +1362,500 @@ test('the bundle is plain browser JavaScript: no JSX, no imports', () => {
 test('node --check accepts the client bundle', () => {
   const result = spawnSync(process.execPath, ['--check', clientPath], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
+})
+
+/* ============================== Quick Open ============================== */
+
+test('normalizeIndices and splitByIndices build plain highlighted segments', () => {
+  assert.deepEqual(api.normalizeIndices([3, 1, 1, 9, -1, 2.7, 'x'], 5), [1, 2, 3])
+  assert.deepEqual(api.normalizeIndices(null, 5), [])
+  assert.deepEqual(api.normalizeIndices([0], 0), [])
+
+  assert.deepEqual(api.splitByIndices('func_alarm.c', [0, 1, 2, 5, 6]), [
+    { text: 'fun', highlight: true },
+    { text: 'c_', highlight: false },
+    { text: 'al', highlight: true },
+    { text: 'arm.c', highlight: false },
+  ])
+  assert.deepEqual(api.splitByIndices('abc', []), [{ text: 'abc', highlight: false }])
+  assert.deepEqual(api.splitByIndices('abc', [1]), [
+    { text: 'a', highlight: false },
+    { text: 'b', highlight: true },
+    { text: 'c', highlight: false },
+  ])
+  assert.deepEqual(api.splitByIndices('<b>', [0, 1, 2]), [
+    { text: '<b>', highlight: true },
+  ])
+  assert.deepEqual(api.splitByIndices('', [0]), [{ text: '', highlight: false }])
+})
+
+test('quickOpenDisplay highlights basename characters and keeps dir for ellipsis', () => {
+  const display = api.quickOpenDisplay('src/func_a.c', [0, 4, 5])
+  assert.equal(display.name, 'func_a.c')
+  assert.equal(display.dir, 'src')
+  assert.deepEqual(display.segments, [
+    { text: 'fu', highlight: true },
+    { text: 'nc_a.c', highlight: false },
+  ], 'indices in the directory part are ignored for the basename')
+
+  const nested = api.quickOpenDisplay('app/projects/functions/func_alarm.c', [24, 25, 26])
+  assert.equal(nested.name, 'func_alarm.c')
+  assert.equal(nested.dir, 'app/projects/functions')
+  assert.ok(nested.segments.some((segment) => segment.highlight))
+
+  assert.deepEqual(api.quickOpenDisplay('README.md', []), {
+    rel: 'README.md', name: 'README.md', dir: '', segments: [{ text: 'README.md', highlight: false }],
+  })
+})
+
+test('normalizeRecentList dedupes, orders and caps recent files', () => {
+  assert.deepEqual(api.normalizeRecentList(['a', 'b', 'a', 'c'], 3), ['a', 'b', 'c'])
+  assert.deepEqual(api.normalizeRecentList(['', null, 'a/b', 'a/b'], 8), ['a/b'])
+  const many = Array.from({ length: 12 }, (_, index) => 'f' + index)
+  assert.deepEqual(api.normalizeRecentList(many), many.slice(0, api.QUICK_OPEN_RECENT_LIMIT))
+  assert.deepEqual(api.normalizeRecentList(many, 2), ['f0', 'f1'])
+})
+
+test('orderRecentFirst is recent-first, stable, deduped and host-score ordered after', () => {
+  const entries = [
+    { rel: 'src/b.ts', score: 90 },
+    { rel: 'src/c.ts', score: 80 },
+    { rel: 'src/a.ts', score: 70 },
+    { rel: 'src/d.ts', score: 60 },
+    { rel: 'src/b.ts', score: 50 },
+  ]
+  const ordered = api.orderRecentFirst(entries, ['src/a.ts', 'src/b.ts', 'src/missing.ts'])
+  assert.deepEqual(ordered.map((entry) => entry.rel), ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'])
+  assert.deepEqual(ordered.map((entry) => entry.recent), [true, true, false, false])
+  assert.equal(ordered[2].score, 80, 'non-recent files keep host order')
+  assert.equal(ordered[0].score, 70)
+
+  const capped = api.orderRecentFirst(entries, ['src/d.ts', 'src/a.ts'], 1)
+  assert.deepEqual(capped.map((entry) => entry.rel), ['src/d.ts', 'src/b.ts', 'src/c.ts', 'src/a.ts'])
+  assert.deepEqual(capped.map((entry) => entry.recent), [true, false, false, false])
+})
+
+test('quick-open reducer and keyboard commands', () => {
+  let state = api.createQuickOpenState()
+  assert.deepEqual(state, { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1 })
+
+  state = api.reduceQuickOpen(state, { type: 'query', query: 'func a' })
+  assert.equal(state.query, 'func a')
+  assert.equal(state.status, 'loading')
+  state = api.reduceQuickOpen(state, { type: 'response', matches: [{ rel: 'a.ts' }, { rel: 'b.ts' }], truncated: true })
+  assert.equal(state.status, 'ready')
+  assert.equal(state.matches.length, 2)
+  assert.equal(state.truncated, true)
+  assert.equal(state.focusIndex, -1)
+
+  assert.deepEqual(api.quickOpenKeyCommand(state, 'ArrowDown'), { type: 'focus', index: 0 })
+  assert.deepEqual(api.quickOpenKeyCommand(state, 'ArrowUp'), { type: 'focus', index: 1 })
+  assert.deepEqual(api.quickOpenKeyCommand(state, 'Enter'), { type: 'open', index: 0 })
+  assert.deepEqual(api.quickOpenKeyCommand(Object.assign({}, state, { focusIndex: 1 }), 'Enter'), { type: 'open', index: 1 })
+  assert.deepEqual(api.quickOpenKeyCommand(state, 'Escape'), { type: 'clear' })
+  assert.equal(api.quickOpenKeyCommand(state, 'x'), null)
+
+  state = api.reduceQuickOpen(state, { type: 'focus', index: 1 })
+  assert.equal(state.focusIndex, 1)
+  state = api.reduceQuickOpen(state, { type: 'error', message: 'boom' })
+  assert.equal(state.status, 'error')
+  assert.equal(state.error, 'boom')
+  assert.deepEqual(state.matches, [])
+  assert.equal(api.quickOpenKeyCommand(state, 'Enter'), null)
+  state = api.reduceQuickOpen(state, { type: 'clear' })
+  assert.deepEqual(state, api.createQuickOpenState())
+})
+
+test('TreePanel Quick Open renders fuzzy hits, recent badge, dir title and count', () => {
+  const rel = 'app/projects/functions/func_alarm.c'
+  const offset = rel.length - 'func_alarm.c'.length
+  const recentEntry = {
+    rel,
+    name: 'func_alarm.c',
+    type: 'file',
+    score: 200,
+    indices: [0, 1, 2, 5, 6].map((index) => index + offset),
+  }
+  const otherEntry = { rel: 'src/other.ts', name: 'other.ts', type: 'file', score: 10, indices: [] }
+  let search = api.reduceQuickOpen(api.createQuickOpenState(), { type: 'query', query: 'func a' })
+  search = api.reduceQuickOpen(search, { type: 'response', matches: [otherEntry, recentEntry], truncated: true })
+  const opened = []
+  const keys = []
+  const panel = E(api.components.TreePanel, {
+    t: translate,
+    root: 'C:\\work',
+    tree: { '': { status: 'ready', entries: [], truncated: false } },
+    expanded: new Set(),
+    rows: [],
+    rowLimit: api.TREE_ROW_LIMIT,
+    showHidden: false,
+    searchQuery: 'func a',
+    search,
+    recentFiles: [rel],
+    activeRel: null,
+    onQueryChange() {},
+    onClearSearch() {},
+    onToggleHidden() {},
+    onRefresh() {},
+    onToggleDir() {},
+    onOpenFile() {},
+    onRetryDir() {},
+    onShowMore() {},
+    onOpenSearchResult: (entry) => opened.push(entry),
+    onSearchKeyDown: (event) => keys.push(event),
+  })
+  const text = textOf(panel)
+  assert.ok(text.includes('Recently opened'))
+  assert.ok(text.includes('2 matches'))
+  assert.ok(text.includes('arm.c'), 'basename tail survives the highlight split')
+  assert.ok(text.includes('app/projects/functions'))
+  const rows = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].props.title, rel, 'recent file is first')
+  assert.equal(rows[0].props.className.includes('is-recent'), true)
+  const hits = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchHit'))
+  assert.ok(hits.length >= 2, 'fuzzy indices are split into highlight spans')
+  assert.equal(hits.map((node) => textOf(node)).join(''), 'funal')
+  const dir = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchDir'))
+  assert.equal(dir[0].props.title, 'app/projects/functions')
+
+  rows[0].props.onClick()
+  assert.equal(opened[0].rel, rel)
+  const input = nodesOf(panel, (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')[0]
+  assert.equal(typeof input.props.onKeyDown, 'function')
+
+  const empty = api.reduceQuickOpen(api.createQuickOpenState(), { type: 'query', query: 'zzz' })
+  const emptyReady = api.reduceQuickOpen(empty, { type: 'response', matches: [], truncated: false })
+  const emptyPanel = E(api.components.TreePanel, {
+    t: translate, root: 'C:\\work', tree: {}, expanded: new Set(), rows: [], rowLimit: api.TREE_ROW_LIMIT,
+    showHidden: false, searchQuery: 'zzz', search: emptyReady, recentFiles: [], activeRel: null,
+    onQueryChange() {}, onClearSearch() {}, onToggleHidden() {}, onRefresh() {}, onToggleDir() {},
+    onOpenFile() {}, onRetryDir() {}, onShowMore() {}, onOpenSearchResult() {}, onSearchKeyDown() {},
+  })
+  assert.ok(textOf(emptyPanel).includes('No matching files'))
+  const loading = api.reduceQuickOpen(empty, { type: 'request' })
+  const loadingPanel = E(api.components.TreePanel, {
+    t: translate, root: 'C:\\work', tree: {}, expanded: new Set(), rows: [], rowLimit: api.TREE_ROW_LIMIT,
+    showHidden: false, searchQuery: 'zzz', search: loading, recentFiles: [], activeRel: null,
+    onQueryChange() {}, onClearSearch() {}, onToggleHidden() {}, onRefresh() {}, onToggleDir() {},
+    onOpenFile() {}, onRetryDir() {}, onShowMore() {}, onOpenSearchResult() {}, onSearchKeyDown() {},
+  })
+  assert.ok(textOf(loadingPanel).includes('Searching…'))
+  assert.equal(textOf(loadingPanel).includes('No matching files'), false, 'empty state only when the result is really empty')
+})
+
+test('SearchPanel name mode uses fuzzy indices and recent-first ordering', () => {
+  let state = api.createSearchState()
+  state = api.reduceSearchState(state, { type: 'open' })
+  state = api.reduceSearchState(state, { type: 'query', query: 'a' })
+  state = api.reduceSearchState(state, { type: 'mode', mode: 'name' })
+  state = api.reduceSearchState(state, { type: 'request', seq: 2 })
+  const data = api.normalizeSearchResponse({
+    mode: 'name',
+    query: 'a',
+    files: [
+      { rel: 'src/a.ts', indices: [4, 5] },
+      { rel: 'src/b.ts', indices: [4] },
+    ],
+    totalMatches: 2,
+  }, 'name', 'a')
+  state = api.reduceSearchState(state, { type: 'response', seq: 2, data })
+  const opened = []
+  const panel = E(api.components.SearchPanel, {
+    t: translate,
+    state,
+    root: 'C:\\work',
+    recentFiles: ['src/b.ts'],
+    onQueryChange() {}, onRun() {}, onCancel() {}, onClose() {}, onModeChange() {},
+    onToggleFlag() {}, onGlobChange() {}, onToggleGlobOpen() {}, onCollapse() {},
+    onOpenRow: (row) => opened.push(row), onFocus() {}, onPickRoot() {}, onClear() {},
+  })
+  const rows = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].props.title, 'src/b.ts', 'recent file first')
+  assert.ok(textOf(rows[0]).includes('Recently opened'))
+  const hits = nodesOf(rows[0], (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srHit'))
+  assert.equal(hits.length, 1)
+  assert.equal(textOf(hits[0]), 'b')
+  rows[0].props.onClick()
+  assert.equal(opened[0].rel, 'src/b.ts')
+})
+
+test('i18n has recent strings and no Ctrl/Cmd+Shift+F hint', () => {
+  for (const dictionary of [api.dictionaries.zh, api.dictionaries.en]) {
+    assert.equal(Object.values(dictionary).some((value) => /Ctrl\/Cmd\+Shift\+F|Ctrl\+Shift\+F/.test(String(value))), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(dictionary, 'search.recentBadge'), true)
+    assert.equal(Object.prototype.hasOwnProperty.call(dictionary, 'search.resultCount'), true)
+  }
+  assert.equal(api.dictionaries.zh['search.open'], '搜索')
+  assert.equal(api.dictionaries.en['search.open'], 'Search')
+})
+
+/* ============================== Quick Open keyboard integration ============================== */
+
+/** Per-component hook runtime so Page effects/listeners can be exercised in Node. */
+function createComponentRuntime() {
+  const instances = new Map()
+  let root = null
+  let alive = false
+  let scheduled = false
+  let current = null
+  let pendingEffects = []
+
+  function sameDeps(left, right) {
+    if (!left || !right) return false
+    if (left.length !== right.length) return false
+    for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false
+    return true
+  }
+  function schedule() {
+    if (!alive || scheduled) return
+    scheduled = true
+    queueMicrotask(() => {
+      scheduled = false
+      if (alive) renderRoot()
+    })
+  }
+  function setStateAt(instance, index, value) {
+    instance.hooks[index].state = typeof value === 'function' ? value(instance.hooks[index].state) : value
+    schedule()
+  }
+  function makeElement(tag) {
+    return {
+      tag, listeners: [], attributes: {}, style: {},
+      addEventListener(name, fn) { this.listeners.push([name, fn]) },
+      removeEventListener() {},
+      appendChild() {},
+      focus() {},
+      remove() {},
+      setAttribute() {},
+    }
+  }
+  const Fragment = Symbol('Fragment')
+  const React = {
+    Fragment,
+    createElement(type, props, ...children) {
+      const out = props === null || props === undefined ? {} : props
+      if (out.ref && typeof type === 'string' && (out.ref.current === null || out.ref.current === undefined)) {
+        out.ref.current = makeElement(type)
+      }
+      out.children = children.length === 0 ? undefined : (children.length === 1 ? children[0] : children)
+      return { type, props: out, children: children.flat() }
+    },
+    useState(initial) {
+      const instance = current
+      const index = instance.cursor
+      instance.cursor += 1
+      if (!instance.hooks[index]) instance.hooks[index] = { kind: 'state', state: typeof initial === 'function' ? initial() : initial }
+      return [instance.hooks[index].state, (value) => setStateAt(instance, index, value)]
+    },
+    useRef(initial) {
+      const instance = current
+      const index = instance.cursor
+      instance.cursor += 1
+      if (!instance.hooks[index]) instance.hooks[index] = { kind: 'ref', current: initial }
+      return instance.hooks[index]
+    },
+    useMemo(fn, deps) {
+      const instance = current
+      const index = instance.cursor
+      instance.cursor += 1
+      if (!instance.hooks[index]) instance.hooks[index] = { kind: 'memo', deps: null, value: undefined }
+      const hook = instance.hooks[index]
+      if (!sameDeps(hook.deps, deps)) {
+        hook.deps = deps ? deps.slice() : null
+        hook.value = fn()
+      }
+      return hook.value
+    },
+    useCallback(fn, deps) {
+      const instance = current
+      const index = instance.cursor
+      instance.cursor += 1
+      if (!instance.hooks[index]) instance.hooks[index] = { kind: 'callback', deps: null, fn }
+      const hook = instance.hooks[index]
+      if (!sameDeps(hook.deps, deps)) {
+        hook.deps = deps ? deps.slice() : null
+        hook.fn = fn
+      }
+      return hook.fn
+    },
+    useEffect(fn, deps) {
+      const instance = current
+      const index = instance.cursor
+      instance.cursor += 1
+      if (!instance.hooks[index]) instance.hooks[index] = { kind: 'effect', deps: null, cleanup: null }
+      const hook = instance.hooks[index]
+      if (!sameDeps(hook.deps, deps)) {
+        hook.deps = deps ? deps.slice() : null
+        pendingEffects.push({ instance, hook, fn })
+      }
+    },
+    memo(fn) { return fn },
+  }
+
+  function evalNode(node, path) {
+    if (node === null || node === undefined || typeof node === 'boolean') return node
+    if (typeof node === 'string' || typeof node === 'number') return node
+    if (Array.isArray(node)) return node.map((child, index) => evalNode(child, path + '/' + index))
+    if (typeof node !== 'object' || node.type === undefined) return node
+    if (node.type === Fragment) return evalNode(node.children, path + '/f')
+    if (typeof node.type === 'function') {
+      let instance = instances.get(path)
+      if (!instance || instance.type !== node.type) {
+        instance = { type: node.type, hooks: [], cursor: 0 }
+        instances.set(path, instance)
+      }
+      const previous = current
+      current = instance
+      instance.cursor = 0
+      let output
+      try {
+        output = node.type(node.props, node.children)
+      } finally {
+        current = previous
+      }
+      return evalNode(output, path + '/o')
+    }
+    const props = Object.assign({}, node.props)
+    props.children = undefined
+    const element = { type: node.type, props, children: [] }
+    const children = node.children.map((child, index) => evalNode(child, path + '/' + index))
+    element.children = children
+    props.children = children.length === 0 ? undefined : (children.length === 1 ? children[0] : children)
+    return element
+  }
+
+  function renderRoot() {
+    pendingEffects = []
+    const tree = evalNode(root, 'root')
+    const effects = pendingEffects
+    pendingEffects = []
+    for (const item of effects) {
+      if (typeof item.hook.cleanup === 'function') {
+        try { item.hook.cleanup() } catch (error) { void error }
+      }
+      const previous = current
+      current = item.instance
+      try {
+        item.hook.cleanup = item.fn()
+      } finally {
+        current = previous
+      }
+    }
+    return tree
+  }
+
+  return {
+    React,
+    mount(component, props) {
+      root = React.createElement(component, props)
+      alive = true
+      return renderRoot()
+    },
+    tree: () => renderRoot(),
+    unmount() {
+      alive = false
+      for (const instance of instances.values()) {
+        for (const hook of instance.hooks) {
+          if (hook && hook.kind === 'effect' && typeof hook.cleanup === 'function') {
+            try { hook.cleanup() } catch (error) { void error }
+            hook.cleanup = null
+          }
+        }
+      }
+    },
+  }
+}
+
+test('Ctrl/Cmd+Shift+F no longer opens search; toolbar opens; inline Quick Open works', { timeout: 15000 }, async () => {
+  const runtime = createComponentRuntime()
+  const fetchCalls = []
+  const fakeFetch = async (url, options) => {
+    const method = String(url).split('/api/')[1] || ''
+    let payload = {}
+    try { payload = JSON.parse(options.body) } catch (error) { void error }
+    fetchCalls.push({ method, payload })
+    let data = { ok: true }
+    if (method === 'roots') data = { root: 'C:/work', drives: [], recent: [] }
+    else if (method === 'tree') data = { root: 'C:/work', dir: payload.dir || '', entries: [], truncated: false }
+    else if (method === 'search') data = {
+      root: 'C:/work',
+      mode: 'name',
+      query: payload.query,
+      files: [{ rel: 'src/func_alarm.c', size: 5, mtimeMs: 5, score: 120, indices: [4, 5, 6, 7], matches: [] }],
+      matches: [],
+      totalMatches: 1,
+      scannedFiles: 1,
+      truncated: false,
+      elapsedMs: 1,
+    }
+    else if (method === 'read') data = { content: 'x\n', size: 2, mtimeMs: 5, encoding: 'utf8', truncated: false }
+    else if (method === 'stat') data = { entry: { name: 'func_alarm.c', rel: payload.rel, type: 'file', size: 5, mtimeMs: 5 } }
+    return { json: async () => ({ ok: true, data }) }
+  }
+  const local = boot({
+    react: () => runtime.React,
+    fetch: fakeFetch,
+    storage: { 'dsh-workbay.root.v1': 'C:\\work' },
+  })
+  runtime.mount(local.testApi.components.Page, { t: translate })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+
+  const queryInput = () => nodesOf(runtime.tree(), (node) => node.type === 'input' && node.props.className === 'wbf-srQuery')
+  assert.equal(queryInput().length, 0, 'search panel starts closed')
+
+  const keyEvent = (key) => ({
+    key,
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: true,
+    preventDefault() {},
+    stopPropagation() {},
+  })
+  const listeners = local.listeners.get('keydown') || []
+  for (const listener of listeners) listener(keyEvent('f'))
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(queryInput().length, 0, 'Ctrl+Shift+F must not open the panel anymore')
+
+  const toolbar = nodesOf(runtime.tree(), (node) => node.type === 'button' && node.props.title === translate('search.open'))[0]
+  assert.ok(toolbar !== undefined, 'toolbar search button exists')
+  toolbar.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(queryInput().length, 1, 'the toolbar still opens the panel')
+
+  for (const listener of listeners) {
+    listener({ key: 'Escape', ctrlKey: false, metaKey: false, shiftKey: false, preventDefault() {}, stopPropagation() {} })
+  }
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(queryInput().length, 0, 'Esc still closes the panel')
+
+  /* Inline Quick Open: host fuzzy results render, keyboard opens, recents stick. */
+  const inlineInput = () => nodesOf(runtime.tree(), (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')[0]
+  assert.ok(inlineInput() !== undefined, 'inline Quick Open input exists in the explorer')
+  inlineInput().props.onChange({ target: { value: 'func a' } })
+  await new Promise((resolve) => setTimeout(resolve, 280))
+  const searchCall = fetchCalls.filter((call) => call.method === 'search').pop()
+  assert.equal(searchCall.payload.mode, 'name')
+  assert.equal(searchCall.payload.query, 'func a')
+  assert.equal(searchCall.payload.maxResults, api.SEARCH_LIMIT)
+  const quickRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
+  assert.equal(quickRows.length, 1)
+  assert.equal(quickRows[0].props.title, 'src/func_alarm.c')
+  assert.ok(nodesOf(quickRows[0], (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchHit')).length >= 1)
+
+  let input = inlineInput()
+  input.props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  input = inlineInput()
+  input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.ok(fetchCalls.some((call) => call.method === 'read' && call.payload.rel === 'src/func_alarm.c'), 'Enter opens the focused Quick Open file')
+  assert.ok(textOf(runtime.tree()).includes('func_alarm.c'), 'opened file appears in the tab strip')
+  const recentRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
+  assert.equal(recentRows[0].props.className.includes('is-recent'), true, 'opened file becomes a recent Quick Open hit')
+  assert.ok(textOf(recentRows[0]).includes('Recently opened'))
+
+  runtime.unmount()
+  assert.ok(fetchCalls.some((call) => call.method === 'tree'), 'page mounted far enough to load the tree')
 })

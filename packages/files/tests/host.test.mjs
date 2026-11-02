@@ -214,6 +214,20 @@ before(async () => {
   mkdirSync(path.join(ws, 'src', 'node_modules'), { recursive: true })
   writeFileSync(path.join(ws, 'src', 'node_modules', 'nested-dep.js'), 'const TARGET = "nested"\n')
 
+  /* Quick Open (name mode) fixtures. `func a` is the example from the contract:
+     its tokens land in the basename below, while quick/func/alarm/x.txt can only
+     match through the directory path. */
+  mkdirSync(path.join(ws, 'quick', 'app', 'projects', 'standard', 'functions'), { recursive: true })
+  mkdirSync(path.join(ws, 'quick', 'func', 'alarm'), { recursive: true })
+  mkdirSync(path.join(ws, 'quick', 'UPPER'), { recursive: true })
+  mkdirSync(path.join(ws, 'quick', 'order'), { recursive: true })
+  writeFileSync(path.join(ws, 'quick', 'app', 'projects', 'standard', 'functions', 'func_alarm.c'), 'int main(void) { return 0; }\n')
+  writeFileSync(path.join(ws, 'quick', 'func', 'alarm', 'x.txt'), 'nothing to see here\n')
+  writeFileSync(path.join(ws, 'quick', 'UPPER', 'FUNC_ALARM.C'), 'upper case name\n')
+  writeFileSync(path.join(ws, 'quick', 'order', 'abc.txt'), 'abc\n')
+  writeFileSync(path.join(ws, 'quick', 'order', 'zyx.txt'), 'zyx\n')
+  writeFileSync(path.join(ws, 'quick', 'readme.md'), 'quick open fixture\n')
+
   escapeLinkCreated = makeDirLink(outside, path.join(ws, 'escape'))
 
   writeFileSync(path.join(chunksDir, 'demo.js'), 'globalThis.__dshChunks__ = {}\n')
@@ -569,7 +583,7 @@ test('search: maxResults truncates instead of failing', async () => {
   assert.equal(capped.data.totalMatches, 5)
 })
 
-test('search: name mode returns whole files without content matches', async () => {
+test('search: name mode returns whole files ranked by score', async () => {
   const out = await call('search', { root: ws, query: 'glob-target', mode: 'name' })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.equal(out.data.mode, 'name')
@@ -579,16 +593,24 @@ test('search: name mode returns whole files without content matches', async () =
     'search/nested/deep/glob-target.ts',
   ])
   for (const file of out.data.files) {
-    assert.deepEqual(file.matches, [])
+    assert.deepEqual(file.matches, [], 'name mode never returns content matches')
     assert.equal(typeof file.size, 'number')
     assert.equal(typeof file.mtimeMs, 'number')
+    assert.equal(typeof file.score, 'number')
+    assert.ok(Array.isArray(file.indices) && file.indices.length > 0)
+    for (const index of file.indices) assert.ok(index >= 0 && index < file.rel.length)
+    assert.equal(file.indices.map((index) => file.rel[index]).join('').toLowerCase(), 'glob-target')
   }
   assert.equal(out.data.totalMatches, 3)
-  /* Legacy projection: name entries with type/rel/name. */
+  /* Same score → natural rel order; the deeper path loses on the length penalty. */
+  assert.ok(out.data.files[0].score >= out.data.files[1].score)
+  assert.ok(out.data.files[1].score > out.data.files[2].score)
+  /* Legacy projection: name entries with type/rel/name, in the same order. */
   assert.deepEqual(out.data.matches.map((entry) => entry.type), ['file', 'file', 'file'])
+  assert.deepEqual(out.data.matches.map((entry) => entry.rel), relsOf(out))
 
   const sensitive = await call('search', { root: ws, query: 'GLOB-TARGET', mode: 'name', caseSensitive: true })
-  assert.deepEqual(relsOf(sensitive), [])
+  assert.deepEqual(relsOf(sensitive), [], 'no fixture has an upper-case GLOB-TARGET name')
   const insensitive = await call('search', { root: ws, query: 'GLOB-TARGET', mode: 'name' })
   assert.equal(insensitive.data.files.length, 3)
 
@@ -600,17 +622,111 @@ test('search: name mode returns whole files without content matches', async () =
   const limited = await call('search', { root: ws, query: 'glob-target', mode: 'name', maxResults: 1 })
   assert.equal(limited.data.files.length, 1)
   assert.equal(limited.data.truncated, true)
+  assert.equal(limited.data.files[0].rel, 'search/glob-target.js', 'the best-ranked file survives the cut')
 })
 
-test('search: legacy name search still skips node_modules by default', async () => {
-  const out = await call('search', { root: ws, query: 'needle', mode: 'name' })
+test('search: name mode is VSCode Quick Open fuzzy matching', async () => {
+  /* The contract example: the query has a space, the file has an underscore, and
+     both tokens are subsequences of the path (`func` and `a` in the basename). */
+  const out = await call('search', { root: ws, query: 'func a', mode: 'name' })
   assert.equal(out.ok, true, JSON.stringify(out))
-  const rels = out.data.matches.map((entry) => entry.rel)
-  assert.deepEqual(rels.sort(), ['needle-a.txt', 'src/deep/Needle-C.txt', 'src/needle-b.js'])
-  assert.equal(rels.some((rel) => rel.includes('node_modules')), false)
+  assert.deepEqual(relsOf(out), [
+    'quick/UPPER/FUNC_ALARM.C',
+    'quick/app/projects/standard/functions/func_alarm.c',
+    'quick/func/alarm/x.txt',
+  ], 'basename hits first, the path-only hit last')
+  assert.equal(fileIn(out, 'quick/app/projects/standard/functions/func_alarm.c') !== undefined, true)
+  assert.equal(out.data.totalMatches, 3)
+  assert.equal(out.data.truncated, false)
 
-  const withDeps = await call('search', { root: ws, query: 'needle', mode: 'name', includeNodeModules: true })
-  assert.ok(withDeps.data.matches.some((entry) => entry.rel === 'node_modules/pkg/needle-dep.js'))
+  /* Exact scores pin the documented formula (100 per basename token, 20 for a
+     segment start, 10 per two consecutive characters, minus rel.length * 0.01). */
+  assert.equal(fileIn(out, 'quick/UPPER/FUNC_ALARM.C').score, 259.76)
+  assert.equal(fileIn(out, 'quick/app/projects/standard/functions/func_alarm.c').score, 259.5)
+  assert.equal(fileIn(out, 'quick/func/alarm/x.txt').score, 59.78)
+  assert.ok(
+    fileIn(out, 'quick/app/projects/standard/functions/func_alarm.c').score
+      > fileIn(out, 'quick/func/alarm/x.txt').score,
+    'a basename hit outranks a path-only hit',
+  )
+
+  /* Every file's indices are ascending, unique and inside its rel. */
+  for (const file of out.data.files) {
+    assert.deepEqual([...file.indices].sort((a, b) => a - b), file.indices)
+    assert.equal(new Set(file.indices).size, file.indices.length)
+    for (const index of file.indices) assert.ok(index < file.rel.length)
+  }
+
+  /* Tokens are independent: swapping them in the query changes nothing. */
+  const swapped = await call('search', { root: ws, query: 'a func', mode: 'name' })
+  assert.deepEqual(relsOf(swapped), relsOf(out))
+  assert.deepEqual(swapped.data.files.map((file) => file.score), out.data.files.map((file) => file.score))
+
+  /* Whitespace is a separator, never a literal: no file name contains a space. */
+  for (const rel of relsOf(out)) assert.equal(rel.includes(' '), false)
+
+  /* One token with no subsequence excludes the file. */
+  const missing = await call('search', { root: ws, query: 'func zzz', mode: 'name' })
+  assert.deepEqual(relsOf(missing), [])
+})
+
+test('search: name mode indices highlight characters and respect token order', async () => {
+  const out = await call('search', { root: ws, query: 'abc', mode: 'name' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.deepEqual(relsOf(out), ['quick/order/abc.txt'])
+  const file = out.data.files[0]
+  const rel = 'quick/order/abc.txt'
+  assert.deepEqual(file.indices, [12, 13, 14])
+  assert.equal(rel[12] + rel[13] + rel[14], 'abc')
+  /* basename +100, segment start +20, one pair-run of 3 → floor(3/2)*10 = 10,
+     minus rel.length * 0.01 */
+  assert.equal(file.score, 129.81)
+
+  /* Inside one token the characters must appear in order: `zyx` hits the file,
+     the reversed `xyz` cannot (and `z` exists nowhere else in the fixture tree). */
+  const reversedOrder = await call('search', { root: ws, query: 'zyx', mode: 'name' })
+  assert.deepEqual(relsOf(reversedOrder), ['quick/order/zyx.txt'])
+  assert.deepEqual(reversedOrder.data.files[0].indices, [12, 13, 14])
+  const reversed = await call('search', { root: ws, query: 'xyz', mode: 'name' })
+  assert.deepEqual(relsOf(reversed), [])
+})
+
+test('search: name mode honours case sensitivity, includes and maxResults', async () => {
+  const exact = await call('search', { root: ws, query: 'FUNC_ALARM', mode: 'name', caseSensitive: true })
+  assert.deepEqual(relsOf(exact), ['quick/UPPER/FUNC_ALARM.C'])
+  const loose = await call('search', { root: ws, query: 'FUNC_ALARM', mode: 'name' })
+  assert.deepEqual(relsOf(loose), ['quick/UPPER/FUNC_ALARM.C', 'quick/app/projects/standard/functions/func_alarm.c'])
+
+  const limited = await call('search', { root: ws, query: 'func a', mode: 'name', maxResults: 1 })
+  assert.equal(limited.data.files.length, 1)
+  assert.equal(limited.data.files[0].rel, 'quick/UPPER/FUNC_ALARM.C', 'the highest score wins before truncation')
+  assert.equal(limited.data.truncated, true)
+  assert.equal(limited.data.totalMatches, 1)
+
+  const included = await call('search', { root: ws, query: 'func a', mode: 'name', include: 'quick/UPPER/**' })
+  assert.deepEqual(relsOf(included), ['quick/UPPER/FUNC_ALARM.C'])
+
+  const deps = await call('search', { root: ws, query: 'needle-dep', mode: 'name' })
+  assert.deepEqual(relsOf(deps), [])
+  const depsAll = await call('search', { root: ws, query: 'needle-dep', mode: 'name', includeNodeModules: true })
+  assert.deepEqual(relsOf(depsAll), ['node_modules/pkg/needle-dep.js'])
+})
+
+test('search: legacy name projection follows the same fuzzy rule', async () => {
+  const out = await call('search', { root: ws, query: 'func a', mode: 'name' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  const legacy = out.data.matches
+  assert.equal(legacy.length, out.data.files.length)
+  assert.deepEqual(legacy.map((entry) => entry.rel), relsOf(out))
+  for (const entry of legacy) {
+    assert.equal(entry.type, 'file')
+    assert.equal(typeof entry.name, 'string')
+    assert.equal(typeof entry.size, 'number')
+    assert.equal(typeof entry.mtimeMs, 'number')
+    assert.equal(typeof entry.score, 'number')
+    assert.ok(Array.isArray(entry.indices))
+  }
+  assert.equal(legacy[0].rel, 'quick/UPPER/FUNC_ALARM.C')
 })
 
 test('search: invalid arguments return 400 without touching the filesystem', async () => {
@@ -637,7 +753,11 @@ test('search does not walk through a symlink that leaves the root', async (t) =>
   assert.deepEqual(content.data.files, [], 'content search must not follow the escaping link')
   const byName = await call('search', { root: ws, query: 'secret', mode: 'name' })
   assert.equal(byName.ok, true, JSON.stringify(byName))
-  assert.deepEqual(byName.data.files, [], 'name search must not follow the escaping link')
+  assert.equal(
+    byName.data.files.some((file) => file.rel === 'escape/secret.txt' || file.rel.startsWith('escape/')),
+    false,
+    'name search must not follow the escaping link',
+  )
 })
 
 /* ============================== read ============================== */

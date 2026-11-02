@@ -41,10 +41,11 @@ window.__ModuleLoader__.load({
     const LOCALE_NS = 'dsh-workbay-files'
     const TREE_ROW_LIMIT = 400
     const SEARCH_LIMIT = 200
-    const SEARCH_DEBOUNCE_MS = 280
+    const SEARCH_DEBOUNCE_MS = 200
     const SEARCH_PANEL_DEBOUNCE_MS = 300
     const SEARCH_PANEL_MAX_RESULTS = 200
     const SEARCH_MODES = ['content', 'name']
+    const QUICK_OPEN_RECENT_LIMIT = 8
     const STAT_INTERVAL_MS = 4000
 
     /* ============================== i18n ============================== */
@@ -86,13 +87,13 @@ window.__ModuleLoader__.load({
       'tree.dirLoading': '正在加载目录…',
       'tree.dirError': '目录加载失败',
       'tree.nodeModules': '依赖目录，默认折叠',
-      'tree.searchPlaceholder': '搜索文件名或路径',
+      'tree.searchPlaceholder': '快速打开文件（空格分词）',
       'tree.searching': '正在搜索…',
       'tree.searchEmpty': '没有匹配的文件',
       'tree.searchTruncated': '结果过多，已截断',
       'tree.clearSearch': '清除搜索',
 
-      'search.open': '搜索（Ctrl/Cmd+Shift+F）',
+      'search.open': '搜索',
       'search.title': '搜索',
       'search.close': '返回资源管理器',
       'search.placeholder': '搜索',
@@ -124,6 +125,8 @@ window.__ModuleLoader__.load({
       'search.noRoot': '还没有选择工作区',
       'search.pickRoot': '选择工作区',
       'search.openAtLine': '打开第 {line} 行',
+      'search.recentBadge': '最近打开',
+      'search.resultCount': '{n} 个匹配',
       'search.clear': '清除搜索',
       'search.keyboardHint': '↑↓ 选择 · Enter 打开 · Esc 关闭',
 
@@ -244,13 +247,13 @@ window.__ModuleLoader__.load({
       'tree.dirLoading': 'Loading folder…',
       'tree.dirError': 'Failed to load folder',
       'tree.nodeModules': 'Dependency folder, collapsed by default',
-      'tree.searchPlaceholder': 'Search file names or paths',
+      'tree.searchPlaceholder': 'Quick open files (space-separated tokens)',
       'tree.searching': 'Searching…',
       'tree.searchEmpty': 'No matching files',
       'tree.searchTruncated': 'Too many results — truncated',
       'tree.clearSearch': 'Clear search',
 
-      'search.open': 'Search (Ctrl/Cmd+Shift+F)',
+      'search.open': 'Search',
       'search.title': 'Search',
       'search.close': 'Back to explorer',
       'search.placeholder': 'Search',
@@ -282,6 +285,8 @@ window.__ModuleLoader__.load({
       'search.noRoot': 'No workspace selected yet',
       'search.pickRoot': 'Choose workspace',
       'search.openAtLine': 'Open at line {line}',
+      'search.recentBadge': 'Recently opened',
+      'search.resultCount': '{n} matches',
       'search.clear': 'Clear search',
       'search.keyboardHint': '↑↓ select · Enter open · Esc close',
 
@@ -1161,15 +1166,21 @@ window.__ModuleLoader__.load({
             }
           }
           matches.sort((left, right) => (left.line - right.line) || (left.column - right.column))
+          const rel = normalizeRel(rawFile.rel)
           files.push({
-            rel: normalizeRel(rawFile.rel),
+            rel,
             size: numberOr(rawFile.size, 0),
             mtimeMs: numberOr(rawFile.mtimeMs, 0),
+            score: numberOr(rawFile.score, 0),
+            indices: normalizeIndices(rawFile.indices, rel.length),
+            recent: rawFile.recent === true,
             matches,
           })
         }
       }
-      files.sort((left, right) => compareNames(left.rel, right.rel))
+      /* Name mode is host-score order (Quick Open); never re-sort it by rel.
+         Content mode keeps §2.1's rel-natural grouping. */
+      if (mode !== 'name') files.sort((left, right) => compareNames(left.rel, right.rel))
       let matchCount = 0
       for (const file of files) matchCount += file.matches.length
       return {
@@ -1184,22 +1195,27 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Legacy name search (tree sidebar) -> flat entries the tree can open. */
+    /** §2.1 name mode / legacy name search -> flat Quick Open entries. */
     function normalizeNameSearchEntries(data) {
       const source = data !== null && data !== undefined && typeof data === 'object' ? data : {}
       if (Array.isArray(source.files)) {
         const entries = []
         for (const file of source.files) {
           if (file === null || file === undefined || typeof file.rel !== 'string' || file.rel === '') continue
+          const rel = normalizeRel(file.rel)
           entries.push({
-            name: baseNameOfRel(file.rel),
-            rel: normalizeRel(file.rel),
+            name: baseNameOfRel(rel),
+            rel,
             type: 'file',
             size: numberOr(file.size, 0),
             mtimeMs: numberOr(file.mtimeMs, 0),
+            score: numberOr(file.score, 0),
+            indices: normalizeIndices(file.indices, rel.length),
+            recent: file.recent === true,
           })
         }
-        return sortEntries(entries)
+        /* Keep the host's score order; recent-first is applied at render time. */
+        return entries
       }
       if (Array.isArray(source.matches)) {
         return sortEntries(source.matches.filter((entry) => entry !== null && entry !== undefined && typeof entry.rel === 'string'))
@@ -1227,6 +1243,9 @@ window.__ModuleLoader__.load({
           collapsed: isCollapsed,
           size: file.size,
           mtimeMs: file.mtimeMs,
+          score: numberOr(file.score, 0),
+          indices: Array.isArray(file.indices) ? file.indices.slice() : [],
+          recent: file.recent === true,
           line: 1,
         })
         if (isCollapsed) continue
@@ -1269,6 +1288,165 @@ window.__ModuleLoader__.load({
     function isAbortError(error) {
       return error !== null && error !== undefined
         && (error.name === 'AbortError' || error.code === 'aborted')
+    }
+
+    /* ============================== Quick Open helpers ============================== */
+
+    function normalizeIndices(indices, length) {
+      const max = typeof length === 'number' && Number.isFinite(length) && length > 0 ? Math.floor(length) : 0
+      if (!Array.isArray(indices) || max <= 0) return []
+      const seen = new Set()
+      for (const value of indices) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue
+        const index = Math.floor(value)
+        if (index >= 0 && index < max) seen.add(index)
+      }
+      return Array.from(seen).sort((left, right) => left - right)
+    }
+
+    /** Split text into plain segments, highlighting the characters in `indices`. */
+    function splitByIndices(text, indices) {
+      const source = String(text === undefined || text === null ? '' : text)
+      const selected = new Set(normalizeIndices(indices, source.length))
+      if (source === '' || selected.size === 0) return [{ text: source, highlight: false }]
+      const segments = []
+      let buffer = ''
+      let highlighting = selected.has(0)
+      for (let index = 0; index < source.length; index += 1) {
+        const hit = selected.has(index)
+        if (hit !== highlighting && buffer !== '') {
+          segments.push({ text: buffer, highlight: highlighting })
+          buffer = ''
+        }
+        highlighting = hit
+        buffer += source.charAt(index)
+      }
+      if (buffer !== '') segments.push({ text: buffer, highlight: highlighting })
+      return segments
+    }
+
+    /** Basename segments for Quick Open; `indices` are positions in `rel`. */
+    function quickOpenDisplay(rel, indices) {
+      const path = String(rel === undefined || rel === null ? '' : rel)
+      const name = baseNameOfRel(path)
+      const dir = dirNameOfRel(path)
+      const offset = path.length - name.length
+      const local = normalizeIndices(indices, path.length)
+        .map((index) => index - offset)
+        .filter((index) => index >= 0 && index < name.length)
+      return { rel: path, name, dir, segments: splitByIndices(name, local) }
+    }
+
+    function normalizeRecentList(recent, limit) {
+      const cap = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : QUICK_OPEN_RECENT_LIMIT
+      const list = []
+      const seen = new Set()
+      if (Array.isArray(recent)) {
+        for (const entry of recent) {
+          if (typeof entry !== 'string') continue
+          const rel = normalizeRel(entry)
+          if (rel === '' || seen.has(rel)) continue
+          seen.add(rel)
+          list.push(rel)
+          if (list.length >= cap) break
+        }
+      }
+      return list
+    }
+
+    /**
+     * Recently opened files first (in recent order, deduped/capped), then the
+     * host's score order. Does not add items that the host did not return.
+     */
+    function orderRecentFirst(items, recent, limit) {
+      const source = Array.isArray(items) ? items : []
+      const recentList = normalizeRecentList(recent, limit)
+      const remaining = new Map()
+      const ordered = []
+      for (const item of source) {
+        if (item === null || item === undefined || typeof item.rel !== 'string') continue
+        if (remaining.has(item.rel)) continue
+        remaining.set(item.rel, Object.assign({}, item, { recent: false }))
+      }
+      for (const rel of recentList) {
+        const item = remaining.get(rel)
+        if (item === undefined) continue
+        ordered.push(Object.assign({}, item, { recent: true }))
+        remaining.delete(rel)
+      }
+      for (const item of source) {
+        if (item === null || item === undefined || typeof item.rel !== 'string') continue
+        const found = remaining.get(item.rel)
+        if (found === undefined) continue
+        ordered.push(found)
+        remaining.delete(item.rel)
+      }
+      return ordered
+    }
+
+    function createQuickOpenState() {
+      return { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1 }
+    }
+
+    function reduceQuickOpen(state, action) {
+      const base = state !== null && state !== undefined && typeof state === 'object' ? state : createQuickOpenState()
+      if (action === null || action === undefined || typeof action !== 'object') return base
+      switch (action.type) {
+        case 'query': {
+          const query = typeof action.query === 'string' ? action.query : ''
+          const empty = query.trim() === ''
+          return Object.assign({}, base, {
+            query,
+            status: empty ? 'idle' : 'loading',
+            matches: empty ? [] : base.matches,
+            truncated: empty ? false : base.truncated,
+            error: '',
+            focusIndex: -1,
+          })
+        }
+        case 'request':
+          return Object.assign({}, base, { status: 'loading', error: '', focusIndex: -1 })
+        case 'response':
+          return Object.assign({}, base, {
+            status: 'ready',
+            matches: Array.isArray(action.matches) ? action.matches : [],
+            truncated: action.truncated === true,
+            error: '',
+            focusIndex: -1,
+          })
+        case 'error':
+          return Object.assign({}, base, {
+            status: 'error',
+            matches: [],
+            truncated: false,
+            error: typeof action.message === 'string' ? action.message : '',
+            focusIndex: -1,
+          })
+        case 'focus':
+          return Object.assign({}, base, { focusIndex: Number.isInteger(action.index) ? action.index : -1 })
+        case 'clear':
+          return createQuickOpenState()
+        default:
+          return base
+      }
+    }
+
+    /**
+     * Keyboard command for the inline Quick Open input. `open` is handled by
+     * the page (it needs the actual entry); the other commands feed the reducer.
+     */
+    function quickOpenKeyCommand(state, key) {
+      const base = state !== null && state !== undefined && typeof state === 'object' ? state : createQuickOpenState()
+      const matches = Array.isArray(base.matches) ? base.matches : []
+      if (key === 'Escape') return { type: 'clear' }
+      if (key === 'ArrowDown' || key === 'ArrowUp') {
+        return { type: 'focus', index: moveSearchFocus(base.focusIndex, matches.length, key === 'ArrowDown' ? 1 : -1) }
+      }
+      if (key === 'Enter') {
+        if (matches.length === 0) return null
+        return { type: 'open', index: base.focusIndex >= 0 && base.focusIndex < matches.length ? base.focusIndex : 0 }
+      }
+      return null
     }
 
     const ERROR_KEYS = {
@@ -1940,30 +2118,50 @@ window.__ModuleLoader__.load({
     }
 
     function TreePanel(props) {
-      const { t, root, tree, expanded, rows, rowLimit, showHidden, searchQuery, search, activeRel, onToggleHidden, onRefresh, onToggleDir, onOpenFile, onRetryDir, onShowMore, onOpenSearchResult, onClearSearch } = props
+      const {
+        t, root, tree, expanded, rows, rowLimit, showHidden,
+        searchQuery, search, recentFiles, activeRel, onToggleHidden, onRefresh,
+        onToggleDir, onOpenFile, onRetryDir, onShowMore, onOpenSearchResult,
+        onClearSearch, onSearchKeyDown,
+      } = props
       const rootNode = tree['']
       const searching = searchQuery.trim() !== ''
+      /* Quick Open shows recently opened files first, then host score order. */
+      const orderedMatches = useMemo(
+        () => orderRecentFirst(search.matches, recentFiles),
+        [search.matches, recentFiles],
+      )
       let body = null
       if (root === null || root === '') {
         body = E('div', { className: 'wbf-treeStatus' }, t('root.none'))
       } else if (searching) {
         if (search.status === 'loading') body = E('div', { className: 'wbf-treeStatus' }, t('tree.searching'))
         else if (search.status === 'error') body = E('div', { className: 'wbf-treeError' }, E(Icon, { name: 'warning', size: 12 }), E('span', null, search.error))
-        else if (search.matches.length === 0) body = E('div', { className: 'wbf-treeStatus' }, t('tree.searchEmpty'))
+        else if (search.status === 'ready' && orderedMatches.length === 0) body = E('div', { className: 'wbf-treeStatus' }, t('tree.searchEmpty'))
+        else if (orderedMatches.length === 0) body = E('div', { className: 'wbf-treeStatus' }, t('tree.searching'))
         else {
-          body = E('div', { className: 'wbf-searchResults' }, search.matches.map((entry) => {
+          body = E('div', { className: 'wbf-searchResults' }, orderedMatches.map((entry, index) => {
             const rel = typeof entry.rel === 'string' ? entry.rel : ''
-            const name = typeof entry.name === 'string' && entry.name !== '' ? entry.name : baseNameOfRel(rel)
+            const display = quickOpenDisplay(rel, entry.indices)
             return E('button', {
               key: rel,
               type: 'button',
-              className: 'wbf-searchRow',
+              className: cx(
+                'wbf-searchRow',
+                index === search.focusIndex ? 'is-focused' : '',
+                entry.recent === true ? 'is-recent' : '',
+              ),
               title: rel,
               onClick: () => onOpenSearchResult(entry),
             },
-            E(Icon, { name: entry.type === 'dir' ? 'folder' : iconForEntry({ name, dir: false }), size: 13 }),
-            E('span', { className: 'wbf-searchName' }, name),
-            E('span', { className: 'wbf-searchDir' }, dirNameOfRel(rel) === '' ? '/' : dirNameOfRel(rel)))
+            E(Icon, { name: iconForEntry({ name: display.name, dir: false }), size: 13 }),
+            E('span', { className: 'wbf-searchName' }, display.segments.map((segment, segmentIndex) => E(
+              'span',
+              { key: segmentIndex, className: segment.highlight ? 'wbf-searchHit' : undefined },
+              segment.text,
+            ))),
+            E('span', { className: 'wbf-searchDir', title: display.dir }, display.dir === '' ? '/' : display.dir),
+            entry.recent === true ? E('span', { className: 'wbf-recentBadge' }, t('search.recentBadge')) : null)
           }))
         }
       } else if (rootNode === undefined || rootNode === null || rootNode.status === 'loading' || rootNode.status === 'idle') {
@@ -1998,6 +2196,11 @@ window.__ModuleLoader__.load({
             : null)
       }
 
+      const resultCount = searching && search.status === 'ready'
+        ? E('div', { className: 'wbf-quickMeta' },
+          E('span', { className: 'wbf-quickCount' }, t('search.resultCount', { n: orderedMatches.length })))
+        : null
+
       return E('div', { className: 'wbf-treeWrap' },
         E('div', { className: 'wbf-searchRow' },
           E(Icon, { name: 'search', size: 12, className: 'wbf-searchIcon' }),
@@ -2008,8 +2211,10 @@ window.__ModuleLoader__.load({
             placeholder: t('tree.searchPlaceholder'),
             spellCheck: false,
             onChange: (event) => props.onQueryChange(event.target.value),
+            onKeyDown: onSearchKeyDown,
           }),
           searchQuery === '' ? null : E(IconButton, { name: 'close', size: 12, label: t('tree.clearSearch'), onClick: onClearSearch })),
+        resultCount,
         E('div', { className: 'wbf-treeToolbar' },
           E('span', { className: 'wbf-treeTitle' }, t('tree.title')),
           E('span', { className: 'wbf-treeToolbarActions' },
@@ -2132,18 +2337,23 @@ window.__ModuleLoader__.load({
      */
     function SearchPanel(props) {
       const {
-        t, state, root,
+        t, state, root, recentFiles,
         onQueryChange, onRun, onCancel, onClose, onModeChange,
         onToggleFlag, onGlobChange, onToggleGlobOpen, onCollapse,
         onOpenRow, onFocus, onPickRoot, onClear,
       } = props
       const result = state.data
-      const rows = useMemo(() => flattenSearchResults(state.data, state.collapsed), [state.data, state.collapsed])
+      const orderedResult = useMemo(() => {
+        if (result === null || result === undefined) return null
+        if (state.mode !== 'name') return result
+        return Object.assign({}, result, { files: orderRecentFirst(result.files, recentFiles) })
+      }, [result, state.mode, recentFiles])
+      const rows = useMemo(() => flattenSearchResults(orderedResult, state.collapsed), [orderedResult, state.collapsed])
       const listRef = useRef(null)
       const query = state.query
-      const hasResult = result !== null && result !== undefined
-      const fileCount = hasResult && Array.isArray(result.files) ? result.files.length : 0
-      const matchCount = hasResult && Number.isFinite(result.totalMatches) ? result.totalMatches : 0
+      const hasResult = orderedResult !== null && orderedResult !== undefined
+      const fileCount = hasResult && Array.isArray(orderedResult.files) ? orderedResult.files.length : 0
+      const matchCount = hasResult && Number.isFinite(orderedResult.totalMatches) ? orderedResult.totalMatches : 0
       const loading = state.status === 'loading'
       const emptyQuery = query.trim() === ''
 
@@ -2190,12 +2400,6 @@ window.__ModuleLoader__.load({
           event.preventDefault()
           onRun()
           return
-        }
-        /* Ctrl/Cmd+Shift+F toggles from anywhere, including the query input. */
-        if ((event.ctrlKey === true || event.metaKey === true) && event.shiftKey === true
-          && String(key).toLowerCase() === 'f') {
-          event.preventDefault()
-          onClose()
         }
       }
 
@@ -2321,11 +2525,12 @@ window.__ModuleLoader__.load({
           const focused = state.focusIndex === index
           if (row.kind === 'file') {
             const nameMode = state.mode === 'name'
+            const display = nameMode ? quickOpenDisplay(row.rel, row.indices) : null
             return E('button', {
               key: row.key,
               type: 'button',
               'data-row-index': index,
-              className: cx('wbf-srFile', focused ? 'is-focused' : ''),
+              className: cx('wbf-srFile', focused ? 'is-focused' : '', row.recent === true ? 'is-recent' : ''),
               title: row.rel,
               onClick: () => {
                 if (nameMode) onOpenRow(row)
@@ -2334,8 +2539,15 @@ window.__ModuleLoader__.load({
             },
             E('span', { className: 'wbf-srChevron' }, nameMode ? null : E(Icon, { name: row.collapsed ? 'chevronRight' : 'chevronDown', size: 10 })),
             E(Icon, { name: 'file', size: 12 }),
-            E('span', { className: 'wbf-srFileName' }, row.name),
-            row.dir === '' ? null : E('span', { className: 'wbf-srFileDir' }, row.dir),
+            E('span', { className: 'wbf-srFileName' }, nameMode
+              ? display.segments.map((segment, segmentIndex) => E(
+                'span',
+                { key: segmentIndex, className: segment.highlight ? 'wbf-srHit' : undefined },
+                segment.text,
+              ))
+              : row.name),
+            row.dir === '' ? null : E('span', { className: 'wbf-srFileDir', title: row.dir }, row.dir),
+            row.recent === true ? E('span', { className: 'wbf-srRecent' }, t('search.recentBadge')) : null,
             nameMode || row.matchCount <= 0 ? null : E('span', { className: 'wbf-srCount' }, String(row.matchCount)))
           }
           const segments = splitHighlight(row.text, row.column, row.length)
@@ -2390,6 +2602,9 @@ window.__ModuleLoader__.load({
       const searchTimerRef = useRef(null)
       const searchPanelRef = useRef(null)
       const performSearchRef = useRef(null)
+      const quickOpenRef = useRef(null)
+      const recentFilesRef = useRef([])
+      const quickOpenSeqRef = useRef(0)
 
       const [root, setRoot] = useState(() => readStoredRoot())
       const [showHidden, setShowHidden] = useState(() => readBool(HIDDEN_KEY, false))
@@ -2398,9 +2613,9 @@ window.__ModuleLoader__.load({
       const [tree, setTree] = useState({})
       const [expanded, setExpanded] = useState(() => new Set())
       const [rowLimit, setRowLimit] = useState(TREE_ROW_LIMIT)
-      const [query, setQuery] = useState('')
+      const [quickOpen, setQuickOpen] = useState(createQuickOpenState)
       const [searchNonce, setSearchNonce] = useState(0)
-      const [search, setSearch] = useState({ status: 'idle', matches: [], truncated: false, error: null })
+      const [recentFiles, setRecentFiles] = useState([])
       const [searchPanel, setSearchPanel] = useState(createSearchState)
       const [tabs, setTabs] = useState([])
       const [activeRel, setActiveRel] = useState(null)
@@ -2409,12 +2624,17 @@ window.__ModuleLoader__.load({
       const [pendingReload, setPendingReload] = useState(null)
       const [toast, setToast] = useState(null)
 
+      const query = quickOpen.query
+      const search = quickOpen
+
       rootRef.current = root
       showHiddenRef.current = showHidden
       tabsRef.current = tabs
       activeRelRef.current = activeRel
       treeRef.current = tree
       searchPanelRef.current = searchPanel
+      quickOpenRef.current = quickOpen
+      recentFilesRef.current = recentFiles
 
       const activeTab = useMemo(() => {
         for (let index = 0; index < tabs.length; index += 1) {
@@ -2460,8 +2680,8 @@ window.__ModuleLoader__.load({
         setRoot(value)
         setTabs([])
         setActiveRel(null)
-        setQuery('')
-        setSearch({ status: 'idle', matches: [], truncated: false, error: null })
+        setQuickOpen(createQuickOpenState())
+        setRecentFiles([])
         if (searchAbortRef.current !== null) {
           try { searchAbortRef.current.abort() } catch (error) { void error }
           searchAbortRef.current = null
@@ -2599,44 +2819,59 @@ window.__ModuleLoader__.load({
         showToast(t('toast.refreshed'), 'ok')
       }, [loadDir, showToast, t])
 
-      /* ---- tree filename search (kept when the search panel is closed) ------ */
+      /* ---- inline Quick Open (kept when the search panel is closed) -------- */
 
       useEffect(() => {
-        /* The optimistic §2.1 contract puts `mode:'name'` behind the same
-           `search` method; the explorer's inline filter stays one flat list. */
+        /* §2.1 name mode does the fuzzy matching host-side (tokens, score,
+           indices); this only debounces the call and stores host order. */
         if (searchPanel.open === true) return undefined
-        const text = query.trim()
+        const text = quickOpen.query.trim()
         if (root === null || root === '' || text === '') {
-          setSearch({ status: 'idle', matches: [], truncated: false, error: null })
+          setQuickOpen((previous) => (previous.query === '' ? createQuickOpenState() : reduceQuickOpen(previous, { type: 'clear' })))
           return undefined
         }
         let cancelled = false
+        setQuickOpen((previous) => reduceQuickOpen(previous, { type: 'request' }))
         const timer = setTimeout(() => {
-          setSearch({ status: 'loading', matches: [], truncated: false, error: null })
-          call('search', { root, mode: 'name', query: text, maxResults: SEARCH_LIMIT }).then((data) => {
+          call('search', { root, mode: 'name', query: quickOpen.query, maxResults: SEARCH_LIMIT }).then((data) => {
             if (cancelled) return
-            setSearch({
-              status: 'ready',
+            setQuickOpen((previous) => reduceQuickOpen(previous, {
+              type: 'response',
               matches: normalizeNameSearchEntries(data),
               truncated: data !== null && data !== undefined && data.truncated === true,
-              error: null,
-            })
+            }))
           }).catch((error) => {
             if (cancelled) return
-            setSearch({ status: 'error', matches: [], truncated: false, error: describeError(t, error) })
+            setQuickOpen((previous) => reduceQuickOpen(previous, {
+              type: 'error',
+              message: describeError(t, error),
+            }))
           })
         }, SEARCH_DEBOUNCE_MS)
         return () => {
           cancelled = true
           clearTimeout(timer)
         }
-      }, [query, root, searchNonce, t, searchPanel.open])
+      }, [quickOpen.query, root, searchNonce, t, searchPanel.open])
+
+      const updateQuickOpen = useCallback((action) => {
+        setQuickOpen((previous) => reduceQuickOpen(previous, action))
+      }, [])
+
+      const recordRecentFile = useCallback((rel) => {
+        const clean = normalizeRel(rel)
+        if (clean === '') return
+        setRecentFiles((previous) => {
+          const next = normalizeRecentList([clean].concat(previous))
+          if (next.length === previous.length && next.every((entry, index) => entry === previous[index])) return previous
+          return next
+        })
+      }, [])
 
       /* ---- VSCode-like search panel ----------------------------------------- */
 
       const openSearchPanel = useCallback(() => {
-        setQuery('')
-        setSearch({ status: 'idle', matches: [], truncated: false, error: null })
+        setQuickOpen(createQuickOpenState())
         setSearchPanel((previous) => reduceSearchState(previous, { type: 'open' }))
       }, [])
 
@@ -2825,6 +3060,7 @@ window.__ModuleLoader__.load({
         const fromSearch = opts.fromSearch === true
         const rel = normalizeRel(typeof entry.rel === 'string' && entry.rel !== '' ? entry.rel : entry.name)
         if (rel === '') return
+        recordRecentFile(rel)
         const existing = tabsRef.current.find((tab) => tab.rel === rel)
         if (existing !== undefined) {
           setActiveRel(rel)
@@ -2867,7 +3103,12 @@ window.__ModuleLoader__.load({
         setTabs((previous) => previous.concat([tab]))
         setActiveRel(rel)
         void hydrateTab(tab, entry)
-      }, [hydrateTab, patchTab])
+      }, [hydrateTab, patchTab, recordRecentFile])
+
+      const activateTab = useCallback((rel) => {
+        recordRecentFile(rel)
+        setActiveRel(rel)
+      }, [recordRecentFile])
 
       const closeTab = useCallback((rel) => {
         const current = tabsRef.current
@@ -3031,6 +3272,20 @@ window.__ModuleLoader__.load({
         )
       }, [openEntry])
 
+      const quickOpenKeyDown = useCallback((event) => {
+        if (event === null || event === undefined) return
+        const command = quickOpenKeyCommand(quickOpenRef.current, event.key)
+        if (command === null) return
+        event.preventDefault()
+        if (command.type === 'open') {
+          const ordered = orderRecentFirst(quickOpenRef.current.matches, recentFilesRef.current)
+          const entry = ordered[command.index]
+          if (entry !== undefined) openSearchResult(entry)
+          return
+        }
+        updateQuickOpen(command)
+      }, [openSearchResult, updateQuickOpen])
+
       const handleContentChange = useCallback((rel, text) => {
         patchTab(rel, { type: 'content', content: text })
       }, [patchTab])
@@ -3080,31 +3335,21 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey)
       }, [])
 
-      /* Ctrl/Cmd+Shift+F opens the search panel from anywhere; Esc closes it.
-         Capture phase so the editor's own keymaps cannot swallow the shortcut. */
-      const searchShortcutRef = useRef({})
-      searchShortcutRef.current = {
-        toggle: toggleSearchPanel,
+      /* Esc closes the search panel even when focus is in the editor. The
+         former global two-key opener was removed because it clashed with a
+         system shortcut; the toolbar search icon is the only opener. */
+      const searchEscapeRef = useRef({})
+      searchEscapeRef.current = {
         close: closeSearchPanel,
         open: searchPanel.open,
         blocked: pickerOpen || pendingRoot !== null || pendingClose !== null || pendingReload !== null,
       }
       useEffect(() => {
         const onKey = (event) => {
-          const command = event.ctrlKey === true || event.metaKey === true
-          if (command && event.shiftKey === true && String(event.key).toLowerCase() === 'f') {
-            if (searchShortcutRef.current.blocked === true) return
-            event.preventDefault()
-            event.stopPropagation()
-            searchShortcutRef.current.toggle()
-            return
-          }
-          if (event.key === 'Escape' && searchShortcutRef.current.open === true) {
-            if (searchShortcutRef.current.blocked === true) return
-            event.preventDefault()
-            event.stopPropagation()
-            searchShortcutRef.current.close()
-          }
+          if (event.key !== 'Escape' || searchEscapeRef.current.open !== true) return
+          if (searchEscapeRef.current.blocked === true) return
+          event.preventDefault()
+          searchEscapeRef.current.close()
         }
         window.addEventListener('keydown', onKey, true)
         return () => window.removeEventListener('keydown', onKey, true)
@@ -3205,6 +3450,7 @@ window.__ModuleLoader__.load({
                 t,
                 state: searchPanel,
                 root,
+                recentFiles,
                 onQueryChange: (value) => updateSearchState({ type: 'query', query: value }),
                 onRun: runSearchNow,
                 onCancel: cancelSearch,
@@ -3229,9 +3475,11 @@ window.__ModuleLoader__.load({
                 showHidden,
                 searchQuery: query,
                 search,
+                recentFiles,
                 activeRel,
-                onQueryChange: setQuery,
-                onClearSearch: () => setQuery(''),
+                onQueryChange: (value) => updateQuickOpen({ type: 'query', query: value }),
+                onClearSearch: () => updateQuickOpen({ type: 'clear' }),
+                onSearchKeyDown: quickOpenKeyDown,
                 onToggleHidden: toggleHidden,
                 onRefresh: refreshTree,
                 onToggleDir: toggleDir,
@@ -3245,7 +3493,7 @@ window.__ModuleLoader__.load({
               t,
               tabs,
               activeRel,
-              onActivate: setActiveRel,
+              onActivate: activateTab,
               onClose: requestClose,
             }),
             activeTab === null ? null : E(FileHeader, {
@@ -3330,6 +3578,14 @@ window.__ModuleLoader__.load({
 .wbf-searchRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .wbf-searchName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wbf-searchDir{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px}
+.wbf-searchRow.is-focused{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-searchRow.is-recent .wbf-searchName{color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbf-searchHit{border-radius:2px;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 30%,transparent);color:var(--dsw-alias-label-primary,#fff)}
+.wbf-recentBadge{flex:none;padding:0 4px;border-radius:3px;color:var(--dsw-alias-state-success-primary,#3fb950);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 14%,transparent);font-size:9px;line-height:14px;white-space:nowrap}
+.wbf-quickMeta{display:flex;align-items:center;gap:6px;padding:0 8px 4px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px}
+.wbf-quickCount{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wbf-quickTruncated{flex:none;color:var(--dsw-alias-state-warn-primary,#e2a03f)}
+.wbf-srRecent{flex:none;padding:0 4px;border-radius:3px;color:var(--dsw-alias-state-success-primary,#3fb950);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 14%,transparent);font-size:9px;line-height:15px;white-space:nowrap}
 .wbf-searchPanel{display:flex;flex-direction:column;flex:1;min-height:0;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .wbf-srHead{display:flex;align-items:center;gap:4px;padding:4px 6px}
 .wbf-srTitle{flex:1;min-width:0;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
@@ -3545,6 +3801,9 @@ window.__ModuleLoader__.load({
       TREE_ROW_LIMIT,
       SEARCH_PANEL_MAX_RESULTS,
       SEARCH_MODES,
+      SEARCH_LIMIT,
+      SEARCH_DEBOUNCE_MS,
+      QUICK_OPEN_RECENT_LIMIT,
       extensionOf,
       classifyFile,
       languageOf,
@@ -3575,6 +3834,14 @@ window.__ModuleLoader__.load({
       normalizeNameSearchEntries,
       flattenSearchResults,
       splitHighlight,
+      normalizeIndices,
+      splitByIndices,
+      quickOpenDisplay,
+      normalizeRecentList,
+      orderRecentFirst,
+      createQuickOpenState,
+      reduceQuickOpen,
+      quickOpenKeyCommand,
       isAbortError,
       mediaUrl,
       loadChunk,

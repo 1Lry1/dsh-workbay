@@ -566,6 +566,83 @@ function compareRels(a, b) {
   return a < b ? -1 : a > b ? 1 : 0
 }
 
+/* ---------------- Quick Open fuzzy matching (docs/files-api.md §2.1, name mode) ---------------- */
+
+/* The contract's score, in hundredths so the arithmetic stays exact for JSON:
+   100 per token whose hit lands in the basename, 20 when a token's first
+   character sits at a segment start, 10 per two consecutive hit characters,
+   minus 1 per `rel` character (i.e. `rel.length * 0.01`). */
+const FUZZY_BASENAME_HUNDREDTHS = 100 * 100
+const FUZZY_SEGMENT_HUNDREDTHS = 20 * 100
+const FUZZY_PAIR_HUNDREDTHS = 10 * 100
+/* `rel` opening or a character after one of these counts as a segment start. */
+const FUZZY_SEGMENT_BREAKS = new Set(['/', '_', '-', '.'])
+
+/** Greedy ordered-subsequence match inside [from, to); null when it does not fit. */
+function subsequenceFrom(chars, token, from, to) {
+  const hit = []
+  let at = from
+  for (let index = 0; index < token.length; index += 1) {
+    while (at < to && chars[at] !== token[index]) at += 1
+    if (at >= to) return null
+    hit.push(at)
+    at += 1
+  }
+  return hit
+}
+
+/** Token characters, lowercased unless the search is case-sensitive. */
+function fuzzyChars(text, caseSensitive) {
+  const chars = new Array(text.length)
+  for (let index = 0; index < text.length; index += 1) {
+    chars[index] = caseSensitive === true ? text[index] : text[index].toLowerCase()
+  }
+  return chars
+}
+
+/**
+ * VSCode Quick Open style name match: the query is split on whitespace and every
+ * token must be an ORDERED, non-adjacent character subsequence of `rel`; the
+ * whitespace itself is never matched (`func a` hits `.../func_alarm.c`). Tokens
+ * are independent of each other, so `a func` hits the same files.
+ *
+ * Each token is matched inside the basename first (that is where Quick Open
+ * users usually aim) and over the whole path only if the basename cannot host
+ * it. Returns `{ score, indices }`, or null as soon as one token is missing.
+ */
+function fuzzyMatchRel(rel, tokens, caseSensitive) {
+  if (tokens.length === 0) return null
+  const chars = fuzzyChars(rel, caseSensitive)
+  const basenameStart = rel.lastIndexOf('/') + 1
+  const positions = new Set()
+  let hundredths = 0
+  for (const token of tokens) {
+    const tokenChars = fuzzyChars(token, caseSensitive)
+    let hit = subsequenceFrom(chars, tokenChars, basenameStart, rel.length)
+    const inBasename = hit !== null
+    if (hit === null) hit = subsequenceFrom(chars, tokenChars, 0, rel.length)
+    if (hit === null) return null
+
+    if (inBasename) hundredths += FUZZY_BASENAME_HUNDREDTHS
+    const first = hit[0]
+    if (first === 0 || FUZZY_SEGMENT_BREAKS.has(rel[first - 1])) hundredths += FUZZY_SEGMENT_HUNDREDTHS
+    /* Every two consecutive matched characters are worth 10. */
+    let run = 1
+    for (let index = 1; index < hit.length; index += 1) {
+      if (hit[index] === hit[index - 1] + 1) {
+        run += 1
+      } else {
+        if (run >= 2) hundredths += Math.floor(run / 2) * FUZZY_PAIR_HUNDREDTHS
+        run = 1
+      }
+    }
+    if (run >= 2) hundredths += Math.floor(run / 2) * FUZZY_PAIR_HUNDREDTHS
+    for (const at of hit) positions.add(at)
+  }
+  hundredths -= rel.length
+  return { score: hundredths / 100, indices: Array.from(positions).sort((a, b) => a - b) }
+}
+
 /**
  * The exclude string for this request: an explicit `exclude` (including `''`,
  * which disables the defaults), or the documented default set. The legacy
@@ -584,13 +661,15 @@ function searchExcludeSource(payload) {
 }
 
 /** The legacy `matches` projection, so the old panel keeps rendering meanwhile. */
-function legacySearchRow(rel, name, stats) {
+function legacySearchRow(rel, name, stats, score, indices) {
   return {
     name,
     rel,
     type: 'file',
     size: stats.size,
     mtimeMs: stats.mtimeMs,
+    score,
+    indices,
   }
 }
 
@@ -695,9 +774,12 @@ const METHODS = {
    *
    * `mode:'content'` (default) walks the tree once and reports every line that
    * matches, grouped per file. `mode:'name'` is the Ctrl+P quick-open: the same
-   * walk, but only entry names are matched and no file is read. Neither mode
-   * follows a symlink, so a link out of the root can never turn a search into a
-   * filesystem walk; the root itself is validated exactly like `tree`/`read`.
+   * walk, but the query is a set of whitespace-separated tokens that must each be
+   * an ordered character subsequence of `rel` (fuzzy, so `func a` finds
+   * `app/.../functions/func_alarm.c`); nothing is read from the files and each
+   * hit carries `score` + `indices`. Neither mode follows a symlink, so a link
+   * out of the root can never turn a search into a filesystem walk; the root
+   * itself is validated exactly like `tree`/`read`.
    *
    * Bounded on purpose: 20 000 files, `maxResults` matches, and a soft 6 s
    * budget. Hitting any of them returns what was found with `truncated: true`
@@ -727,10 +809,16 @@ const METHODS = {
 
     const include = compileGlobList(typeof payload.include === 'string' ? payload.include : '')
     const exclude = compileGlobList(searchExcludeSource(payload))
-    const pattern = buildSearchPattern(query, { regex: useRegex, caseSensitive, wholeWord })
+    /* Name mode is fuzzy (VSCode Quick Open): the query is split on whitespace and
+       every token must be an ordered subsequence of `rel` — `regex` / `wholeWord`
+       therefore do not apply there. Content mode builds a RegExp instead. */
+    const tokens = mode === 'name' ? query.split(/\s+/).filter((token) => token !== '') : []
+    const pattern = mode === 'content'
+      ? buildSearchPattern(query, { regex: useRegex, caseSensitive, wholeWord })
+      : null
 
     const files = []
-    const legacyRows = []
+    let legacyRows = []
     let totalMatches = 0
     let scannedFiles = 0
     let truncated = false
@@ -788,15 +876,17 @@ const METHODS = {
         scannedFiles += 1
 
         if (mode === 'name') {
-          pattern.lastIndex = 0
-          if (!pattern.test(dirent.name)) continue
-          files.push({ rel, size: stats.size, mtimeMs: stats.mtimeMs, matches: [] })
-          legacyRows.push(legacySearchRow(rel, dirent.name, stats))
-          totalMatches += 1
-          if (totalMatches >= maxResults) {
-            truncated = true
-            break
-          }
+          const hit = fuzzyMatchRel(rel, tokens, caseSensitive)
+          if (hit === null) continue
+          /* Ranked after the walk, so a maxResults cut keeps the best hits. */
+          files.push({
+            rel,
+            size: stats.size,
+            mtimeMs: stats.mtimeMs,
+            matches: [],
+            score: hit.score,
+            indices: hit.indices,
+          })
           continue
         }
 
@@ -827,7 +917,26 @@ const METHODS = {
       if (!truncated && subdirectories.length > 0) queue.push(...subdirectories)
     }
 
-    files.sort((a, b) => compareRels(a.rel, b.rel))
+    if (mode === 'name') {
+      /* Quick Open: best score first, ties keep the natural rel order. The cap is
+         applied AFTER ranking, so truncating keeps the best hits, not the ones
+         the walk happened to reach first. */
+      files.sort((a, b) => b.score - a.score || compareRels(a.rel, b.rel))
+      if (files.length > maxResults) {
+        files.length = maxResults
+        truncated = true
+      }
+      totalMatches = files.length
+      legacyRows = files.map((file) => legacySearchRow(
+        file.rel,
+        file.rel.slice(file.rel.lastIndexOf('/') + 1),
+        { size: file.size, mtimeMs: file.mtimeMs },
+        file.score,
+        file.indices,
+      ))
+    } else {
+      files.sort((a, b) => compareRels(a.rel, b.rel))
+    }
     return {
       root: jsonPath(root),
       mode,
