@@ -78,7 +78,10 @@ jobs:
       # smoke scripts that need a live DSH install, a Chromium build or real
       # hardware, so they cannot run unattended here).
       - name: Run tests
-        run: pnpm -r --if-present run test
+        # Sequential on purpose: the PTY/timing suites (terminal, gitcraft) have
+        # wall-clock assertions that flake when the workspace suites compete for
+        # the runner's cores.
+        run: pnpm -r --workspace-concurrency=1 --if-present run test
 
       # No DSH, no browser: boots the files + terminal bundles on a local HTTP
       # server against this checkout and exercises tree/read/write/media/chunk

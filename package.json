@@ -11,7 +11,7 @@
   "packageManager": "pnpm@11.28.5",
   "scripts": {
     "build": "node scripts/build-chunks.mjs && node scripts/build-suite.mjs",
-    "test": "pnpm -r --if-present run test",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present run test",
     "test:kit": "pnpm --filter @dsh-workbay/kit run test",
     "test:gitcraft": "pnpm --filter dsh-gitcraft run test",
     "test:files": "pnpm --filter dsh-workbay-files run test",
