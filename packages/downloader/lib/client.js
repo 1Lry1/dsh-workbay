@@ -27,12 +27,14 @@ window.__ModuleLoader__.load({
      * that names that cache and the `downloader_logs` tool, so the model knows
      * where to fetch more (and how to filter) instead of guessing.
      */
-    function formatLogsForChat(payload) {
+    function formatLogsForChat(payload, location) {
       const logs = payload && Array.isArray(payload.logs) ? payload.logs : []
       const total = payload && typeof payload.total === 'number' ? payload.total : logs.length
       const header = '[Downloader 日志] 缓存位置：宿主内存环形缓冲（最多 50000 条，不落盘）。' +
         '需要更多或按来源/关键词筛选时，用工具 downloader_logs(tail/src/q/since)，' +
-        '或 HTTP GET /downloader/log/recent?tail=N。共 ' + total + ' 条，以下为最近 ' + logs.length + ' 条：'
+        '或 HTTP GET /downloader/log/recent?tail=N。' +
+        (location && typeof location.pointer === 'string' ? '地址清单：' + location.pointer + '（工具/路由/总数）。' : '') +
+        '共 ' + total + ' 条，以下为最近 ' + logs.length + ' 条：'
       const lines = logs.map((entry) => {
         const d = new Date((entry && entry.t) || Date.now())
         const p2 = (n) => String(n).padStart(2, '0')
@@ -271,7 +273,8 @@ window.__ModuleLoader__.load({
         if (data && data.error) { setNotice('读取日志失败：' + data.error); return }
         const logs = data && Array.isArray(data.logs) ? data.logs : []
         if (logs.length === 0) { setNotice('当前没有日志可加入对话'); return }
-        const text = formatLogsForChat(data)
+        const location = await api.get('/log/location')
+        const text = formatLogsForChat(data, location && !location.error ? location : null)
         const result = insertTextIntoChat(text)
         if (result === 'inserted') { setNotice('已把 ' + logs.length + ' 条日志加入对话输入框'); return }
         const copied = await copyText(text)

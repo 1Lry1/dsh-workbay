@@ -49,6 +49,51 @@ const CONFIG = {
 const DEFAULT_DL_DIR = CONFIG.dlDir !== '' ? CONFIG.dlDir : path.join(os.homedir(), 'Downloader')
 const DEFAULT_WORKSPACE = CONFIG.workspaceRoot
 
+/* ---------------------------------------------------------------- 日志地址清单
+ * The log cache is an in-memory ring buffer — there is no log file to find. So
+ * that an agent can locate it in one step (without guessing, and without being
+ * told the DSH port), the host keeps a small, stable "address sheet" on disk:
+ *
+ *   %USERPROFILE%\.dsh\workbay\downloader-logs.location.json
+ *
+ * It is NOT the logs; it names the storage kind, the tool, the HTTP route, the
+ * current entry count and the workspace root (when known). Refresh it here, on
+ * `/log/location`, and (throttled) whenever new lines arrive.
+ */
+const LOCATION_DIR = path.join(os.homedir(), '.dsh', 'workbay')
+const LOCATION_FILE = path.join(LOCATION_DIR, 'downloader-logs.location.json')
+const LOG_CACHE_MAX = 50000
+
+function locationPayload(state) {
+  return {
+    kind: 'downloader-log-cache',
+    storage: 'host-memory-ring-buffer',
+    persistent: false,
+    note: '日志只在 DSH 主进程内存里（环形缓冲，不落盘），DSH 重启即清空；本文件只是地址清单。',
+    tool: 'downloader_logs',
+    toolLocation: 'downloader_logs_location',
+    route: '/downloader/log/recent',
+    routeExamples: [
+      '/downloader/log/recent?tail=300',
+      '/downloader/log/recent?src=B,D',
+      '/downloader/log/recent?q=Error',
+      '/downloader/log/recent?offset=0&limit=200',
+    ],
+    maxEntries: LOG_CACHE_MAX,
+    total: state.logs.length,
+    root: state.root || null,
+    pointer: LOCATION_FILE,
+    updatedAt: Date.now(),
+  }
+}
+
+function refreshLocation(state) {
+  try {
+    fs.mkdirSync(LOCATION_DIR, { recursive: true })
+    fs.writeFileSync(LOCATION_FILE, JSON.stringify(locationPayload(state), null, 2), 'utf8')
+  } catch { /* best effort: a read-only home must not break logging */ }
+}
+
 const IPC_HELPER_CANDIDATES = [
   // ★ 优先用插件目录内自带的（方便分发：整个目录拷贝即可运行）
   path.join(HELPER_DIR, 'DownloaderIpcBridge.exe'),
@@ -405,6 +450,8 @@ export function apply(ctx) {
   // 50000 条大约是几百次烧录 / 数小时板卡输出；每条实体约 100B，总内存约 5MB。
   const MAX_LOGS = 50000
   const sseClients = new Set()
+  /* Write the address sheet once at mount so it exists before any log line. */
+  refreshLocation(state)
 
   const broadcast = (obj) => {
     const line = `data: ${JSON.stringify(obj)}\n\n`
@@ -424,6 +471,12 @@ export function apply(ctx) {
       state.logs.splice(0, state.logs.length - MAX_LOGS)
     }
     broadcast({ ev: 'log', item })
+    /* Keep the address sheet's counter warm without writing on every line. */
+    const now = Date.now()
+    if (!state._locationAt || now - state._locationAt > 5000) {
+      state._locationAt = now
+      refreshLocation(state)
+    }
   }
 
 
@@ -1112,12 +1165,27 @@ export function apply(ctx) {
       },
     }), 'downloader: tool')
 
+    // ★ 地址清单：模型一步定位日志缓存（内存、不落盘），再决定用 downloader_logs 取哪些。
+    scoped.tools.register({
+      name: 'downloader_logs_location',
+      description:
+        '返回 Downloader 日志缓存的地址清单：存储位置（宿主内存环形缓冲、不落盘、重启清空）、' +
+        '读取工具 downloader_logs 与 HTTP 路由 /downloader/log/recent 及参数、当前总条数、' +
+        '工作区根和磁盘上的地址清单文件路径。排查日志前先调用它定位。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      async execute() {
+        refreshLocation(state)
+        return JSON.stringify(locationPayload(state), null, 2)
+      },
+    })
+
     // ★ 给 AI 的日志检索工具：让模型自己取需要的那几行，
     //   而不是把数万条日志全塞进上下文。
     scoped.tools.register({
       name: 'downloader_logs',
       description:
         '读取 Downloader 工作台的串口/烧录日志。' +
+        '缓存位置：宿主内存环形缓冲（最多 50000 条，不落盘）；先用 downloader_logs_location 看地址清单。' +
         '可按来源过滤（B=板卡输出 D=烧录 S=系统 U=用户）、按关键词搜索、' +
         '按尾部或分页取。用于排查烧录失败、串口异常、板归与卡死等问题。',
       parameters: {
@@ -1315,6 +1383,12 @@ async function handleHttp(req, res, state, api) {
       state.logs.length = 0
       broadcast({ ev: 'log-clear' })
       return json(res, 200, { ok: true })
+    }
+
+    // ★ 日志地址清单：AI 第一步先读这里定位，再按需取内容。
+    if (p === '/log/location' && req.method === 'GET') {
+      refreshLocation(state)
+      return json(res, 200, locationPayload(state))
     }
 
     // ★为 AI 阅读而设计：支持分页 + 过滤 + 关键词检索。

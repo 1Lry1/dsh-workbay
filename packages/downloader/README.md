@@ -148,6 +148,27 @@ GET /downloader/log/recent?since=<毫秒>          某时间之后
 响应带 `total`。模型侧也注册了 **`downloader_logs`** 工具（`tail` / `offset` / `limit` /
 `src` / `q` / `since`），可以直接调用，不必先知道缓存位置。
 
+### 地址清单（让 AI 一步定位）
+
+因为日志只在内存里，宿主额外维护一份**地址清单文件**（不是日志本身）：
+
+```
+%USERPROFILE%\.dsh\workbay\downloader-logs.location.json
+```
+
+内容包含：存储类型（`host-memory-ring-buffer`、`persistent:false`）、读取工具
+`downloader_logs`、HTTP 路由 `/downloader/log/recent` 及常用参数、当前 `total`、
+工作区根、以及这份清单自己的路径。
+
+三种定位方式（任选其一，结果相同）：
+
+1. 模型工具 **`downloader_logs_location`**（推荐，一条调用返回 JSON）；
+2. HTTP `GET /downloader/log/location`；
+3. 直接读上面的 JSON 文件（AI 用文件工具即可，无需知道 DSH 端口）。
+
+拿到路由后按需取内容，如 `GET /downloader/log/recent?tail=300`、`?src=B,D`、`?q=Error`。
+清单在插件启动、每次 `/log/location` 调用以及有新日志（≥5 秒节流）时刷新。
+
 ### 让 AI 快速拿到日志：「加入对话」按钮
 
 日志区工具条上有 **「加入对话」**：读取最近 300 条日志，格式化后写进当前会话的输入框，

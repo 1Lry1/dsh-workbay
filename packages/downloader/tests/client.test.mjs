@@ -88,6 +88,13 @@ test('formatLogsForChat tolerates an empty/partial payload', () => {
   assert.match(junk, /\[S\] 42/)
 })
 
+test('formatLogsForChat includes the on-disk location sheet when given', () => {
+  const text = loadClient().__test.formatLogsForChat(
+    { total: 3, logs: [{ t: 0, src: 'S', text: 'hi' }] },
+    { pointer: 'C:\\Users\\x\\.dsh\\workbay\\downloader-logs.location.json', tool: 'downloader_logs' },
+  )
+  assert.match(text, /地址清单：C:\\Users\\x\\\.dsh\\workbay\\downloader-logs\.location\.json/)
+})
 test('insertTextIntoChat degrades to no-composer without a DOM', () => {
   const result = loadClient().__test.insertTextIntoChat('hello')
   assert.equal(result, 'no-composer')
