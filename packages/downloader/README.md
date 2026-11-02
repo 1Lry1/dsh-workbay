@@ -178,6 +178,19 @@ GET /downloader/log/recent?since=<毫秒>          某时间之后
 响应带 `total`。模型侧也注册了 **`downloader_logs`** 工具（`tail` / `offset` / `limit` /
 `src` / `q` / `since`），可以直接调用，不必先知道缓存位置。
 
+### 页面搜索（Notepad++ 风格）
+
+日志区上方有一个搜索行：
+
+- 输入即搜（300ms 防抖），**直接搜索本地全量 JSONL**，不受内存工作集限制；
+- `Aa` 区分大小写、`ab` 全字匹配、`.*` 正则（JS 正则；非法会显示 `bad-regex`）；
+- 结果按条列出并高亮命中（虚拟列表，DOM 只渲染可视区），条数显示 `搜索 N 条`；
+- 搜索时日志区显示结果而不是实时流；`Enter` 重新搜索（构建过程中可刷新结果），
+  `Esc` 或「清除」回到实时日志；
+- 源过滤（全部/板卡/烧录/系统）同时作用于搜索；
+- 宿主接口 `GET /log/search?q=&case=1&word=1&regex=1&src=B&limit=2000`，返回
+  `{ matches, total, hasMore, scanned }`；`total` 是全部命中数，`matches` 最多 2000 条。
+
 ### 地址清单（让 AI 一步定位）
 
 因为日志只在内存里，宿主额外维护一份**地址清单文件**（不是日志本身）：

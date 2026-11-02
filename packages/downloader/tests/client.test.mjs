@@ -97,6 +97,28 @@ test('virtualRange renders a bounded slice with spacer heights', () => {
   assert.deepEqual([empty.start, empty.end, empty.topPad, empty.bottomPad], [0, 0, 0, 0])
 })
 
+test('searchParts splits a line into hit/plain segments for highlighting', () => {
+  const { module } = loadClient()
+  const { searchParts } = module.__test
+  assert.deepEqual(searchParts('flash 100%', 'flash', false, false, false),
+    [{ text: 'flash', hit: true }, { text: ' 100%', hit: false }])
+  assert.deepEqual(searchParts('ABC abc', 'abc', true, false, false).filter((p) => p.hit).map((p) => p.text), ['abc'])
+  // a literal dot must not act as a regex wildcard
+  assert.equal(searchParts('a.b', '.', false, false, false).filter((p) => p.hit).length, 1)
+  // regex mode
+  assert.equal(searchParts('a1 b2', '\\d', false, false, true).filter((p) => p.hit).length, 2)
+  // whole word: "sw" inside "sworn" must not match
+  assert.equal(searchParts('word sworn', 'sw', false, true, false).filter((p) => p.hit).length, 0)
+  // invalid regex degrades to plain text instead of throwing
+  assert.deepEqual(searchParts('x', '(', false, false, true), [{ text: 'x', hit: false }])
+})
+
+test('the page has a Notepad++-style search bar over the full log file', () => {
+  assert.match(source, /placeholder: '搜索日志/)
+  assert.match(source, /\/log\/search\?/)
+  assert.match(source, /abw-hit/)
+  assert.match(source, /searchParts\(/)
+})
 test('20k lines in 60ms-style batches stay fast (no per-line O(n) copy)', () => {
   const { module } = loadClient()
   const { appendLogs } = module.__test

@@ -1610,6 +1610,47 @@ async function handleHttp(req, res, state, api) {
       return json(res, 200, logFileInfo(state))
     }
 
+    // 全量日志搜索（Notepad++ 风格）：直接扫本地 JSONL，不受内存工作集限制。
+    if (p === '/log/search' && req.method === 'GET') {
+      const qp = url.searchParams
+      const q = (qp.get('q') || '').trim()
+      if (q === '') return json(res, 400, { error: 'bad-request', message: 'q is required' })
+      const caseSensitive = qp.get('case') === '1'
+      const wholeWord = qp.get('word') === '1'
+      const useRegex = qp.get('regex') === '1'
+      const src = (qp.get('src') || '').trim()
+      const limit = Math.max(1, Math.min(5000, Number(qp.get('limit') || 2000)))
+      let pattern
+      try {
+        let source = useRegex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        if (wholeWord) source = '\\b(?:' + source + ')\\b'
+        pattern = new RegExp(source, caseSensitive ? '' : 'i')
+      } catch (error) {
+        return json(res, 400, { error: 'bad-regex', message: String((error && error.message) || error) })
+      }
+      const size = logFileSize()
+      const tail = readLogTail(LOG_FILE, LOG_FILE_LOAD_BYTES)
+      const all = parseLogLines(tail.text)
+      const matches = []
+      let total = 0
+      for (const item of all) {
+        if (src !== '' && item.src !== src) continue
+        pattern.lastIndex = 0
+        if (pattern.test(item.text) === false) continue
+        total += 1
+        if (matches.length < limit) matches.push(item)
+      }
+      return json(res, 200, {
+        matches,
+        total,
+        scanned: all.length,
+        hasMore: total > matches.length,
+        fileSize: size,
+        truncated: tail.truncated,
+        limit,
+      })
+    }
+
     // 更早的历史：页面向上滚动时从本地 JSONL 继续加载（内存只留工作集，文件是全量）
     if (p === '/log/history' && req.method === 'GET') {
       const before = Number(url.searchParams.get('before') || 0) || (Date.now() + 1)

@@ -44,6 +44,38 @@ window.__ModuleLoader__.load({
       return { start, end, topPad: start * rowHeight, bottomPad: (total - end) * rowHeight }
     }
 
+    /** 编译搜索正则（与宿主一致：Aa / ab / .*）；非法返回 null。 */
+    function searchRegExp(query, caseSensitive, wholeWord, regex) {
+      const text = String(query === undefined || query === null ? '' : query).trim()
+      if (text === '') return null
+      try {
+        let source = regex === true ? text : text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        if (wholeWord === true) source = '\\b(?:' + source + ')\\b'
+        /* `g` is required for the highlight loop: without it exec() returns
+           the first match forever and the parts array grows until OOM. */
+        return new RegExp(source, (caseSensitive === true ? '' : 'i') + 'g')
+      } catch { return null }
+    }
+
+    /** 把一行切成普通/命中片段，供高亮渲染。 */
+    function searchParts(text, query, caseSensitive, wholeWord, regex) {
+      const source = String(text === undefined || text === null ? '' : text)
+      const pattern = searchRegExp(query, caseSensitive, wholeWord, regex)
+      if (pattern === null) return [{ text: source, hit: false }]
+      const parts = []
+      let last = 0
+      let match
+      while ((match = pattern.exec(source)) !== null) {
+        if (match[0] === '') { pattern.lastIndex += 1; continue }
+        if (match.index > last) parts.push({ text: source.slice(last, match.index), hit: false })
+        parts.push({ text: match[0], hit: true })
+        last = match.index + match[0].length
+      }
+      if (parts.length === 0) return [{ text: source, hit: false }]
+      if (last < source.length) parts.push({ text: source.slice(last), hit: false })
+      return parts
+    }
+
     /** 本地日志文件占用（页面显示用）。 */
     function formatBytes(n) {
       const size = Number(n) || 0
@@ -129,6 +161,8 @@ window.__ModuleLoader__.load({
       .abw-lt{flex:1 1 auto;min-width:0}
       .abw-empty{padding:24px 10px;text-align:center;color:var(--dsw-fg-3,#777);font-size:12px;line-height:1.9}
       .abw-send{flex:0 0 auto;display:flex;gap:8px;margin-top:8px}
+      .abw-search{flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-bottom:6px}
+      .abw-hit{background:#4d3b00;color:#ffd866;border-radius:2px}
     `
 
     let injected = false
@@ -209,6 +243,11 @@ window.__ModuleLoader__.load({
       const [scrollTop, setScrollTop] = React.useState(0)
       const [viewH, setViewH] = React.useState(300)
       const [older, setOlder] = React.useState({ loading: false, hasMore: true })
+      const [search, setSearch] = React.useState({
+        query: '', caseSensitive: false, wholeWord: false, regex: false,
+        loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0,
+      })
+      const searching = search.query.trim() !== ''
       // 内联提示（替代 alert）：不弹窗，在界面上就地显示几秒
       const [notice, setNotice] = React.useState('')
       // 提示自动消失（3 秒），不留残在界面上
@@ -281,11 +320,47 @@ window.__ModuleLoader__.load({
         }
       }, [older.loading, older.hasMore, st.logs, setSt])
 
-      const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
-      const range = virtualRange(scrollTop, viewH, shown.length, ROW_HEIGHT, OVERSCAN)
+      /* 搜索：直接查本地 JSONL（全量历史），结果替换日志流显示。 */
       React.useEffect(() => {
-        if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
-      }, [shown.length, follow])
+        const query = search.query.trim()
+        if (query === '') return undefined
+        let cancelled = false
+        const timer = setTimeout(async () => {
+          if (cancelled) return
+          setSearch(current => ({ ...current, loading: true, error: '' }))
+          const params = new URLSearchParams({ q: query, limit: '2000' })
+          if (search.caseSensitive) params.set('case', '1')
+          if (search.wholeWord) params.set('word', '1')
+          if (search.regex) params.set('regex', '1')
+          if (filter !== 'all') params.set('src', filter)
+          const data = await api.get('/log/search?' + params.toString())
+          if (cancelled) return
+          if (!data || data.error) {
+            setSearch(current => ({
+              ...current, loading: false,
+              error: (data && (data.message || data.error)) || '搜索失败',
+              matches: [], total: 0, hasMore: false,
+            }))
+            return
+          }
+          setSearch(current => ({
+            ...current, loading: false, error: '',
+            matches: Array.isArray(data.matches) ? data.matches : [],
+            total: Number(data.total) || 0,
+            hasMore: data.hasMore === true,
+          }))
+          setScrollTop(0)
+          if (logRef.current) logRef.current.scrollTop = 0
+        }, 300)
+        return () => { cancelled = true; clearTimeout(timer) }
+      }, [search.query, search.caseSensitive, search.wholeWord, search.regex, filter, search.nonce])
+
+      const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
+      const rows = searching ? search.matches : shown
+      const range = virtualRange(scrollTop, viewH, rows.length, ROW_HEIGHT, OVERSCAN)
+      React.useEffect(() => {
+        if (follow && !searching && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+      }, [shown.length, follow, searching])
 
       // 三个状态要分清：
       //   busy    = 正在连接（启动 Downloader / 等握手）
@@ -460,7 +535,10 @@ window.__ModuleLoader__.load({
 
       // ---- 下半：日志 ----
       const logBar = h('div', { className: 'abw-lbar' },
-                h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (older.hasMore ? ' · 上滚加载更早' : '') + (older.loading ? ' · 加载中…' : '')),
+                h('span', { className: 'abw-dim', style: { fontSize: 12 } },
+          searching
+            ? ('搜索 ' + search.total + ' 条' + (search.hasMore ? '（显示前 ' + search.matches.length + ' 条）' : '') + (search.loading ? ' · 搜索中…' : ''))
+            : ('日志 ' + shown.length + (older.hasMore ? ' · 上滚加载更早' : '') + (older.loading ? ' · 加载中…' : ''))),
         st.logFile && st.logFile.size > 0
           ? h('span', {
             className: 'abw-dim',
@@ -497,18 +575,23 @@ window.__ModuleLoader__.load({
         const p2 = (n) => String(n).padStart(2, '0')
         return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds())
       }
-      const logBody = shown.length === 0
+      const logBody = rows.length === 0
         ? h('div', { className: 'abw-empty' },
-          s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里')
+          searching
+            ? (search.loading ? '搜索中…' : (search.error !== '' ? search.error : '没有匹配的日志'))
+            : (s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里'))
         : [
           h('div', { key: 'pad-top', style: { height: range.topPad } }),
-          ...shown.slice(range.start, range.end).map((l, i) => h('div', {
+          ...rows.slice(range.start, range.end).map((l, i) => h('div', {
             className: 'abw-ll', key: (l.t || 0) + '-' + (range.start + i),
             style: { height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px' },
           },
           h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
           h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
-          h('span', { className: 'abw-lt' }, l.text)
+          h('span', { className: 'abw-lt' }, ...searchParts(l.text, search.query, search.caseSensitive, search.wholeWord, search.regex)
+            .map((part, j) => (part.hit
+              ? h('span', { key: j, className: 'abw-hit' }, part.text)
+              : part.text)))
           )),
           h('div', { key: 'pad-bottom', style: { height: range.bottomPad } }),
         ]
@@ -520,9 +603,53 @@ window.__ModuleLoader__.load({
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
           if (atBottom !== follow) setFollow(atBottom)
           setScrollTop(el.scrollTop)
-          if (el.scrollTop < ROW_HEIGHT * 10 && older.hasMore && !older.loading) void loadOlder()
+          if (!searching && el.scrollTop < ROW_HEIGHT * 10 && older.hasMore && !older.loading) void loadOlder()
         },
       }, logBody)
+
+      const searchRow = h('div', { className: 'abw-search' },
+        h('input', {
+          className: 'abw-inp abw-mono', style: { flex: '1 1 auto' },
+          placeholder: '搜索日志（支持正则 / 区分大小写 / 全字）',
+          value: search.query,
+          onChange: e => setSearch(current => ({ ...current, query: e.target.value })),
+          onKeyDown: (e) => {
+            if (e.key === 'Enter') {
+              setSearch(current => ({ ...current, nonce: (current.nonce || 0) + 1 }))
+              return
+            }
+            if (e.key === 'Escape') {
+              setSearch({ query: '', caseSensitive: false, wholeWord: false, regex: false, loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0 })
+              setScrollTop(0)
+            }
+          },
+        }),
+        h('button', {
+          className: 'abw-btn', 'data-v': search.caseSensitive ? 'pri' : 'ghost',
+          title: '区分大小写 (Aa)',
+          onClick: () => setSearch(current => ({ ...current, caseSensitive: !current.caseSensitive })),
+        }, 'Aa'),
+        h('button', {
+          className: 'abw-btn', 'data-v': search.wholeWord ? 'pri' : 'ghost',
+          title: '全字匹配 (ab)',
+          onClick: () => setSearch(current => ({ ...current, wholeWord: !current.wholeWord })),
+        }, 'ab'),
+        h('button', {
+          className: 'abw-btn', 'data-v': search.regex ? 'pri' : 'ghost',
+          title: '正则表达式 (.*)',
+          onClick: () => setSearch(current => ({ ...current, regex: !current.regex })),
+        }, '.*'),
+        searching
+          ? h('button', {
+            className: 'abw-btn', 'data-v': 'ghost',
+            title: '清除搜索',
+            onClick: () => {
+              setSearch({ query: '', caseSensitive: false, wholeWord: false, regex: false, loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0 })
+              setScrollTop(0)
+            },
+          }, '清除')
+          : null
+      )
 
       const sendBar = h('div', { className: 'abw-send' },
         h('input', {
@@ -535,7 +662,7 @@ window.__ModuleLoader__.load({
         h('button', { className: 'abw-btn', disabled: !s.open, onClick: send }, '发送')
       )
 
-      const bottom = h('div', { className: 'abw-logwrap' }, logBar, logBox, sendBar)
+      const bottom = h('div', { className: 'abw-logwrap' }, logBar, searchRow, logBox, sendBar)
 
       return h('div', { className: 'abw' }, top, bottom)
     }
@@ -592,7 +719,7 @@ window.__ModuleLoader__.load({
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      __test: { appendLogs, virtualRange, formatBytes },
+      __test: { appendLogs, virtualRange, searchParts, formatBytes },
     }
   },
 })
