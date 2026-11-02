@@ -240,9 +240,9 @@ pwsh tests/fixture-coverage.ps1 -Repo D:\tmp\covrepo
 3 个进程彼此并行，剩下的成本主要是 git 进程启动本身。
 路径实时校验（`verifyPath`）仍是 1 次 git 调用，校验期间按钮显示「正在检查…」。
 
-## 变更视图：diff 用居中大弹窗
+## 变更/历史视图：diff 用居中大弹窗
 
-在「变更」页点击文件，diff 以**居中弹窗**打开（宽 `min(1100px, 92vw)`、高
+在「变更」或「历史」页点击文件，diff 都以**居中弹窗**打开（宽 `min(1100px, 92vw)`、高
 `min(70vh, 720px)`），文件列表保持占满整页：
 
 ```
@@ -266,7 +266,7 @@ pwsh tests/fixture-coverage.ps1 -Repo D:\tmp\covrepo
 
 - 弹窗内 diff 独立滚动，表头 sticky；`Esc`、点遮罩或「关闭」退出；
 - 暂存/丢弃 hunk、行选择等操作在弹窗里照常可用；
-- 历史页的 diff 仍是原来的分栏布局，不受影响。
+- 变更页和历史页共用同一个弹窗组件；历史页不再把列表压成分栏。
 ## 性能与构建期行为
 
 - 快照用 `git status --untracked-files=normal --no-renames`：构建产生的几万个未跟踪产物

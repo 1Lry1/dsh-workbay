@@ -1421,7 +1421,6 @@ window.__ModuleLoader__.load({
       const [historyFile, setHistoryFile] = useState(null)
       /* Fraction of the History column given to the list + commit details while a
          diff is open below it. */
-      const [historyRatio, setHistoryRatio] = useState(0.55)
       /* Share of the History column given to the COMMIT LIST while a commit's
          details are open below it (dragged, not fixed). */
       const [commitListRatio, setCommitListRatio] = useState(0.34)
@@ -1462,27 +1461,7 @@ window.__ModuleLoader__.load({
         window.addEventListener('pointercancel', up)
       }, [])
 
-      const onHistorySplitDrag = useCallback((event) => {
-        event.preventDefault()
-        const wrap = event.currentTarget === null ? null : event.currentTarget.parentElement
-        if (wrap === null) return
-        const rect = wrap.getBoundingClientRect()
-        if (rect.height <= 0) return
-        setHistoryInteracting(true)
-        const move = (moveEvent) => {
-          const ratio = (moveEvent.clientY - rect.top) / rect.height
-          setHistoryRatio(Math.max(0.15, Math.min(0.85, ratio)))
-        }
-        const up = () => {
-          window.removeEventListener('pointermove', move)
-          window.removeEventListener('pointerup', up)
-          window.removeEventListener('pointercancel', up)
-          setHistoryInteracting(false)
-        }
-        window.addEventListener('pointermove', move)
-        window.addEventListener('pointerup', up)
-        window.addEventListener('pointercancel', up)
-      }, [])
+
       /* Line-level selection inside the open diff: keys are `hunk:bodyIndex`,
          exactly the shape the host's buildLineSelectionPatch expects. */
       const [lineSelection, setLineSelection] = useState(() => new Set())
@@ -2128,20 +2107,23 @@ window.__ModuleLoader__.load({
 
       const closeDiff = useCallback(() => {
         setSelected(null)
+        setHistoryFile(null)
         setLineSelection(null)
         setDiffState({ path: null, patch: '', loading: false, binary: false })
       }, [])
 
-      /* 变更页的 diff 用居中大弹窗（历史页保持分栏）。 */
-      const diffModal = selected === null ? null : E(Modal, {
+      /* 变更页和历史页的 diff 都用居中大弹窗。 */
+      const diffTitle = selected !== null ? selected.path : historyFile
+      const diffIsHistory = selected === null && historyFile !== null
+      const diffModal = diffTitle === null ? null : E(Modal, {
         t,
-        title: selected.path,
+        title: diffTitle,
         wide: true,
         onClose: closeDiff,
       },
         E('div', { className: 'gwc-diffModal' },
           E('div', { className: 'gwc-diffHead' },
-            E('span', { className: 'gwc-diffTitle', title: selected.path }, selected.path),
+            E('span', { className: 'gwc-diffTitle', title: diffTitle }, diffTitle),
             E('span', { className: 'gwc-historyDiffActions' },
               E(TextButton, { onClick: () => setDiffMode(diffMode === 'split' ? 'unified' : 'split') }, diffMode === 'split' ? t('diff.split') : t('diff.unified')),
               E(TextButton, { onClick: closeDiff }, t('diff.close')))),
@@ -2152,9 +2134,9 @@ window.__ModuleLoader__.load({
                 mode: diffMode,
                 t,
                 loading: diffState.loading,
-                hunkActions: diffHunkActions,
-                selection: lineSelection,
-                onToggle: selected.group === 'history' ? undefined : toggleLine,
+                hunkActions: diffIsHistory ? undefined : diffHunkActions,
+                selection: diffIsHistory ? null : lineSelection,
+                onToggle: diffIsHistory ? undefined : toggleLine,
               })))))
 
 
@@ -2204,10 +2186,7 @@ window.__ModuleLoader__.load({
             onKeyDown: (event) => { if (event.key === 'Enter') void loadHistory({ skip: 0, search: event.currentTarget.value }) },
           }),
           E(IconButton, { name: 'history', label: t('history.search'), onClick: () => { void loadHistory({ skip: 0 }) } })),
-        E('div', {
-          className: 'gwc-historyMain',
-          style: historyFile === null ? undefined : { flex: '0 0 ' + Math.round(historyRatio * 100) + '%' },
-        },
+        E('div', { className: 'gwc-historyMain' },
         E('div', {
           className: 'gwc-historyList',
           style: selectedCommit === null ? undefined : { flex: '0 0 ' + Math.round(commitListRatio * 100) + '%' },
@@ -2260,30 +2239,8 @@ window.__ModuleLoader__.load({
             setHistoryFile(filePath)
             void loadDiff(filePath, 'commit', selectedCommit)
           },
-        })),
-        historyFile === null ? null : E('div', {
-          className: 'gwc-splitBar is-historyDiff',
-          title: t('diff.resize'),
-          'aria-label': t('diff.resize'),
-          onPointerDown: onHistorySplitDrag,
-        }, E('div', { className: 'gwc-splitGrip' })),
-        historyFile === null ? null : E('div', {
-          className: 'gwc-historyDiff',
-          style: historyFile === null ? undefined : { flex: '1 1 0' },
-        },
-          E('div', { className: 'gwc-diffHead' },
-            E('span', { className: 'gwc-diffTitle', title: historyFile }, historyFile),
-            E('span', { className: 'gwc-historyDiffActions' },
-              E(TextButton, { onClick: () => setDiffMode(diffMode === 'split' ? 'unified' : 'split') }, diffMode === 'split' ? t('diff.split') : t('diff.unified')),
-              E(IconButton, { name: 'close', label: t('diff.close'), onClick: () => setHistoryFile(null) }))),
-          E('div', { className: 'gwc-diffScroll' },
-            E('div', { className: 'gwc-diffPane' },
-              E(DiffView, {
-                patch: diffState.patch,
-                mode: diffMode,
-                t,
-                loading: diffState.loading,
-              })))))
+        })));
+
 
       useEffect(() => {
         if (selectedCommit === null) return

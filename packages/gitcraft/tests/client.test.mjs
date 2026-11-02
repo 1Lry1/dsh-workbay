@@ -326,7 +326,10 @@ test('clicking a file in a commit opens its diff in the history page', () => {
   assert.match(source, /loadDiff\(filePath, 'commit', selectedCommit\)/)
   assert.equal(/onFileClick: \(filePath\) => \{\s*setNav\('changes'\)/.test(source), false,
     'history file clicks must not navigate to the changes tab')
-  assert.match(source, /className: 'gwc-historyDiff'/)
+  /* The diff now opens in the shared centered modal, not a split pane. */
+  assert.match(source, /const diffTitle = selected !== null \? selected\.path : historyFile/)
+  assert.match(source, /const diffIsHistory = selected === null && historyFile !== null/)
+  assert.equal(source.includes("className: 'gwc-historyDiff'"), false)
 })
 test('a global surface can snapshot from repoRoot alone (no cwd, no sessionId)', () => {
   /*
