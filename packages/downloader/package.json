@@ -34,6 +34,6 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node --test tests/client.test.mjs"
+    "test": "node --test tests/client.test.mjs tests/host.test.mjs"
   }
 }

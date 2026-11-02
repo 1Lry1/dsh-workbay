@@ -436,12 +436,42 @@ class LineHelper {
 
 // ---------------------------------------------------------------- 插件主体
 
+/* ---------------------------------------------------------------- 互斥 / 去重
+ * 两个实测踩过的坑，抽成纯函数以便单测：
+ *   1) /flash/start 双击或与自动烧录并发时，会向 helper 连发两次 `launch`，
+ *      helper 就起两个 Downloader —— Windows 上直接报工具冲突。
+ *   2) 串口 helper 的 open 失败以前走全局 err 事件（没有 id），宿主每重试一次
+ *      就多打一条“串口错误”，而且 command('open') 等不到回包、每次卡 3 秒。
+ */
+export function shouldLaunchFlash(flash, helperAlive) {
+  if (flash.connected) return false
+  if (flash.launching) return false
+  if (flash.pid && helperAlive) return false
+  return true
+}
+
+/** 同类串口错误 3 秒内只保留一行；返回 null 表示这条被合并。 */
+export function serialErrorLine(state, msg, now = Date.now()) {
+  const text = String(msg || '').trim() || '未知错误'
+  const last = state.serial.lastError
+  if (last && last.msg === text && now - last.at < 3000) {
+    state.serial.dupCount = (state.serial.dupCount || 0) + 1
+    return null
+  }
+  const merged = state.serial.dupCount ? `（已合并 ${state.serial.dupCount} 条重复错误）` : ''
+  state.serial.dupCount = 0
+  state.serial.lastError = { msg: text, at: now }
+  return `串口错误: ${text}${merged}`
+}
+
+export const __test = { shouldLaunchFlash, serialErrorLine, locationPayload }
+
 export function apply(ctx) {
   const state = {
     root: null,                 // 当前工作台根目录
     project: null,              // 当前选中的工程
-    serial: { open: false, port: null, baud: 1500000 },
-    flash: { status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null, busy: false, burnSeq: 0, doneSeq: 0 },
+    serial: { open: false, port: null, baud: 1500000, opening: false, lastError: null, dupCount: 0, suppressed: 0 },
+    flash: { status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null, busy: false, burnSeq: 0, doneSeq: 0, launching: false, launchAt: 0 },
     logs: [],                   // 环形日志（最近 N 条）
     // 自动烧录：监听编译产物 dcf 的变化
     watch: { on: false, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
@@ -511,7 +541,11 @@ export function apply(ctx) {
         appendSerialText(ev.text)
         broadcast({ ev: 'serial', ...ev })
       } else if (ev.ev === 'err' || ev.ev === 'fatal') {
-        pushLog('S', `串口错误: ${ev.msg}`)
+        // open 失败现在由 helper 按 id 回包（见 AbSerialHost.cs）；这里只处理
+        // 真正的异步错误，并且同类错误 3 秒内只打一行，避免刷屏。
+        if (state.serial.opening) { state.serial.suppressed = (state.serial.suppressed || 0) + 1; return }
+        const line = serialErrorLine(state, ev.msg)
+        if (line) pushLog('S', line)
       }
     }, 'serial')
 
@@ -671,13 +705,19 @@ export function apply(ctx) {
 
     // ★ 若 Downloader 已被关（烧完为了还串口会退出），这里自己拉起它。
     if (!state.flash.connected) {
-      pushLog('S', '自动烧录：重新拉起 Downloader…')
-      ensureComEnable()
-      flashHelper.start()
-      state.flash.busy = true
-      state.flash.stage = '启动 Downloader…'
-      broadcast({ ev: 'flash', state: state.flash })
-      flashHelper.line('launch')
+      if (shouldLaunchFlash(state.flash, flashHelper.alive)) {
+        pushLog('S', '自动烧录：重新拉起 Downloader…')
+        ensureComEnable()
+        flashHelper.start()
+        state.flash.launching = true
+        state.flash.launchAt = Date.now()
+        state.flash.busy = true
+        state.flash.stage = '启动 Downloader…'
+        broadcast({ ev: 'flash', state: state.flash })
+        flashHelper.line('launch')
+      } else {
+        pushLog('S', '自动烧录：Downloader 正在启动，等待握手…')
+      }
       let waited = 0
       while (waited < 20000 && !state.flash.connected) {
         await new Promise(r => setTimeout(r, 250))
@@ -948,6 +988,7 @@ export function apply(ctx) {
         break
       case 'launched':
         state.flash.pid = ev.pid
+        state.flash.launching = false
         state.flash.stage = '等待握手…'
         broadcast({ ev: 'flash', state: state.flash })
         break
@@ -958,6 +999,7 @@ export function apply(ctx) {
           // 握手成功 = helper 已接管 Downloader，此时就该解除"连接中"。
           // busy 的语义是「能不能给它发命令」，不是「设备准备好了」。
           state.flash.connected = true
+          state.flash.launching = false
           state.flash.busy = false
           state.flash.stage = '已连接，正在扫描设备…'
           state.flash.status = '已连接'
@@ -1113,6 +1155,8 @@ export function apply(ctx) {
         // helper 退出了：不管成功失败，都要把"连接中"放开，
         // 否则界面上永远停在「连接中…」
         state.flash.busy = false
+        state.flash.launching = false
+        state.flash.pid = null
         state.flash.connected = false
         state.flash.stage = ''
         state.flash.status = '离线'
@@ -1123,6 +1167,7 @@ export function apply(ctx) {
       case 'error':
       case 'fatal':
         state.flash.busy = false
+        state.flash.launching = false
         state.flash.stage = ''
         pushLog('S', `[flash] ${ev.msg}`)
         broadcast({ ev: 'flash', state: state.flash })
@@ -1335,26 +1380,40 @@ async function handleHttp(req, res, state, api) {
       const body = JSON.parse(await readBody(req))
       // 烧录进行中不允许抢串口
       if (state.flash.busy) return json(res, 409, { error: '烧录进行中，不能打开串口' })
+      // 连点/重复请求：只允许一个 in-flight open，避免并发 open 互相把端口关掉。
+      if (state.serial.opening) return json(res, 409, { error: 'opening', message: '正在打开串口，请稍候' })
       if (!serialHelper.alive) serialHelper.start()
       // ★ 刚烧完时 Downloader 可能还没完全退出、COM 句柄还没释放。
-      //   直接 open 会“拒绝访问”。这里自动重试 10 次（共 ≈ 1.5s），
-      //   用户不用先点“断开”再点“打开串口”。
+      //   只在「占用/拒绝访问」这类可恢复错误上重试，其它错误立刻返回；
+      //   每次失败都是带 id 的回包（不再等 3 秒超时），所以重试很快。
+      state.serial.opening = true
+      state.serial.suppressed = 0
       let r = { ok: false, error: 'not-tried' }
-      for (let i = 0; i < 10; i++) {
-        r = await serialHelper.command('open', { port: body.port, baud: body.baud || 1500000 }, 3000)
-        if (r && r.ok) break
-        await new Promise(x => setTimeout(x, 150))
-      }
-      if (r.ok) {
-        state.serial.open = true
-        state.serial.port = body.port
-        state.serial.baud = body.baud || 1500000
-        // 记住用户意图：他想看串口。烧录会临时抢走，烧完要按这个意图还回去
-        state.serial.wantOpen = { port: body.port, baud: body.baud || 1500000 }
-        pushLog('S', `串口 ${body.port} @${state.serial.baud} 已打开`)
-        broadcast({ ev: 'serial-state', serial: state.serial })
-      } else {
-        pushLog('S', `串口 ${body.port} 打开失败：${r.msg || r.error || '未知原因（可能被占用）'}`)
+      let attempts = 0
+      try {
+        for (let i = 0; i < 4; i++) {
+          attempts = i + 1
+          r = await serialHelper.command('open', { port: body.port, baud: body.baud || 1500000 }, 3000)
+          if (r && r.ok) break
+          const why = String(r.msg || r.error || '')
+          if (!/denied|拒绝|占用|busy|access|正在使用/i.test(why)) break
+          await new Promise(x => setTimeout(x, 250))
+        }
+        if (r.ok) {
+          state.serial.open = true
+          state.serial.port = body.port
+          state.serial.baud = body.baud || 1500000
+          // 记住用户意图：他想看串口。烧录会临时抢走，烧完要按这个意图还回去
+          state.serial.wantOpen = { port: body.port, baud: body.baud || 1500000 }
+          pushLog('S', `串口 ${body.port} @${state.serial.baud} 已打开`)
+          broadcast({ ev: 'serial-state', serial: state.serial })
+        } else {
+          const merged = state.serial.suppressed ? `（已合并 ${state.serial.suppressed} 条重复错误）` : ''
+          const why = r.msg || r.error || '未知原因（可能被占用）'
+          pushLog('S', `串口 ${body.port} 打开失败（尝试 ${attempts} 次）：${why}${merged}`)
+        }
+      } finally {
+        state.serial.opening = false
       }
       return json(res, 200, r)
     }
@@ -1440,6 +1499,12 @@ async function handleHttp(req, res, state, api) {
         return json(res, 200, { ok: true, already: true })
       }
 
+      // ★ 启动互斥：正在启动（或已 launched 但还没握手）时绝不再发一次 launch，
+      //   否则 helper 会拉起第二个 Downloader（Windows 上就是“工具冲突”）。
+      if (!shouldLaunchFlash(state.flash, flashHelper.alive)) {
+        return json(res, 200, { ok: true, pending: true, message: 'Downloader 正在启动，请稍候' })
+      }
+
       // ★ 最常见的失败原因：用户自己开着 Downloader。
       //   它占着串口、也不响应我们的 IPC，helper 新起的实例永远等不到 StartOK。
       //   必须在启动前就拦住并说清原因，而不是让用户干等 12 秒看到"超时"。
@@ -1481,6 +1546,8 @@ async function handleHttp(req, res, state, api) {
       //     COMEnable=True  -> 启动后 2~3 秒自动扫到设备（已实测）
       //   所以每次启动前都把它保证成 True。
       flashHelper.start()
+      state.flash.launching = true
+      state.flash.launchAt = Date.now()
       state.flash.busy = true
       state.flash.tConnect = Date.now()
       state.flash.stage = '启动 Downloader…'
@@ -1492,6 +1559,7 @@ async function handleHttp(req, res, state, api) {
       setTimeout(() => {
         if (state.flash.busy && !state.flash.connected) {
           state.flash.busy = false
+          state.flash.launching = false
           state.flash.stage = ''
           state.flash.status = '连接超时'
           pushLog('S', '[flash] 连接超时：12 秒内没有收到 StartOK。' +
@@ -1646,6 +1714,8 @@ async function handleHttp(req, res, state, api) {
     if (p === '/flash/stop' && req.method === 'POST') {
       flashHelper.line('quit')
       state.flash.busy = false
+      state.flash.launching = false
+      state.flash.pid = null
       state.flash.burning = false
       state.flash.connected = false
       state.flash.stage = ''

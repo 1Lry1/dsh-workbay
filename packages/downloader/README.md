@@ -51,6 +51,23 @@ Windows 的 COM 口独占，所以：
 
 Downloader 在「扫描中」阶段会**静默丢弃** `StartDownload`。插件发命令后若 3 秒内无响应，自动重发，最多 5 次。
 
+### 烧录启动互斥（避免工具冲突）
+
+`/flash/start` 有 `launching` 标记：从发出 `launch` 到收到 `launched`/`StartOK` 之间，
+再点「连接」（或自动烧录同时触发）只会返回 `{ ok:true, pending:true }`，**不会**再发第二条
+`launch`。Windows 上两次 `launch` 会让 helper 起两个 Downloader 实例，直接报工具冲突。
+互斥标记在 helper 退出、连接成功、点「断开」时复位。
+
+### 打开串口失败只打一行
+
+串口 helper（`helper/AbSerialHost.cs`）的 `open` 失败现在**按 id 回包**（`{ok:false,id,msg}`），
+不再是 id 为空的 `err` 事件。宿主因此：
+
+- 失败立即返回（实测 ~340 ms，不再等 3 秒超时）；
+- 只在「占用/拒绝访问」类错误上重试，最多 4 次（250 ms 间隔）；
+- 最终只写**一行** `串口 COMx 打开失败（尝试 N 次）：原因`；
+- 其它异步串口错误 3 秒内同类合并，超时才再打一行。
+
 ## 自动烧录（编译完自动烧）
 
 工作台自己监听编译产物 `app.dcf`，文件一变（= 编译完成）就自动烧录。

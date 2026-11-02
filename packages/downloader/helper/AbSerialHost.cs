@@ -79,23 +79,42 @@ internal static class Program
                 break;
 
             case "open":
-                lock (_lock)
                 {
-                    ClosePort();
                     var name = ExtractStr(line, "port");
                     var baud = ExtractInt(line, "baud", 1500000);
-                    var p = new SerialPort(name, baud, Parity.None, 8, StopBits.One);
-                    p.ReadTimeout = 200;
-                    p.WriteTimeout = 1500;
-                    // 高波特率关键：缓冲区调大，避免默认可笑的 4096 溢出
-                    p.ReadBufferSize = 1 << 20;
-                    p.WriteBufferSize = 1 << 16;
-                    p.Open();
-                    _port = p;
-                    var th = new Thread(PortReadLoop) { IsBackground = true };
-                    th.Start();
+                    var opened = false;
+                    var openError = (string)null;
+                    lock (_lock)
+                    {
+                        ClosePort();
+                        SerialPort p = null;
+                        try
+                        {
+                            p = new SerialPort(name, baud, Parity.None, 8, StopBits.One);
+                            p.ReadTimeout = 200;
+                            p.WriteTimeout = 1500;
+                            // 高波特率关键：缓冲区调大，避免默认可笑的 4096 溢出
+                            p.ReadBufferSize = 1 << 20;
+                            p.WriteBufferSize = 1 << 16;
+                            p.Open();
+                            _port = p;
+                            var th = new Thread(PortReadLoop) { IsBackground = true };
+                            th.Start();
+                            opened = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            openError = ex.Message;
+                            try { if (p != null && p.IsOpen) p.Close(); } catch { }
+                            try { if (p != null) p.Dispose(); } catch { }
+                            _port = null;
+                        }
+                    }
+                    // 失败也必须带 id 回包：外层 catch 发出的 err 事件没有 id，
+                    // 宿主会一直等到超时（表现为"打开串口"卡 3 秒 + 连续刷错误）。
+                    if (opened) Reply(id, true, "\"baud\":" + baud);
+                    else Reply(id, false, "\"msg\":" + J(openError ?? "open failed"));
                 }
-                Reply(id, true, "\"baud\":" + ExtractInt(line, "baud", 1500000));
                 break;
 
             case "close":
