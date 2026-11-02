@@ -64,12 +64,28 @@ const LOCATION_DIR = path.join(os.homedir(), '.dsh', 'workbay')
 const LOCATION_FILE = path.join(LOCATION_DIR, 'downloader-logs.location.json')
 const LOG_CACHE_MAX = 50000
 
+/* ---------------------------------------------------------------- 日志落盘
+ * 运行日志全量写入 JSONL（不落盘就没法在 DSH 重启后回看）：
+ *   %USERPROFILE%\.dsh\workbay\logs\downloader.jsonl
+ * 写盘走 250ms 合并队列；超过 128MB 轮转为 .1；启动时只读文件末尾 32MB
+ * （避免大文件把主进程卡住）。"清空日志"会截断文件并删掉轮转文件。
+ * DSH_DOWNLOADER_LOG_DIR 可覆盖目录（测试用）。
+ */
+const LOG_DIR = process.env.DSH_DOWNLOADER_LOG_DIR
+  ? path.resolve(process.env.DSH_DOWNLOADER_LOG_DIR)
+  : path.join(os.homedir(), '.dsh', 'workbay', 'logs')
+const LOG_FILE = path.join(LOG_DIR, 'downloader.jsonl')
+const LOG_FILE_ROTATE_BYTES = 128 * 1024 * 1024
+const LOG_FILE_LOAD_BYTES = 32 * 1024 * 1024
+
 function locationPayload(state) {
   return {
     kind: 'downloader-log-cache',
-    storage: 'host-memory-ring-buffer',
-    persistent: false,
-    note: '日志只在 DSH 主进程内存里（环形缓冲，不落盘），DSH 重启即清空；本文件只是地址清单。',
+    storage: 'host-memory + jsonl-file',
+    persistent: true,
+    note: '运行日志全量追加到 logFile（JSONL）；DSH 重启时从该文件恢复最近日志到工作台。清空日志会同时截断该文件。',
+    logFile: LOG_FILE,
+    logFileSize: logFileSize(),
     tool: 'downloader_logs',
     toolLocation: 'downloader_logs_location',
     route: '/downloader/log/recent',
@@ -92,6 +108,64 @@ function refreshLocation(state) {
     fs.mkdirSync(LOCATION_DIR, { recursive: true })
     fs.writeFileSync(LOCATION_FILE, JSON.stringify(locationPayload(state), null, 2), 'utf8')
   } catch { /* best effort: a read-only home must not break logging */ }
+}
+
+/* ---------------------------------------------------------------- 日志文件 */
+
+function logFileSize() {
+  try { return fs.statSync(LOG_FILE).size } catch { return 0 }
+}
+
+/** 读文件末尾 maxBytes，丢弃可能被截断的第一行。 */
+function readLogTail(file, maxBytes) {
+  let fd
+  try {
+    const size = logFileSize()
+    if (size <= 0) return { text: '', truncated: false }
+    const start = Math.max(0, size - maxBytes)
+    fd = fs.openSync(file, 'r')
+    const buffer = Buffer.allocUnsafe(size - start)
+    fs.readSync(fd, buffer, 0, buffer.length, start)
+    let text = buffer.toString('utf8')
+    if (start > 0) {
+      const newline = text.indexOf('\n')
+      text = newline >= 0 ? text.slice(newline + 1) : ''
+    }
+    return { text, truncated: start > 0 }
+  } catch {
+    return { text: '', truncated: false }
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* ignore */ } }
+  }
+}
+
+/** 解析 JSONL；坏行/写了一半的最后一行直接跳过。 */
+function parseLogLines(text) {
+  const out = []
+  for (const line of String(text || '').split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    try {
+      const item = JSON.parse(trimmed)
+      if (item && typeof item.text === 'string') {
+        out.push({ t: Number(item.t) || Date.now(), src: String(item.src || 'S'), text: item.text })
+      }
+    } catch { /* skip torn line */ }
+  }
+  return out
+}
+
+/** 给页面/清单用的文件占用信息。 */
+function logFileInfo(state) {
+  const size = logFileSize()
+  return {
+    path: LOG_FILE,
+    size,
+    lines: state.logFile.lines,
+    exists: size > 0,
+    rotated: fs.existsSync(LOG_FILE + '.1'),
+    error: state.logFile.error || null,
+  }
 }
 
 const IPC_HELPER_CANDIDATES = [
@@ -475,6 +549,7 @@ export function apply(ctx) {
     logs: [],                   // 环形日志（最近 N 条）
     logBatch: [],               // SSE 合并推送：每 60ms 一批，避免逐行 setState
     logBatchTimer: null,
+    logFile: { size: 0, lines: 0, exists: false, truncated: false, rotated: false, error: null },
     // 自动烧录：监听编译产物 dcf 的变化
     watch: { on: false, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
   }
@@ -486,9 +561,69 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     if (state.logBatchTimer !== null) { clearTimeout(state.logBatchTimer); state.logBatchTimer = null }
     state.logBatch = []
+    flushLogFile()
+    if (logFileTimer !== null) { clearTimeout(logFileTimer); logFileTimer = null }
   }, 'downloader: log batch flush')
   /* Write the address sheet once at mount so it exists before any log line. */
   refreshLocation(state)
+
+  /* 启动恢复：日志文件有数据就加载最近一段回工作台。 */
+  ;(() => {
+    const size = logFileSize()
+    if (size <= 0) return
+    const tail = readLogTail(LOG_FILE, LOG_FILE_LOAD_BYTES)
+    const loaded = parseLogLines(tail.text)
+    state.logs = loaded.slice(-MAX_LOGS)
+    state.logFile.size = size
+    state.logFile.lines = state.logs.length
+    state.logFile.exists = true
+    state.logFile.truncated = tail.truncated
+  })()
+
+  /* 写盘队列：250ms 合并一次（高波特率下每行一次 appendFile 同样会拖慢主进程）。 */
+  const logFileQueue = []
+  let logFileTimer = null
+  let logFileBytes = state.logFile.size
+  const flushLogFile = () => {
+    logFileTimer = null
+    if (logFileQueue.length === 0) return
+    const items = logFileQueue.splice(0, logFileQueue.length)
+    const text = items.map((item) => JSON.stringify(item)).join('\n') + '\n'
+    const bytes = Buffer.byteLength(text)
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive: true })
+      // 轮转：超过 128MB 就把当前文件改名 .1（覆盖旧 .1），继续追加。
+      if (logFileBytes + bytes > LOG_FILE_ROTATE_BYTES) {
+        try { fs.renameSync(LOG_FILE, LOG_FILE + '.1') } catch { /* first run */ }
+        logFileBytes = 0
+        state.logFile.rotated = true
+      }
+      fs.appendFileSync(LOG_FILE, text, 'utf8')
+      logFileBytes += bytes
+      state.logFile.size = logFileBytes
+      state.logFile.lines += items.length
+      state.logFile.exists = true
+      state.logFile.error = null
+    } catch (e) {
+      state.logFile.error = String(e.message || e)
+    }
+  }
+  const enqueueLogFile = (item) => {
+    logFileQueue.push(item)
+    if (logFileTimer === null) logFileTimer = setTimeout(flushLogFile, 250)
+  }
+  const clearLogFile = () => {
+    logFileQueue.length = 0
+    if (logFileTimer !== null) { clearTimeout(logFileTimer); logFileTimer = null }
+    logFileBytes = 0
+    state.logFile.size = 0
+    state.logFile.lines = 0
+    state.logFile.exists = false
+    state.logFile.error = null
+    try { fs.mkdirSync(LOG_DIR, { recursive: true }) } catch { /* ignore */ }
+    try { fs.writeFileSync(LOG_FILE, '', 'utf8') } catch (e) { state.logFile.error = String(e.message || e) }
+    try { fs.rmSync(LOG_FILE + '.1', { force: true }) } catch { /* ignore */ }
+  }
 
   const broadcast = (obj) => {
     const line = `data: ${JSON.stringify(obj)}\n\n`
@@ -509,13 +644,16 @@ export function apply(ctx) {
     }
     /* ★ 批量推送：高波特率下每秒可能上千行，逐行 SSE + 逐行 setState 会把主进程
        和前端都拖慢。这里按 60ms 合并成 { ev:'logs', items }，单行仍是 1 条。 */
+    enqueueLogFile(item)
     state.logBatch.push(item)
     if (state.logBatchTimer === null) {
       state.logBatchTimer = setTimeout(() => {
         state.logBatchTimer = null
         const items = state.logBatch
         state.logBatch = []
-        if (items.length > 0) broadcast({ ev: 'logs', items })
+        if (items.length > 0) {
+          broadcast({ ev: 'logs', items, file: { path: LOG_FILE, size: state.logFile.size, lines: state.logFile.lines } })
+        }
       }, 60)
     }
     /* Keep the address sheet's counter warm without writing on every line. */
@@ -1201,6 +1339,7 @@ export function apply(ctx) {
       handler: (req, res) => handleHttp(req, res, state, {
         scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog,
         sseClients, DEFAULT_DL_DIR, guardDcf: guessDcf, setWatch, doFlash, freshestDcf,
+        clearLogFile,
       }),
     }), 'downloader: routes')
   })
@@ -1233,7 +1372,8 @@ export function apply(ctx) {
       description:
         '返回 Downloader 日志缓存的地址清单：存储位置（宿主内存环形缓冲、不落盘、重启清空）、' +
         '读取工具 downloader_logs 与 HTTP 路由 /downloader/log/recent 及参数、当前总条数、' +
-        '工作区根和磁盘上的地址清单文件路径。排查日志前先调用它定位。',
+        '工作区根、地址清单文件路径，以及全量日志文件 logFile（JSONL，可直接读）。' +
+        '排查日志前先调用它定位。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       async execute() {
         refreshLocation(state)
@@ -1318,7 +1458,7 @@ function ensureComEnable() {
 async function handleHttp(req, res, state, api) {
   const url = new URL(req.url, 'http://localhost')
   const p = url.pathname.replace(/^\/downloader/, '') || '/'
-  const { scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog, sseClients, DEFAULT_DL_DIR, guardDcf, setWatch, doFlash, freshestDcf } = api
+  const { scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog, sseClients, DEFAULT_DL_DIR, guardDcf, setWatch, doFlash, freshestDcf, clearLogFile } = api
 
   try {
     // ---- SSE：一条流推所有实时事件 ----
@@ -1454,14 +1594,20 @@ async function handleHttp(req, res, state, api) {
       return json(res, 200, r)
     }
 
-    // 清空前端日志（Host 侧环形缓冲一并清，避免刷新后又出现旧的）
+    // 清空日志：内存缓冲 + 本地 JSONL 文件（含轮转文件）一起清。
     if (p === '/log/clear' && req.method === 'POST') {
       state.logs.length = 0
       // 还没 flush 的批次也要丢掉，否则清空后旧行会被补推回来。
       state.logBatch = []
       if (state.logBatchTimer !== null) { clearTimeout(state.logBatchTimer); state.logBatchTimer = null }
+      clearLogFile()
       broadcast({ ev: 'log-clear' })
       return json(res, 200, { ok: true })
+    }
+
+    // 日志文件占用（页面显示 / AI 定位）
+    if (p === '/log/file' && req.method === 'GET') {
+      return json(res, 200, logFileInfo(state))
     }
 
     // ★ 日志地址清单：AI 第一步先读这里定位，再按需取内容。
@@ -1814,7 +1960,8 @@ function publicState(state) {
     serial: { ...state.serial, resumeAfterFlash: state.serial.resumeAfterFlash || null },
     flash: state.flash,
     watch: { on: state.watch.on, path: state.watch.path },
-    logs: state.logs.slice(-400),
+    logs: state.logs.slice(-2000),
+    logFile: logFileInfo(state),
   }
 }
 

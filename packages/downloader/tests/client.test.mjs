@@ -100,6 +100,21 @@ test('20k lines in 60ms-style batches stay fast (no per-line O(n) copy)', () => 
   assert.ok(elapsed < 1500, `400 batches took ${elapsed}ms`)
 })
 
+test('formatBytes renders the local log-file occupancy shown in the page', () => {
+  const { module } = loadClient()
+  const { formatBytes } = module.__test
+  assert.equal(formatBytes(512), '512 B')
+  assert.equal(formatBytes(2048), '2.0 KB')
+  assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB')
+  assert.equal(formatBytes(0), '0 B')
+  assert.equal(formatBytes(undefined), '0 B')
+})
+
+test('the page shows the local log file size and resets it on clear', () => {
+  assert.match(source, /本地 ' \+ formatBytes\(st\.logFile\.size\)/)
+  assert.match(source, /const logFile = e\.file \? \{ \.\.\.\(x\.logFile \|\| \{\}\), \.\.\.e\.file \}/)
+  assert.match(source, /size: 0, lines: 0, exists: false/)
+})
 test('the bundle no longer carries the chat-insertion button', () => {
   assert.doesNotMatch(source, /加入对话/)
   assert.doesNotMatch(source, /insertTextIntoChat|formatLogsForChat|findChatComposer/)

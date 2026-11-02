@@ -38,6 +38,15 @@ window.__ModuleLoader__.load({
       if (!Array.isArray(list) || list.length <= limit) return list
       return list.slice(-limit)
     }
+
+    /** 本地日志文件占用（页面显示用）。 */
+    function formatBytes(n) {
+      const size = Number(n) || 0
+      if (size < 1024) return size + ' B'
+      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
+      if (size < 1024 * 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB'
+      return (size / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+    }
     const api = {
       get: async (p) => {
         try {
@@ -134,6 +143,7 @@ window.__ModuleLoader__.load({
         serial: { open: false, port: null, baud: 1500000 },
         flash: { status: '离线', progress: 0, online: false, busy: false },
         logs: [],
+        logFile: null,
         watch: { on: false, path: null },
       })
 
@@ -150,15 +160,23 @@ window.__ModuleLoader__.load({
             if (e.ev === 'hello') return { ...x, ...e.state }
             if (e.ev === 'log') return { ...x, logs: appendLogs(x.logs, [e.item], CLIENT_MAX_LOGS) }
             if (e.ev === 'logs') {
-              return Array.isArray(e.items) && e.items.length > 0
-                ? { ...x, logs: appendLogs(x.logs, e.items, CLIENT_MAX_LOGS) }
-                : x
+              const logs = Array.isArray(e.items) && e.items.length > 0
+                ? appendLogs(x.logs, e.items, CLIENT_MAX_LOGS)
+                : x.logs
+              const logFile = e.file ? { ...(x.logFile || {}), ...e.file } : x.logFile
+              return { ...x, logs, logFile }
             }
             if (e.ev === 'flash') return { ...x, flash: { ...x.flash, ...e.state } }
             if (e.ev === 'serial-state') return { ...x, serial: e.serial }
             // ★ 清空时后端会广播 log-clear，前端必须一起清，
             //   否则只清了底层、界面上旧日志还在。
-            if (e.ev === 'log-clear') return { ...x, logs: [] }
+            if (e.ev === 'log-clear') {
+              return {
+                ...x,
+                logs: [],
+                logFile: x.logFile ? { ...x.logFile, size: 0, lines: 0, exists: false } : x.logFile,
+              }
+            }
             if (e.ev === 'watch') return { ...x, watch: e.watch }
             return x
           })
@@ -387,7 +405,14 @@ window.__ModuleLoader__.load({
 
       // ---- 下半：日志 ----
       const logBar = h('div', { className: 'abw-lbar' },
-        h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (shown.length > RENDER_LIMIT ? '（显示最近 ' + RENDER_LIMIT + ' 条）' : '')),
+                h('span', { className: 'abw-dim', style: { fontSize: 12 } }, '日志 ' + shown.length + (shown.length > RENDER_LIMIT ? '（显示最近 ' + RENDER_LIMIT + ' 条）' : '')),
+        st.logFile && st.logFile.size > 0
+          ? h('span', {
+            className: 'abw-dim',
+            style: { fontSize: 11, cursor: 'help' },
+            title: (st.logFile.path || '') + '\n点「清空」会同时截断本地日志文件',
+          }, '本地 ' + formatBytes(st.logFile.size) + (st.logFile.rotated ? '（含 .1）' : ''))
+          : null,
         h('span', { className: 'abw-sp' }),
         h('select', {
           className: 'abw-sel', value: filter, onChange: e => setFilter(e.target.value),
@@ -503,7 +528,7 @@ window.__ModuleLoader__.load({
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      __test: { appendLogs, windowLogs },
+      __test: { appendLogs, windowLogs, formatBytes },
     }
   },
 })
