@@ -1471,6 +1471,9 @@ window.__ModuleLoader__.load({
       /* Line-level selection inside the open diff: keys are `hunk:bodyIndex`,
          exactly the shape the host's buildLineSelectionPatch expects. */
       const [lineSelection, setLineSelection] = useState(() => new Set())
+      /* Which file the current line selection belongs to: opening another file
+         must not inherit hunk keys from the previous one. */
+      const diffPathRef = useRef(null)
       /* Repository selection: the picker can point the panel at ANY repository
          inside the workspace, so the panel is not limited to the one the
          session cwd happens to live in. Persisted per workspace root. */
@@ -1714,6 +1717,10 @@ window.__ModuleLoader__.load({
         if (filePath === null || filePath === undefined) {
           setDiffState({ path: null, patch: '', loading: false, binary: false })
           return
+        }
+        if (diffPathRef.current !== filePath) {
+          diffPathRef.current = filePath
+          setLineSelection(new Set())
         }
         /* Keep what is on screen while the same file reloads: clearing it is what
            made every refresh flash "正在读取差异…". */
@@ -2076,10 +2083,11 @@ window.__ModuleLoader__.load({
 
       const diffHunkActions = useCallback((hunk) => {
         if (selected === null) return null
+        const hasSelection = lineSelection !== null && lineSelection !== undefined
         const bodyIndexes = []
         for (const row of hunk.rows) {
           if (row.kind !== 'add' && row.kind !== 'del') continue
-          if (lineSelection.has(hunk.index + ':' + row.bodyIndex)) bodyIndexes.push(row.bodyIndex)
+          if (hasSelection && lineSelection.has(hunk.index + ':' + row.bodyIndex)) bodyIndexes.push(row.bodyIndex)
         }
         const selectedLines = bodyIndexes.length > 0 ? bodyIndexes : null
         const selectionNote = selectedLines === null
@@ -2114,7 +2122,10 @@ window.__ModuleLoader__.load({
       const closeDiff = useCallback(() => {
         setSelected(null)
         setHistoryFile(null)
-        setLineSelection(null)
+        /* Must be an empty Set, not null: the next diff's hunk actions call
+           lineSelection.has(...) while rendering, and null crashed the page
+           ("Cannot read properties of null (reading 'has')"). */
+        setLineSelection(new Set())
         setDiffState({ path: null, patch: '', loading: false, binary: false })
       }, [])
 

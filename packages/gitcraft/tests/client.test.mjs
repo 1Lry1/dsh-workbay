@@ -331,6 +331,11 @@ test('clicking a file in a commit opens its diff in the history page', () => {
   assert.match(source, /const diffIsHistory = selected === null && historyFile !== null/)
   assert.equal(source.includes("className: 'gwc-historyDiff'"), false)
 })
+test('closing a diff resets line selection to an empty Set, not null', () => {
+  assert.match(source, /setLineSelection\(new Set\(\)\)/)
+  assert.doesNotMatch(source, /setLineSelection\(null\)/)
+  assert.match(source, /lineSelection !== null && lineSelection !== undefined/)
+})
 test('the diff modal owns Escape so the workbench does not close with it', () => {
   /* source is the bundle text read at the top of this file. */
   assert.match(source, /window\.addEventListener\('keydown', onKey, true\)/)
