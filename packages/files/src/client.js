@@ -93,9 +93,7 @@ window.__ModuleLoader__.load({
       'tree.searchTruncated': '结果过多，已截断',
       'tree.clearSearch': '清除搜索',
 
-      'search.open': '搜索',
       'search.title': '搜索',
-      'search.close': '返回资源管理器',
       'search.placeholder': '搜索',
       'search.modeContent': '内容',
       'search.modeName': '文件名',
@@ -117,18 +115,11 @@ window.__ModuleLoader__.load({
       'search.elapsed': '{ms} ms',
       'search.truncated': '已截断',
       'search.cancel': '取消',
-      'search.empty': '输入内容开始搜索',
-      'search.emptyName': '输入文件名快速打开',
       'search.noResults': '没有匹配结果',
       'search.noResultsHint': '试试切换模式、大小写或包含/排除规则。',
       'search.readyToSearch': '按 Enter 开始搜索',
-      'search.noRoot': '还没有选择工作区',
-      'search.pickRoot': '选择工作区',
-      'search.openAtLine': '打开第 {line} 行',
       'search.recentBadge': '最近打开',
       'search.resultCount': '{n} 个匹配',
-      'search.clear': '清除搜索',
-      'search.keyboardHint': '↑↓ 选择 · Enter 打开 · Esc 关闭',
 
       'tabs.empty': '还没有打开文件',
       'tabs.emptyHint': '从左侧文件树或搜索结果中选择一个文件。',
@@ -253,9 +244,7 @@ window.__ModuleLoader__.load({
       'tree.searchTruncated': 'Too many results — truncated',
       'tree.clearSearch': 'Clear search',
 
-      'search.open': 'Search',
       'search.title': 'Search',
-      'search.close': 'Back to explorer',
       'search.placeholder': 'Search',
       'search.modeContent': 'Content',
       'search.modeName': 'Files',
@@ -277,18 +266,11 @@ window.__ModuleLoader__.load({
       'search.elapsed': '{ms} ms',
       'search.truncated': 'Truncated',
       'search.cancel': 'Cancel',
-      'search.empty': 'Type to search file contents',
-      'search.emptyName': 'Type a file name to quick-open',
       'search.noResults': 'No results',
       'search.noResultsHint': 'Try another mode, case sensitivity or include/exclude globs.',
       'search.readyToSearch': 'Press Enter to search',
-      'search.noRoot': 'No workspace selected yet',
-      'search.pickRoot': 'Choose workspace',
-      'search.openAtLine': 'Open at line {line}',
       'search.recentBadge': 'Recently opened',
       'search.resultCount': '{n} matches',
-      'search.clear': 'Clear search',
-      'search.keyboardHint': '↑↓ select · Enter open · Esc close',
 
       'tabs.empty': 'No file open',
       'tabs.emptyHint': 'Pick a file in the tree or in the search results.',
@@ -1111,8 +1093,7 @@ window.__ModuleLoader__.load({
       return { raw, tokens, invalid, valid, normalized: tokens.join(',') }
     }
 
-    function buildSearchRequest(state, root) {
-      const source = state !== null && state !== undefined && typeof state === 'object' ? state : createSearchState()
+    function buildSearchRequest(state, root) {      const source = state !== null && state !== undefined && typeof state === 'object' ? state : createSearchState()
       const query = typeof source.query === 'string' ? source.query : ''
       if (typeof root !== 'string' || root === '' || query.trim() === '') return null
       const request = {
@@ -1120,6 +1101,7 @@ window.__ModuleLoader__.load({
         mode: source.mode === 'name' ? 'name' : 'content',
         query,
         maxResults: SEARCH_PANEL_MAX_RESULTS,
+        contextLines: 0,
       }
       if (source.caseSensitive === true) request.caseSensitive = true
       if (source.wholeWord === true) request.wholeWord = true
@@ -1129,6 +1111,12 @@ window.__ModuleLoader__.load({
       const excludeRaw = typeof source.exclude === 'string' ? source.exclude : ''
       if (excludeRaw.trim() !== '') request.exclude = parseGlobInput(excludeRaw).normalized
       return request
+    }
+
+    function buildNameSearchRequest(root, query) {
+      const text = typeof query === 'string' ? query : ''
+      if (typeof root !== 'string' || root === '' || text.trim() === '') return null
+      return { root, mode: 'name', query: text, maxResults: SEARCH_LIMIT }
     }
 
     function normalizeMatch(rawMatch) {
@@ -1385,7 +1373,7 @@ window.__ModuleLoader__.load({
     }
 
     function createQuickOpenState() {
-      return { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1 }
+      return { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1, seq: 0 }
     }
 
     function reduceQuickOpen(state, action) {
@@ -1405,8 +1393,14 @@ window.__ModuleLoader__.load({
           })
         }
         case 'request':
-          return Object.assign({}, base, { status: 'loading', error: '', focusIndex: -1 })
+          return Object.assign({}, base, {
+            status: 'loading',
+            seq: numberOr(action.seq, base.seq),
+            error: '',
+            focusIndex: -1,
+          })
         case 'response':
+          if (action.seq !== undefined && action.seq !== base.seq) return base
           return Object.assign({}, base, {
             status: 'ready',
             matches: Array.isArray(action.matches) ? action.matches : [],
@@ -1415,6 +1409,7 @@ window.__ModuleLoader__.load({
             focusIndex: -1,
           })
         case 'error':
+          if (action.seq !== undefined && action.seq !== base.seq) return base
           return Object.assign({}, base, {
             status: 'error',
             matches: [],
@@ -1447,6 +1442,125 @@ window.__ModuleLoader__.load({
         return { type: 'open', index: base.focusIndex >= 0 && base.focusIndex < matches.length ? base.focusIndex : 0 }
       }
       return null
+    }
+
+    /* ============================== unified search ============================== */
+
+    /** The content-mode options survive mode switches and Esc. */
+    function contentOptionsOf(content) {
+      const source = content !== null && content !== undefined && typeof content === 'object' ? content : {}
+      return {
+        caseSensitive: source.caseSensitive === true,
+        wholeWord: source.wholeWord === true,
+        regex: source.regex === true,
+        include: typeof source.include === 'string' ? source.include : '',
+        exclude: typeof source.exclude === 'string' ? source.exclude : '',
+        includeOpen: source.includeOpen === true,
+        excludeOpen: source.excludeOpen === true,
+      }
+    }
+
+    function createUnifiedSearchState() {
+      return {
+        mode: 'name',
+        query: '',
+        name: createQuickOpenState(),
+        content: createSearchState(),
+        revision: 0,
+      }
+    }
+
+    /**
+     * ONE search state for both modes. The shared query drives whichever mode
+     * is active; each mode keeps its own cached result set and its own request
+     * sequence token. Switching back to a mode reuses its cache when the query
+     * is unchanged, otherwise the page schedules a fresh request.
+     */
+    function reduceUnifiedSearchState(state, action) {
+      const base = state !== null && state !== undefined && typeof state === 'object' && state.name !== undefined && state.content !== undefined
+        ? state
+        : createUnifiedSearchState()
+      if (action === null || action === undefined || typeof action !== 'object') return base
+      switch (action.type) {
+        case 'mode': {
+          const mode = action.mode === 'content' ? 'content' : 'name'
+          if (mode === base.mode) return base
+          return Object.assign({}, base, { mode })
+        }
+        case 'query': {
+          const query = typeof action.query === 'string' ? action.query : ''
+          return Object.assign({}, base, {
+            query,
+            name: Object.assign({}, base.name, { focusIndex: -1, error: '' }),
+            content: Object.assign({}, base.content, { focusIndex: -1, error: '' }),
+          })
+        }
+        case 'name': {
+          const previousQuery = base.name.query
+          let next = reduceQuickOpen(base.name, action.action)
+          const kind = action.action !== null && action.action !== undefined ? action.action.type : ''
+          const stale = (kind === 'response' || kind === 'error') && next === base.name
+          if (kind === 'request' && previousQuery !== action.query) {
+            next = Object.assign({}, next, { matches: [], truncated: false })
+          }
+          const withQuery = action.query === undefined || stale
+            ? next
+            : Object.assign({}, next, { query: action.query })
+          return Object.assign({}, base, { name: withQuery })
+        }
+        case 'content': {
+          const previousQuery = base.content.query
+          let next = reduceSearchState(base.content, action.action)
+          const kind = action.action !== null && action.action !== undefined ? action.action.type : ''
+          const stale = (kind === 'response' || kind === 'error') && next === base.content
+          if (action.query !== undefined && stale !== true) next = Object.assign({}, next, { query: action.query })
+          if (kind === 'request' && previousQuery !== action.query) {
+            /* The old rows belong to another query; never show them as the new one. */
+            next = Object.assign({}, next, { data: null, collapsed: {} })
+          }
+          if (kind === 'cancel' && previousQuery !== action.query) {
+            next = Object.assign({}, next, { data: null, status: 'idle', error: '' })
+          }
+          if (kind === 'flag' || kind === 'glob') {
+            /* Options changed: the cached set belongs to the old options. */
+            next = Object.assign({}, next, { query: '', status: 'loading', focusIndex: -1 })
+          }
+          return Object.assign({}, base, { content: next })
+        }
+        case 'escape':
+          return {
+            mode: base.mode,
+            query: '',
+            name: createQuickOpenState(),
+            content: Object.assign(createSearchState(), contentOptionsOf(base.content)),
+            revision: base.revision,
+          }
+        case 'invalidate': {
+          const content = Object.assign(createSearchState(), contentOptionsOf(base.content))
+          return {
+            mode: base.mode,
+            query: base.query,
+            name: createQuickOpenState(),
+            content,
+            revision: numberOr(base.revision, 0) + 1,
+          }
+        }
+        default:
+          return base
+      }
+    }
+
+    /** Cache/view pair used by the UI: stale caches render as loading. */
+    function activeSearchView(state) {
+      const source = state !== null && state !== undefined && typeof state === 'object' ? state : createUnifiedSearchState()
+      const cache = source.mode === 'content' ? source.content : source.name
+      const fresh = typeof cache.query === 'string' && cache.query === source.query
+      return {
+        mode: source.mode,
+        cache,
+        fresh,
+        status: fresh ? cache.status : 'loading',
+      }
     }
 
     const ERROR_KEYS = {
@@ -2078,6 +2192,196 @@ window.__ModuleLoader__.load({
 
     /* ============================== tree sidebar ============================== */
 
+    /* ============================== unified search UI ============================== */
+
+    function SearchModeSegment(props) {
+      const { t, mode, onModeChange } = props
+      return E('div', { className: 'wbf-searchModes', role: 'group', 'aria-label': t('search.title') },
+        E('button', {
+          type: 'button',
+          className: cx('wbf-searchMode', mode === 'name' ? 'is-active' : ''),
+          title: t('search.modeNameTitle'),
+          'aria-pressed': mode === 'name',
+          onClick: () => onModeChange('name'),
+        }, t('search.modeName')),
+        E('button', {
+          type: 'button',
+          className: cx('wbf-searchMode', mode === 'content' ? 'is-active' : ''),
+          title: t('search.modeContentTitle'),
+          'aria-pressed': mode === 'content',
+          onClick: () => onModeChange('content'),
+        }, t('search.modeContent')))
+    }
+
+    /** Content-mode-only options: Aa / ab / .* plus the collapsible glob fields. */
+    function SearchOptions(props) {
+      const { t, content, onToggleFlag, onGlobChange, onToggleGlobOpen } = props
+      const flagButton = (flag, label, glyph) => E('button', {
+        type: 'button',
+        className: cx('wbf-srFlag', content[flag] === true ? 'is-active' : ''),
+        title: label,
+        'aria-label': label,
+        'aria-pressed': content[flag] === true,
+        onClick: () => onToggleFlag(flag),
+      }, glyph)
+      const globField = (field, label, placeholder) => {
+        const parsed = parseGlobInput(content[field])
+        const open = content[field + 'Open'] === true
+        return E('div', { className: 'wbf-srGlob' },
+          E('button', {
+            type: 'button',
+            className: 'wbf-srGlobHead',
+            'aria-expanded': open,
+            onClick: () => onToggleGlobOpen(field + 'Open'),
+          },
+          E(Icon, { name: open ? 'chevronDown' : 'chevronRight', size: 10 }),
+          E('span', null, label),
+          parsed.tokens.length === 0 ? null : E('span', { className: 'wbf-badge' }, t('search.globCount', { n: parsed.tokens.length }))),
+          open ? E(Fragment, null,
+            E('input', {
+              className: 'wbf-srGlobInput',
+              type: 'text',
+              value: content[field],
+              placeholder,
+              spellCheck: false,
+              onChange: (event) => onGlobChange(field, event.target.value),
+            }),
+            parsed.invalid.length > 0
+              ? E('div', { className: 'wbf-srGlobInvalid' }, t('search.globInvalid', { items: parsed.invalid.join(', ') }))
+              : parsed.tokens.length > 0
+                ? E('div', { className: 'wbf-srGlobChips' }, parsed.tokens.map((token, index) => E('span', {
+                  key: String(index) + token,
+                  className: 'wbf-srGlobChip',
+                }, token)))
+                : E('div', { className: 'wbf-srHint' }, field === 'exclude' ? t('search.globDefault') : t('search.globHint')),
+            parsed.tokens.length > 0 ? E('div', { className: 'wbf-srHint' }, t('search.globHint')) : null)
+            : null)
+      }
+      return E('div', { className: 'wbf-searchOptions' },
+        E('div', { className: 'wbf-searchFlags' },
+          flagButton('caseSensitive', t('search.caseSensitive'), 'Aa'),
+          flagButton('wholeWord', t('search.wholeWord'), 'ab'),
+          flagButton('regex', t('search.regex'), '.*')),
+        globField('include', t('search.include'), t('search.includePlaceholder')),
+        globField('exclude', t('search.exclude'), t('search.excludePlaceholder')))
+    }
+
+    function QuickOpenResults(props) {
+      const { t, view, recentFiles, onOpenRow } = props
+      const matches = useMemo(
+        () => orderRecentFirst(view.cache.matches, recentFiles),
+        [view.cache.matches, recentFiles],
+      )
+      if (view.fresh !== true || view.cache.status === 'loading') {
+        return E('div', { className: 'wbf-treeStatus' }, t('tree.searching'))
+      }
+      if (view.cache.status === 'error') {
+        return E('div', { className: 'wbf-treeError' }, E(Icon, { name: 'warning', size: 12 }), E('span', null, view.cache.error))
+      }
+      if (matches.length === 0) return E('div', { className: 'wbf-treeStatus' }, t('tree.searchEmpty'))
+      return E(Fragment, null,
+        E('div', { className: 'wbf-quickMeta' },
+          E('span', { className: 'wbf-quickCount' }, t('search.resultCount', { n: matches.length })),
+          view.cache.truncated === true ? E('span', { className: 'wbf-quickTruncated' }, t('tree.searchTruncated')) : null),
+        E('div', { className: 'wbf-searchResults' }, matches.map((entry, index) => {
+          const rel = typeof entry.rel === 'string' ? entry.rel : ''
+          const display = quickOpenDisplay(rel, entry.indices)
+          return E('button', {
+            key: rel,
+            type: 'button',
+            className: cx(
+              'wbf-searchResultRow',
+              index === view.cache.focusIndex ? 'is-focused' : '',
+              entry.recent === true ? 'is-recent' : '',
+            ),
+            title: rel,
+            onClick: () => onOpenRow(entry),
+          },
+          E(Icon, { name: iconForEntry({ name: display.name, dir: false }), size: 13 }),
+          E('span', { className: 'wbf-searchName' }, display.segments.map((segment, segmentIndex) => E(
+            'span',
+            { key: segmentIndex, className: segment.highlight ? 'wbf-searchHit' : undefined },
+            segment.text,
+          ))),
+          E('span', { className: 'wbf-searchDir', title: display.dir }, display.dir === '' ? '/' : display.dir),
+          entry.recent === true ? E('span', { className: 'wbf-recentBadge' }, t('search.recentBadge')) : null)
+        })))
+    }
+
+    function ContentResults(props) {
+      const { t, view, content, onCancel, onCollapse, onOpenRow } = props
+      const data = view.fresh === true ? content.data : null
+      const rows = useMemo(() => flattenSearchResults(data, content.collapsed), [data, content.collapsed])
+      const ready = view.fresh === true && content.status === 'ready'
+      const fileCount = ready && data !== null && Array.isArray(data.files) ? data.files.length : 0
+      const matchCount = ready && data !== null && Number.isFinite(data.totalMatches) ? data.totalMatches : 0
+
+      let statusNode = null
+      if (view.fresh !== true || content.status === 'loading') {
+        statusNode = E('div', { className: 'wbf-srStatus is-busy' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.searching')),
+          E('button', { type: 'button', className: 'wbf-btn is-small', onClick: onCancel }, t('search.cancel')))
+      } else if (content.status === 'error') {
+        statusNode = E('div', { className: 'wbf-srStatus is-error', role: 'alert' },
+          E(Icon, { name: 'warning', size: 12 }),
+          E('span', { className: 'wbf-srStatusText' }, content.error === '' ? t('error.unknown', { message: '' }) : content.error))
+      } else if (view.fresh === true && content.status === 'idle') {
+        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.readyToSearch')))
+      } else if (ready) {
+        statusNode = E('div', { className: 'wbf-srStatus is-ready' },
+          E('span', { className: 'wbf-srStatusText' }, t('search.summary', { matches: matchCount, files: fileCount })),
+          E('span', { className: 'wbf-srStatusMeta' }, t('search.elapsed', { ms: data.elapsedMs })),
+          data.truncated === true ? E('span', { className: 'wbf-srTruncated' }, t('search.truncated')) : null)
+      }
+
+      let listBody = null
+      if (ready && fileCount === 0) {
+        listBody = E('div', { className: 'wbf-srEmpty' },
+          E(Icon, { name: 'search', size: 22 }),
+          E('div', null, t('search.noResults')),
+          E('div', { className: 'wbf-srHint' }, t('search.noResultsHint')))
+      } else if (ready) {
+        listBody = rows.map((row, index) => {
+          const focused = content.focusIndex === index
+          if (row.kind === 'file') {
+            return E('button', {
+              key: row.key,
+              type: 'button',
+              'data-row-index': index,
+              className: cx('wbf-srFile', focused ? 'is-focused' : ''),
+              title: row.rel,
+              onClick: () => onCollapse(row.rel),
+            },
+            E('span', { className: 'wbf-srChevron' }, E(Icon, { name: row.collapsed ? 'chevronRight' : 'chevronDown', size: 10 })),
+            E(Icon, { name: 'file', size: 12 }),
+            E('span', { className: 'wbf-srFileName' }, row.name),
+            row.dir === '' ? null : E('span', { className: 'wbf-srFileDir', title: row.dir }, row.dir),
+            row.matchCount <= 0 ? null : E('span', { className: 'wbf-srCount' }, String(row.matchCount)))
+          }
+          const segments = splitHighlight(row.text, row.column, row.length)
+          return E('button', {
+            key: row.key,
+            type: 'button',
+            'data-row-index': index,
+            className: cx('wbf-srMatch', focused ? 'is-focused' : ''),
+            title: row.rel + ':' + String(row.line),
+            onClick: () => onOpenRow(row),
+          },
+          E('span', { className: 'wbf-srLine' }, String(row.line)),
+          E('span', { className: 'wbf-srSnippet' }, segments.map((segment, segmentIndex) => E(
+            'span',
+            { key: segmentIndex, className: segment.highlight ? 'wbf-srHit' : undefined },
+            segment.text,
+          ))))
+        })
+      }
+
+      return E(Fragment, null,
+        statusNode,
+        E('div', { className: 'wbf-searchContentList' }, listBody))
+    }
+
     function TreeRow(props) {
       const { row, t, activeRel, onToggleDir, onOpenFile, onRetryDir } = props
       const padding = 6 + row.depth * 14
@@ -2119,51 +2423,35 @@ window.__ModuleLoader__.load({
 
     function TreePanel(props) {
       const {
-        t, root, tree, expanded, rows, rowLimit, showHidden,
-        searchQuery, search, recentFiles, activeRel, onToggleHidden, onRefresh,
-        onToggleDir, onOpenFile, onRetryDir, onShowMore, onOpenSearchResult,
-        onClearSearch, onSearchKeyDown,
+        t, root, tree, rows, rowLimit, showHidden,
+        search, recentFiles, activeRel,
+        onQueryChange, onModeChange, onSearchKeyDown, onToggleFlag,
+        onGlobChange, onToggleGlobOpen, onCollapse, onCancel,
+        onOpenQuickResult, onOpenContentRow, onClearSearch,
+        onToggleHidden, onRefresh, onToggleDir, onOpenFile, onRetryDir, onShowMore,
       } = props
       const rootNode = tree['']
-      const searching = searchQuery.trim() !== ''
-      /* Quick Open shows recently opened files first, then host score order. */
-      const orderedMatches = useMemo(
-        () => orderRecentFirst(search.matches, recentFiles),
-        [search.matches, recentFiles],
-      )
+      const searching = search.query.trim() !== ''
+      const view = activeSearchView(search)
       let body = null
       if (root === null || root === '') {
         body = E('div', { className: 'wbf-treeStatus' }, t('root.none'))
       } else if (searching) {
-        if (search.status === 'loading') body = E('div', { className: 'wbf-treeStatus' }, t('tree.searching'))
-        else if (search.status === 'error') body = E('div', { className: 'wbf-treeError' }, E(Icon, { name: 'warning', size: 12 }), E('span', null, search.error))
-        else if (search.status === 'ready' && orderedMatches.length === 0) body = E('div', { className: 'wbf-treeStatus' }, t('tree.searchEmpty'))
-        else if (orderedMatches.length === 0) body = E('div', { className: 'wbf-treeStatus' }, t('tree.searching'))
-        else {
-          body = E('div', { className: 'wbf-searchResults' }, orderedMatches.map((entry, index) => {
-            const rel = typeof entry.rel === 'string' ? entry.rel : ''
-            const display = quickOpenDisplay(rel, entry.indices)
-            return E('button', {
-              key: rel,
-              type: 'button',
-              className: cx(
-                'wbf-searchRow',
-                index === search.focusIndex ? 'is-focused' : '',
-                entry.recent === true ? 'is-recent' : '',
-              ),
-              title: rel,
-              onClick: () => onOpenSearchResult(entry),
-            },
-            E(Icon, { name: iconForEntry({ name: display.name, dir: false }), size: 13 }),
-            E('span', { className: 'wbf-searchName' }, display.segments.map((segment, segmentIndex) => E(
-              'span',
-              { key: segmentIndex, className: segment.highlight ? 'wbf-searchHit' : undefined },
-              segment.text,
-            ))),
-            E('span', { className: 'wbf-searchDir', title: display.dir }, display.dir === '' ? '/' : display.dir),
-            entry.recent === true ? E('span', { className: 'wbf-recentBadge' }, t('search.recentBadge')) : null)
-          }))
-        }
+        body = view.mode === 'content'
+          ? E(ContentResults, {
+            t,
+            view,
+            content: search.content,
+            onCancel,
+            onCollapse,
+            onOpenRow: onOpenContentRow,
+          })
+          : E(QuickOpenResults, {
+            t,
+            view,
+            recentFiles,
+            onOpenRow: onOpenQuickResult,
+          })
       } else if (rootNode === undefined || rootNode === null || rootNode.status === 'loading' || rootNode.status === 'idle') {
         body = E('div', { className: 'wbf-treeStatus' }, t('tree.loading'))
       } else if (rootNode.status === 'error') {
@@ -2196,32 +2484,39 @@ window.__ModuleLoader__.load({
             : null)
       }
 
-      const resultCount = searching && search.status === 'ready'
-        ? E('div', { className: 'wbf-quickMeta' },
-          E('span', { className: 'wbf-quickCount' }, t('search.resultCount', { n: orderedMatches.length })))
+      const searchBar = E('div', { className: 'wbf-searchRow wbf-searchBar' },
+        E(Icon, { name: 'search', size: 12, className: 'wbf-searchIcon' }),
+        E('input', {
+          className: 'wbf-searchInput',
+          type: 'search',
+          value: search.query,
+          placeholder: view.mode === 'content' ? t('search.placeholder') : t('tree.searchPlaceholder'),
+          spellCheck: false,
+          onChange: (event) => onQueryChange(event.target.value),
+          onKeyDown: onSearchKeyDown,
+        }),
+        E(SearchModeSegment, { t, mode: search.mode, onModeChange }),
+        search.query === '' ? null : E(IconButton, { name: 'close', size: 12, label: t('tree.clearSearch'), onClick: onClearSearch }))
+
+      const options = search.mode === 'content'
+        ? E(SearchOptions, {
+          t,
+          content: search.content,
+          onToggleFlag,
+          onGlobChange,
+          onToggleGlobOpen,
+        })
         : null
 
       return E('div', { className: 'wbf-treeWrap' },
-        E('div', { className: 'wbf-searchRow' },
-          E(Icon, { name: 'search', size: 12, className: 'wbf-searchIcon' }),
-          E('input', {
-            className: 'wbf-searchInput',
-            type: 'search',
-            value: searchQuery,
-            placeholder: t('tree.searchPlaceholder'),
-            spellCheck: false,
-            onChange: (event) => props.onQueryChange(event.target.value),
-            onKeyDown: onSearchKeyDown,
-          }),
-          searchQuery === '' ? null : E(IconButton, { name: 'close', size: 12, label: t('tree.clearSearch'), onClick: onClearSearch })),
-        resultCount,
-        E('div', { className: 'wbf-treeToolbar' },
+        searchBar,
+        options,
+        searching ? null : E('div', { className: 'wbf-treeToolbar' },
           E('span', { className: 'wbf-treeTitle' }, t('tree.title')),
           E('span', { className: 'wbf-treeToolbarActions' },
             E(IconButton, { name: showHidden ? 'eye' : 'eyeOff', size: 13, active: showHidden === true, label: showHidden ? t('tree.hideHidden') : t('tree.showHidden'), onClick: onToggleHidden }),
             E(IconButton, { name: 'refresh', size: 13, label: t('tree.refresh'), onClick: onRefresh }))),
-        E('div', { className: 'wbf-tree' }, body),
-        search.truncated === true && searching ? E('div', { className: 'wbf-treeFoot' }, t('tree.searchTruncated')) : null)
+        E('div', { className: 'wbf-tree' }, body))
     }
 
     /* ============================== file header / tabs ============================== */
@@ -2335,256 +2630,6 @@ window.__ModuleLoader__.load({
      * immediately, Ctrl/Cmd+Enter opens the focused row and closes the panel,
      * Esc closes the panel.
      */
-    function SearchPanel(props) {
-      const {
-        t, state, root, recentFiles,
-        onQueryChange, onRun, onCancel, onClose, onModeChange,
-        onToggleFlag, onGlobChange, onToggleGlobOpen, onCollapse,
-        onOpenRow, onFocus, onPickRoot, onClear,
-      } = props
-      const result = state.data
-      const orderedResult = useMemo(() => {
-        if (result === null || result === undefined) return null
-        if (state.mode !== 'name') return result
-        return Object.assign({}, result, { files: orderRecentFirst(result.files, recentFiles) })
-      }, [result, state.mode, recentFiles])
-      const rows = useMemo(() => flattenSearchResults(orderedResult, state.collapsed), [orderedResult, state.collapsed])
-      const listRef = useRef(null)
-      const query = state.query
-      const hasResult = orderedResult !== null && orderedResult !== undefined
-      const fileCount = hasResult && Array.isArray(orderedResult.files) ? orderedResult.files.length : 0
-      const matchCount = hasResult && Number.isFinite(orderedResult.totalMatches) ? orderedResult.totalMatches : 0
-      const loading = state.status === 'loading'
-      const emptyQuery = query.trim() === ''
-
-      useEffect(() => {
-        const target = listRef.current
-        if (target === null || target === undefined || typeof target.querySelector !== 'function') return
-        if (!Number.isInteger(state.focusIndex) || state.focusIndex < 0) return
-        const node = target.querySelector('[data-row-index="' + String(state.focusIndex) + '"]')
-        if (node !== null && node !== undefined && typeof node.scrollIntoView === 'function') {
-          try { node.scrollIntoView({ block: 'nearest' }) } catch (error) { void error }
-        }
-      }, [state.focusIndex])
-
-      const onKeyDown = (event) => {
-        if (event === null || event === undefined) return
-        const key = event.key
-        if (key === 'Escape') {
-          event.preventDefault()
-          event.stopPropagation()
-          onClose()
-          return
-        }
-        if (key === 'ArrowDown' || key === 'ArrowUp') {
-          event.preventDefault()
-          const next = moveSearchFocus(state.focusIndex, rows.length, key === 'ArrowDown' ? 1 : -1)
-          if (next >= 0) onFocus(next)
-          return
-        }
-        if (key === 'Enter') {
-          const row = Number.isInteger(state.focusIndex) && state.focusIndex >= 0 ? rows[state.focusIndex] : undefined
-          if (event.ctrlKey === true || event.metaKey === true) {
-            if (row === undefined) return
-            event.preventDefault()
-            onOpenRow(row)
-            onClose()
-            return
-          }
-          if (row !== undefined) {
-            event.preventDefault()
-            if (row.kind === 'match' || state.mode === 'name') onOpenRow(row)
-            else onCollapse(row.rel)
-            return
-          }
-          event.preventDefault()
-          onRun()
-          return
-        }
-      }
-
-      const modeButtons = E('div', { className: 'wbf-srModes', role: 'group', 'aria-label': t('search.title') },
-        E('button', {
-          type: 'button',
-          className: cx('wbf-srMode', state.mode === 'content' ? 'is-active' : ''),
-          title: t('search.modeContentTitle'),
-          'aria-pressed': state.mode === 'content',
-          onClick: () => onModeChange('content'),
-        }, t('search.modeContent')),
-        E('button', {
-          type: 'button',
-          className: cx('wbf-srMode', state.mode === 'name' ? 'is-active' : ''),
-          title: t('search.modeNameTitle'),
-          'aria-pressed': state.mode === 'name',
-          onClick: () => onModeChange('name'),
-        }, t('search.modeName')))
-
-      const flagButton = (flag, label, glyph) => E('button', {
-        type: 'button',
-        className: cx('wbf-srFlag', state[flag] === true ? 'is-active' : ''),
-        title: label,
-        'aria-label': label,
-        'aria-pressed': state[flag] === true,
-        onClick: () => onToggleFlag(flag),
-      }, glyph)
-
-      const queryRow = E('div', { className: 'wbf-srQueryRow' },
-        E(Icon, { name: 'search', size: 12, className: 'wbf-srQueryIcon' }),
-        E('input', {
-          className: 'wbf-srQuery',
-          type: 'search',
-          value: query,
-          placeholder: state.mode === 'name' ? t('search.emptyName') : t('search.placeholder'),
-          spellCheck: false,
-          autoFocus: true,
-          disabled: root === null || root === '',
-          'aria-label': t('search.title'),
-          onChange: (event) => onQueryChange(event.target.value),
-        }),
-        query === '' ? null : E(IconButton, { name: 'close', size: 12, label: t('search.clear'), onClick: onClear }))
-
-      const globField = (field, label, placeholder) => {
-        const parsed = parseGlobInput(state[field])
-        const open = state[field + 'Open'] === true
-        return E('div', { className: 'wbf-srGlob' },
-          E('button', {
-            type: 'button',
-            className: 'wbf-srGlobHead',
-            'aria-expanded': open,
-            onClick: () => onToggleGlobOpen(field + 'Open'),
-          },
-          E(Icon, { name: open ? 'chevronDown' : 'chevronRight', size: 10 }),
-          E('span', null, label),
-          parsed.tokens.length === 0 ? null : E('span', { className: 'wbf-badge' }, t('search.globCount', { n: parsed.tokens.length }))),
-          open ? E(Fragment, null,
-            E('input', {
-              className: 'wbf-srGlobInput',
-              type: 'text',
-              value: state[field],
-              placeholder,
-              spellCheck: false,
-              onChange: (event) => onGlobChange(field, event.target.value),
-            }),
-            parsed.invalid.length > 0
-              ? E('div', { className: 'wbf-srGlobInvalid' }, t('search.globInvalid', { items: parsed.invalid.join(', ') }))
-              : parsed.tokens.length > 0
-                ? E('div', { className: 'wbf-srGlobChips' }, parsed.tokens.map((token, index) => E('span', {
-                  key: String(index) + token,
-                  className: 'wbf-srGlobChip',
-                }, token)))
-                : E('div', { className: 'wbf-srHint' }, field === 'exclude' ? t('search.globDefault') : t('search.globHint')),
-            parsed.tokens.length > 0 ? E('div', { className: 'wbf-srHint' }, t('search.globHint')) : null)
-            : null)
-      }
-
-      let statusNode = null
-      if (root === null || root === '') {
-        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
-          E('span', { className: 'wbf-srStatusText' }, t('search.noRoot')),
-          E('button', { type: 'button', className: 'wbf-btn is-small', onClick: onPickRoot }, t('search.pickRoot')))
-      } else if (state.status === 'error') {
-        statusNode = E('div', { className: 'wbf-srStatus is-error', role: 'alert' },
-          E(Icon, { name: 'warning', size: 12 }),
-          E('span', { className: 'wbf-srStatusText' }, state.error === '' ? t('error.unknown', { message: '' }) : state.error))
-      } else if (loading) {
-        statusNode = E('div', { className: 'wbf-srStatus is-busy' },
-          E('span', { className: 'wbf-srStatusText' }, t('search.searching')),
-          E('button', { type: 'button', className: 'wbf-btn is-small', onClick: onCancel }, t('search.cancel')))
-      } else if (hasResult && state.status === 'ready') {
-        statusNode = E('div', { className: 'wbf-srStatus is-ready' },
-          E('span', { className: 'wbf-srStatusText' }, t('search.summary', { matches: matchCount, files: fileCount })),
-          E('span', { className: 'wbf-srStatusMeta' }, t('search.elapsed', { ms: result.elapsedMs })),
-          result.truncated === true ? E('span', { className: 'wbf-srTruncated' }, t('search.truncated')) : null)
-      } else if (emptyQuery) {
-        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
-          E('span', { className: 'wbf-srStatusText' }, state.mode === 'name' ? t('search.emptyName') : t('search.empty')))
-      } else if (state.status === 'idle') {
-        statusNode = E('div', { className: 'wbf-srStatus is-idle' },
-          E('span', { className: 'wbf-srStatusText' }, t('search.readyToSearch')))
-      } else {
-        statusNode = E('div', { className: 'wbf-srStatus is-busy' },
-          E('span', { className: 'wbf-srStatusText' }, t('search.searching')))
-      }
-
-      let listBody = null
-      if (root === null || root === '') {
-        listBody = null
-      } else if (state.status === 'error') {
-        listBody = null
-      } else if (emptyQuery) {
-        listBody = E('div', { className: 'wbf-srEmpty' },
-          E(Icon, { name: 'search', size: 22 }),
-          E('div', null, state.mode === 'name' ? t('search.emptyName') : t('search.empty')))
-      } else if (hasResult && state.status === 'ready' && fileCount === 0) {
-        listBody = E('div', { className: 'wbf-srEmpty' },
-          E(Icon, { name: 'search', size: 22 }),
-          E('div', null, t('search.noResults')),
-          E('div', { className: 'wbf-srHint' }, t('search.noResultsHint')))
-      } else if (hasResult && state.status === 'ready') {
-        listBody = rows.map((row, index) => {
-          const focused = state.focusIndex === index
-          if (row.kind === 'file') {
-            const nameMode = state.mode === 'name'
-            const display = nameMode ? quickOpenDisplay(row.rel, row.indices) : null
-            return E('button', {
-              key: row.key,
-              type: 'button',
-              'data-row-index': index,
-              className: cx('wbf-srFile', focused ? 'is-focused' : '', row.recent === true ? 'is-recent' : ''),
-              title: row.rel,
-              onClick: () => {
-                if (nameMode) onOpenRow(row)
-                else onCollapse(row.rel)
-              },
-            },
-            E('span', { className: 'wbf-srChevron' }, nameMode ? null : E(Icon, { name: row.collapsed ? 'chevronRight' : 'chevronDown', size: 10 })),
-            E(Icon, { name: 'file', size: 12 }),
-            E('span', { className: 'wbf-srFileName' }, nameMode
-              ? display.segments.map((segment, segmentIndex) => E(
-                'span',
-                { key: segmentIndex, className: segment.highlight ? 'wbf-srHit' : undefined },
-                segment.text,
-              ))
-              : row.name),
-            row.dir === '' ? null : E('span', { className: 'wbf-srFileDir', title: row.dir }, row.dir),
-            row.recent === true ? E('span', { className: 'wbf-srRecent' }, t('search.recentBadge')) : null,
-            nameMode || row.matchCount <= 0 ? null : E('span', { className: 'wbf-srCount' }, String(row.matchCount)))
-          }
-          const segments = splitHighlight(row.text, row.column, row.length)
-          return E('button', {
-            key: row.key,
-            type: 'button',
-            'data-row-index': index,
-            className: cx('wbf-srMatch', focused ? 'is-focused' : ''),
-            title: row.rel + ':' + String(row.line),
-            onClick: () => onOpenRow(row),
-          },
-          E('span', { className: 'wbf-srLine' }, String(row.line)),
-          E('span', { className: 'wbf-srSnippet' }, segments.map((segment, segmentIndex) => E(
-            'span',
-            { key: segmentIndex, className: segment.highlight ? 'wbf-srHit' : undefined },
-            segment.text,
-          ))))
-        })
-      }
-
-      return E('div', { className: 'wbf-searchPanel', onKeyDown },
-        E('div', { className: 'wbf-srHead' },
-          E(IconButton, { name: 'chevronRight', size: 13, label: t('search.close'), onClick: onClose }),
-          E('span', { className: 'wbf-srTitle' }, t('search.title'))),
-        queryRow,
-        E('div', { className: 'wbf-srControls' }, modeButtons,
-          E('div', { className: 'wbf-srFlags' },
-            flagButton('caseSensitive', t('search.caseSensitive'), 'Aa'),
-            flagButton('wholeWord', t('search.wholeWord'), 'ab'),
-            flagButton('regex', t('search.regex'), '.*'))),
-        globField('include', t('search.include'), t('search.includePlaceholder')),
-        globField('exclude', t('search.exclude'), t('search.excludePlaceholder')),
-        statusNode,
-        E('div', { className: 'wbf-srList', ref: listRef }, listBody),
-        E('div', { className: 'wbf-srFootHint' }, t('search.keyboardHint')))
-    }
-
     /* ============================== page ============================== */
 
     function Page(props) {
@@ -2597,14 +2642,13 @@ window.__ModuleLoader__.load({
       const dirReqRef = useRef(new Map())
       const treeKeyRef = useRef(null)
       const toastTimerRef = useRef(null)
-      const searchSeqRef = useRef(0)
+      const searchRef = useRef(null)
       const searchAbortRef = useRef(null)
       const searchTimerRef = useRef(null)
-      const searchPanelRef = useRef(null)
       const performSearchRef = useRef(null)
-      const quickOpenRef = useRef(null)
+      const nameSeqRef = useRef(0)
+      const contentSeqRef = useRef(0)
       const recentFilesRef = useRef([])
-      const quickOpenSeqRef = useRef(0)
 
       const [root, setRoot] = useState(() => readStoredRoot())
       const [showHidden, setShowHidden] = useState(() => readBool(HIDDEN_KEY, false))
@@ -2613,10 +2657,8 @@ window.__ModuleLoader__.load({
       const [tree, setTree] = useState({})
       const [expanded, setExpanded] = useState(() => new Set())
       const [rowLimit, setRowLimit] = useState(TREE_ROW_LIMIT)
-      const [quickOpen, setQuickOpen] = useState(createQuickOpenState)
-      const [searchNonce, setSearchNonce] = useState(0)
+      const [search, setSearch] = useState(createUnifiedSearchState)
       const [recentFiles, setRecentFiles] = useState([])
-      const [searchPanel, setSearchPanel] = useState(createSearchState)
       const [tabs, setTabs] = useState([])
       const [activeRel, setActiveRel] = useState(null)
       const [pendingClose, setPendingClose] = useState(null)
@@ -2624,16 +2666,12 @@ window.__ModuleLoader__.load({
       const [pendingReload, setPendingReload] = useState(null)
       const [toast, setToast] = useState(null)
 
-      const query = quickOpen.query
-      const search = quickOpen
-
       rootRef.current = root
       showHiddenRef.current = showHidden
       tabsRef.current = tabs
       activeRelRef.current = activeRel
       treeRef.current = tree
-      searchPanelRef.current = searchPanel
-      quickOpenRef.current = quickOpen
+      searchRef.current = search
       recentFilesRef.current = recentFiles
 
       const activeTab = useMemo(() => {
@@ -2680,7 +2718,7 @@ window.__ModuleLoader__.load({
         setRoot(value)
         setTabs([])
         setActiveRel(null)
-        setQuickOpen(createQuickOpenState())
+        setSearch(createUnifiedSearchState())
         setRecentFiles([])
         if (searchAbortRef.current !== null) {
           try { searchAbortRef.current.abort() } catch (error) { void error }
@@ -2690,8 +2728,8 @@ window.__ModuleLoader__.load({
           clearTimeout(searchTimerRef.current)
           searchTimerRef.current = null
         }
-        searchSeqRef.current += 1
-        setSearchPanel(createSearchState())
+        nameSeqRef.current += 1
+        contentSeqRef.current += 1
         setPendingRoot(null)
         setPendingClose(null)
         setPendingReload(null)
@@ -2815,47 +2853,20 @@ window.__ModuleLoader__.load({
         for (let index = 0; index < loaded.length; index += 1) {
           if (loaded[index] !== '') void loadDir(loaded[index], { force: true })
         }
-        setSearchNonce((value) => value + 1)
+        if (searchAbortRef.current !== null) {
+          try { searchAbortRef.current.abort() } catch (error) { void error }
+          searchAbortRef.current = null
+        }
+        nameSeqRef.current += 1
+        contentSeqRef.current += 1
+        setSearch((previous) => reduceUnifiedSearchState(previous, { type: 'invalidate' }))
         showToast(t('toast.refreshed'), 'ok')
       }, [loadDir, showToast, t])
 
-      /* ---- inline Quick Open (kept when the search panel is closed) -------- */
+      /* ---- unified search -------------------------------------------------- */
 
-      useEffect(() => {
-        /* §2.1 name mode does the fuzzy matching host-side (tokens, score,
-           indices); this only debounces the call and stores host order. */
-        if (searchPanel.open === true) return undefined
-        const text = quickOpen.query.trim()
-        if (root === null || root === '' || text === '') {
-          setQuickOpen((previous) => (previous.query === '' ? createQuickOpenState() : reduceQuickOpen(previous, { type: 'clear' })))
-          return undefined
-        }
-        let cancelled = false
-        setQuickOpen((previous) => reduceQuickOpen(previous, { type: 'request' }))
-        const timer = setTimeout(() => {
-          call('search', { root, mode: 'name', query: quickOpen.query, maxResults: SEARCH_LIMIT }).then((data) => {
-            if (cancelled) return
-            setQuickOpen((previous) => reduceQuickOpen(previous, {
-              type: 'response',
-              matches: normalizeNameSearchEntries(data),
-              truncated: data !== null && data !== undefined && data.truncated === true,
-            }))
-          }).catch((error) => {
-            if (cancelled) return
-            setQuickOpen((previous) => reduceQuickOpen(previous, {
-              type: 'error',
-              message: describeError(t, error),
-            }))
-          })
-        }, SEARCH_DEBOUNCE_MS)
-        return () => {
-          cancelled = true
-          clearTimeout(timer)
-        }
-      }, [quickOpen.query, root, searchNonce, t, searchPanel.open])
-
-      const updateQuickOpen = useCallback((action) => {
-        setQuickOpen((previous) => reduceQuickOpen(previous, action))
+      const updateSearch = useCallback((action) => {
+        setSearch((previous) => reduceUnifiedSearchState(previous, action))
       }, [])
 
       const recordRecentFile = useCallback((rel) => {
@@ -2868,73 +2879,70 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
-      /* ---- VSCode-like search panel ----------------------------------------- */
-
-      const openSearchPanel = useCallback(() => {
-        setQuickOpen(createQuickOpenState())
-        setSearchPanel((previous) => reduceSearchState(previous, { type: 'open' }))
-      }, [])
-
-      const closeSearchPanel = useCallback(() => {
-        if (searchTimerRef.current !== null) {
-          clearTimeout(searchTimerRef.current)
-          searchTimerRef.current = null
-        }
-        if (searchAbortRef.current !== null) {
-          try { searchAbortRef.current.abort() } catch (error) { void error }
-          searchAbortRef.current = null
-        }
-        searchSeqRef.current += 1
-        setSearchPanel((previous) => reduceSearchState(previous, { type: 'close', seq: searchSeqRef.current }))
-      }, [])
-
-      const toggleSearchPanel = useCallback(() => {
-        if (searchPanelRef.current !== null && searchPanelRef.current.open === true) closeSearchPanel()
-        else openSearchPanel()
-      }, [closeSearchPanel, openSearchPanel])
-
       const performSearch = useCallback(() => {
-        const state = searchPanelRef.current
-        if (state === null || state === undefined || state.open !== true) return
-        const request = buildSearchRequest(state, rootRef.current)
-        if (request === null) {
-          if (searchAbortRef.current !== null) {
-            try { searchAbortRef.current.abort() } catch (error) { void error }
-            searchAbortRef.current = null
-          }
-          searchSeqRef.current += 1
-          setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
+        const state = searchRef.current
+        const currentRoot = rootRef.current
+        const query = state.query.trim()
+        if (currentRoot === null || currentRoot === '' || query === '') return
+        if (state.mode === 'name') {
+          nameSeqRef.current += 1
+          const seq = nameSeqRef.current
+          const request = buildNameSearchRequest(currentRoot, state.query)
+          if (request === null) return
+          updateSearch({ type: 'name', action: { type: 'request', seq }, query: state.query })
+          call('search', request).then((data) => {
+            if (seq !== nameSeqRef.current) return
+            updateSearch({
+              type: 'name',
+              action: {
+                type: 'response',
+                seq,
+                matches: normalizeNameSearchEntries(data),
+                truncated: data !== null && data !== undefined && data.truncated === true,
+              },
+              query: state.query,
+            })
+          }).catch((error) => {
+            if (seq !== nameSeqRef.current) return
+            updateSearch({ type: 'name', action: { type: 'error', seq, message: describeError(t, error) }, query: state.query })
+          })
           return
         }
+
         if (searchAbortRef.current !== null) {
           try { searchAbortRef.current.abort() } catch (error) { void error }
         }
         const controller = typeof AbortController === 'function' ? new AbortController() : null
         searchAbortRef.current = controller
-        searchSeqRef.current += 1
-        const seq = searchSeqRef.current
-        setSearchPanel((previous) => reduceSearchState(previous, { type: 'request', seq }))
+        const request = buildSearchRequest(
+          Object.assign({}, state.content, { query: state.query, mode: 'content' }),
+          currentRoot,
+        )
+        if (request === null) return
+        contentSeqRef.current += 1
+        const seq = contentSeqRef.current
+        updateSearch({ type: 'content', action: { type: 'request', seq }, query: state.query })
         call('search', request, controller === null ? undefined : controller.signal).then((data) => {
-          if (seq !== searchSeqRef.current) return
-          setSearchPanel((previous) => reduceSearchState(previous, {
-            type: 'response',
-            seq,
-            data: normalizeSearchResponse(data, request.mode, request.query),
-          }))
+          if (seq !== contentSeqRef.current) return
+          updateSearch({
+            type: 'content',
+            action: { type: 'response', seq, data: normalizeSearchResponse(data, 'content', state.query) },
+            query: state.query,
+          })
         }).catch((error) => {
-          if (seq !== searchSeqRef.current || isAbortError(error)) return
-          setSearchPanel((previous) => reduceSearchState(previous, {
-            type: 'error',
-            seq,
-            message: describeError(t, error),
-          }))
+          if (seq !== contentSeqRef.current || isAbortError(error)) return
+          updateSearch({
+            type: 'content',
+            action: { type: 'error', seq, message: describeError(t, error) },
+            query: state.query,
+          })
         }).then(() => {
           if (searchAbortRef.current === controller) searchAbortRef.current = null
         })
-      }, [t])
+      }, [t, updateSearch])
       performSearchRef.current = performSearch
 
-      const cancelSearch = useCallback(() => {
+      const stopContentSearch = useCallback(() => {
         if (searchTimerRef.current !== null) {
           clearTimeout(searchTimerRef.current)
           searchTimerRef.current = null
@@ -2943,8 +2951,8 @@ window.__ModuleLoader__.load({
           try { searchAbortRef.current.abort() } catch (error) { void error }
           searchAbortRef.current = null
         }
-        searchSeqRef.current += 1
-        setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
+        contentSeqRef.current += 1
+        nameSeqRef.current += 1
       }, [])
 
       const runSearchNow = useCallback(() => {
@@ -2955,29 +2963,74 @@ window.__ModuleLoader__.load({
         if (performSearchRef.current !== null) performSearchRef.current()
       }, [])
 
-      /* 300 ms debounce; every dependency change invalidates in-flight work
-         BEFORE the new request starts, so a slow old response can never land. */
+      const handleSearchQuery = useCallback((value) => {
+        if (value === searchRef.current.query) return
+        stopContentSearch()
+        updateSearch({ type: 'query', query: value })
+      }, [stopContentSearch, updateSearch])
+
+      const handleSearchMode = useCallback((mode) => {
+        updateSearch({ type: 'mode', mode })
+      }, [updateSearch])
+
+      const clearSearch = useCallback(() => {
+        stopContentSearch()
+        updateSearch({ type: 'escape' })
+      }, [stopContentSearch, updateSearch])
+
+      const cancelContentSearch = useCallback(() => {
+        stopContentSearch()
+        updateSearch({
+          type: 'content',
+          action: { type: 'cancel', seq: contentSeqRef.current },
+          query: searchRef.current.query,
+        })
+      }, [stopContentSearch, updateSearch])
+
+      const toggleSearchFlag = useCallback((flag) => {
+        stopContentSearch()
+        updateSearch({ type: 'content', action: { type: 'flag', flag } })
+      }, [stopContentSearch, updateSearch])
+
+      const changeSearchGlob = useCallback((field, value) => {
+        stopContentSearch()
+        updateSearch({ type: 'content', action: { type: 'glob', field, value } })
+      }, [stopContentSearch, updateSearch])
+
+      const toggleSearchGlobField = useCallback((field) => {
+        updateSearch({ type: 'content', action: { type: 'globOpen', field } })
+      }, [updateSearch])
+
+      const collapseContentFile = useCallback((rel) => {
+        updateSearch({ type: 'content', action: { type: 'collapse', rel } })
+      }, [updateSearch])
+
+      const contentRowsOf = useCallback((state) => {
+        if (state.mode !== 'content') return []
+        const content = state.content
+        const data = content.query === state.query ? content.data : null
+        return flattenSearchResults(data, content.collapsed)
+      }, [])
+
+      /* Per-mode debounce (200 ms name, 300 ms content). A cached result set is
+         reused when the query and options have not changed; per-mode sequence
+         refs make any late response harmless. */
       useEffect(() => {
-        if (searchPanel.open !== true) return undefined
-        const text = searchPanel.query.trim()
+        const query = search.query.trim()
+        if (root === null || root === '' || query === '') return undefined
+        const cache = search.mode === 'content' ? search.content : search.name
+        if (cache.query === search.query && (cache.status === 'ready' || cache.status === 'error' || cache.status === 'loading' || cache.status === 'idle')) {
+          return undefined
+        }
         if (searchTimerRef.current !== null) {
           clearTimeout(searchTimerRef.current)
           searchTimerRef.current = null
         }
-        if (searchAbortRef.current !== null) {
-          try { searchAbortRef.current.abort() } catch (error) { void error }
-          searchAbortRef.current = null
-        }
-        searchSeqRef.current += 1
-        if (text === '' || root === null || root === '') {
-          setSearchPanel((previous) => reduceSearchState(previous, { type: 'cancel', seq: searchSeqRef.current }))
-          return undefined
-        }
-        setSearchPanel((previous) => reduceSearchState(previous, { type: 'pending' }))
+        const delay = search.mode === 'content' ? SEARCH_PANEL_DEBOUNCE_MS : SEARCH_DEBOUNCE_MS
         searchTimerRef.current = setTimeout(() => {
           searchTimerRef.current = null
           if (performSearchRef.current !== null) performSearchRef.current()
-        }, SEARCH_PANEL_DEBOUNCE_MS)
+        }, delay)
         return () => {
           if (searchTimerRef.current !== null) {
             clearTimeout(searchTimerRef.current)
@@ -2985,9 +3038,9 @@ window.__ModuleLoader__.load({
           }
         }
       }, [
-        searchPanel.open, searchPanel.query, searchPanel.mode,
-        searchPanel.caseSensitive, searchPanel.wholeWord, searchPanel.regex,
-        searchPanel.include, searchPanel.exclude, root,
+        search.query, search.mode, search.revision,
+        search.content.caseSensitive, search.content.wholeWord, search.content.regex,
+        search.content.include, search.content.exclude, root,
       ])
 
       useEffect(() => () => {
@@ -2997,10 +3050,6 @@ window.__ModuleLoader__.load({
           try { searchAbortRef.current.abort() } catch (error) { void error }
           searchAbortRef.current = null
         }
-      }, [])
-
-      const updateSearchState = useCallback((action) => {
-        setSearchPanel((previous) => reduceSearchState(previous, action))
       }, [])
 
       /* ---- tabs / files ----------------------------------------------------- */
@@ -3272,19 +3321,51 @@ window.__ModuleLoader__.load({
         )
       }, [openEntry])
 
-      const quickOpenKeyDown = useCallback((event) => {
+      const handleSearchKeyDown = useCallback((event) => {
         if (event === null || event === undefined) return
-        const command = quickOpenKeyCommand(quickOpenRef.current, event.key)
-        if (command === null) return
+        const state = searchRef.current
+        const key = event.key
+        if (key === 'Escape') {
+          event.preventDefault()
+          clearSearch()
+          return
+        }
+        if (key === 'ArrowDown' || key === 'ArrowUp') {
+          const delta = key === 'ArrowDown' ? 1 : -1
+          event.preventDefault()
+          if (state.mode === 'name') {
+            if (state.name.query !== state.query || state.name.status !== 'ready') return
+            const next = moveSearchFocus(state.name.focusIndex, state.name.matches.length, delta)
+            updateSearch({ type: 'name', action: { type: 'focus', index: next } })
+          } else {
+            const rows = contentRowsOf(state)
+            const next = moveSearchFocus(state.content.focusIndex, rows.length, delta)
+            updateSearch({ type: 'content', action: { type: 'focus', index: next } })
+          }
+          return
+        }
+        if (key !== 'Enter') return
         event.preventDefault()
-        if (command.type === 'open') {
-          const ordered = orderRecentFirst(quickOpenRef.current.matches, recentFilesRef.current)
-          const entry = ordered[command.index]
+        if (state.mode === 'name') {
+          if (state.name.query !== state.query || state.name.status !== 'ready') {
+            runSearchNow()
+            return
+          }
+          const ordered = orderRecentFirst(state.name.matches, recentFilesRef.current)
+          const index = state.name.focusIndex >= 0 && state.name.focusIndex < ordered.length ? state.name.focusIndex : 0
+          const entry = ordered[index]
           if (entry !== undefined) openSearchResult(entry)
           return
         }
-        updateQuickOpen(command)
-      }, [openSearchResult, updateQuickOpen])
+        const rows = contentRowsOf(state)
+        const index = state.content.focusIndex
+        if (index >= 0 && index < rows.length) {
+          if (rows[index].kind === 'match') openSearchRow(rows[index])
+          else collapseContentFile(rows[index].rel)
+          return
+        }
+        runSearchNow()
+      }, [clearSearch, collapseContentFile, contentRowsOf, openSearchResult, openSearchRow, runSearchNow, updateSearch])
 
       const handleContentChange = useCallback((rel, text) => {
         patchTab(rel, { type: 'content', content: text })
@@ -3333,26 +3414,6 @@ window.__ModuleLoader__.load({
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      }, [])
-
-      /* Esc closes the search panel even when focus is in the editor. The
-         former global two-key opener was removed because it clashed with a
-         system shortcut; the toolbar search icon is the only opener. */
-      const searchEscapeRef = useRef({})
-      searchEscapeRef.current = {
-        close: closeSearchPanel,
-        open: searchPanel.open,
-        blocked: pickerOpen || pendingRoot !== null || pendingClose !== null || pendingReload !== null,
-      }
-      useEffect(() => {
-        const onKey = (event) => {
-          if (event.key !== 'Escape' || searchEscapeRef.current.open !== true) return
-          if (searchEscapeRef.current.blocked === true) return
-          event.preventDefault()
-          searchEscapeRef.current.close()
-        }
-        window.addEventListener('keydown', onKey, true)
-        return () => window.removeEventListener('keydown', onKey, true)
       }, [])
 
       /* ---- render ----------------------------------------------------------- */
@@ -3436,58 +3497,35 @@ window.__ModuleLoader__.load({
               },
               E(Icon, { name: 'folder', size: 14 }),
               E('span', { className: 'wbf-rootName' }, root === null || root === '' ? t('root.choose') : workspaceNameOf(root)),
-              E(Icon, { name: 'chevronDown', size: 11 })),
-              E('span', { className: 'wbf-sideActions' },
-                E(IconButton, {
-                  name: 'search',
-                  size: 13,
-                  label: t('search.open'),
-                  active: searchPanel.open === true,
-                  onClick: toggleSearchPanel,
-                }))),
-            searchPanel.open === true
-              ? E(SearchPanel, {
-                t,
-                state: searchPanel,
-                root,
-                recentFiles,
-                onQueryChange: (value) => updateSearchState({ type: 'query', query: value }),
-                onRun: runSearchNow,
-                onCancel: cancelSearch,
-                onClose: closeSearchPanel,
-                onModeChange: (mode) => updateSearchState({ type: 'mode', mode }),
-                onToggleFlag: (flag) => updateSearchState({ type: 'flag', flag }),
-                onGlobChange: (field, value) => updateSearchState({ type: 'glob', field, value }),
-                onToggleGlobOpen: (field) => updateSearchState({ type: 'globOpen', field }),
-                onCollapse: (rel) => updateSearchState({ type: 'collapse', rel }),
-                onOpenRow: openSearchRow,
-                onFocus: (index) => updateSearchState({ type: 'focus', index }),
-                onPickRoot: () => setPickerOpen(true),
-                onClear: () => updateSearchState({ type: 'query', query: '' }),
-              })
-              : E(TreePanel, {
-                t,
-                root,
-                tree,
-                expanded,
-                rows,
-                rowLimit,
-                showHidden,
-                searchQuery: query,
-                search,
-                recentFiles,
-                activeRel,
-                onQueryChange: (value) => updateQuickOpen({ type: 'query', query: value }),
-                onClearSearch: () => updateQuickOpen({ type: 'clear' }),
-                onSearchKeyDown: quickOpenKeyDown,
-                onToggleHidden: toggleHidden,
-                onRefresh: refreshTree,
-                onToggleDir: toggleDir,
-                onOpenFile: openEntry,
-                onRetryDir: retryDir,
-                onShowMore: () => setRowLimit((value) => value + TREE_ROW_LIMIT),
-                onOpenSearchResult: openSearchResult,
-              })),
+              E(Icon, { name: 'chevronDown', size: 11 }))),
+            E(TreePanel, {
+              t,
+              root,
+              tree,
+              rows,
+              rowLimit,
+              showHidden,
+              search,
+              recentFiles,
+              activeRel,
+              onQueryChange: handleSearchQuery,
+              onModeChange: handleSearchMode,
+              onSearchKeyDown: handleSearchKeyDown,
+              onToggleFlag: toggleSearchFlag,
+              onGlobChange: changeSearchGlob,
+              onToggleGlobOpen: toggleSearchGlobField,
+              onCollapse: collapseContentFile,
+              onCancel: cancelContentSearch,
+              onOpenQuickResult: openSearchResult,
+              onOpenContentRow: openSearchRow,
+              onClearSearch: clearSearch,
+              onToggleHidden: toggleHidden,
+              onRefresh: refreshTree,
+              onToggleDir: toggleDir,
+              onOpenFile: openEntry,
+              onRetryDir: retryDir,
+              onShowMore: () => setRowLimit((value) => value + TREE_ROW_LIMIT),
+            })),
           E('div', { className: 'wbf-content' },
             E(TabStrip, {
               t,
@@ -3541,13 +3579,19 @@ window.__ModuleLoader__.load({
 .wbf-rootChip{display:flex;align-items:center;gap:5px;flex:1;min-width:0;height:26px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:inherit;font:inherit;font-size:11px;cursor:pointer}
 .wbf-rootChip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 .wbf-rootName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-.wbf-sideActions{display:flex;gap:2px;flex:none}
 .wbf-iconBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .wbf-iconBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#e6e6e6)}
 .wbf-iconBtn.is-active{color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .wbf-iconBtn.is-danger:hover{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .wbf-iconBtn:disabled{opacity:.35;cursor:default}
 .wbf-searchRow{display:flex;align-items:center;gap:4px;padding:2px 8px 6px}
+.wbf-searchBar{flex:none}
+.wbf-searchModes{display:flex;flex:none;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04))}
+.wbf-searchMode{border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:9px;padding:2px 6px;cursor:pointer;white-space:nowrap}
+.wbf-searchMode.is-active{background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
+.wbf-searchOptions{display:flex;flex-direction:column;gap:2px;padding:0 8px 4px;flex:none}
+.wbf-searchFlags{display:flex;align-items:center;gap:2px}
+.wbf-searchContentList{display:flex;flex-direction:column;min-height:0}
 .wbf-searchIcon{flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .wbf-searchInput{flex:1;min-width:0;height:24px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
 .wbf-searchInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
@@ -3574,31 +3618,17 @@ window.__ModuleLoader__.load({
 .wbf-linkBtn{border:none;background:transparent;color:var(--dsw-alias-brand-primary,#4d6bfe);font:inherit;font-size:11px;cursor:pointer;padding:0 2px;text-decoration:underline}
 .wbf-treeFoot{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .wbf-searchResults{display:flex;flex-direction:column;padding:2px 2px 8px}
-.wbf-searchRow{display:flex;align-items:center;gap:6px;width:100%;padding:4px 7px;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px;text-align:left;cursor:pointer}
-.wbf-searchRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.wbf-searchResultRow{display:flex;align-items:center;gap:6px;width:100%;padding:4px 7px;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px;text-align:left;cursor:pointer}
+.wbf-searchResultRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .wbf-searchName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wbf-searchDir{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px}
-.wbf-searchRow.is-focused{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d6bfe)}
-.wbf-searchRow.is-recent .wbf-searchName{color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbf-searchResultRow.is-focused{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-searchResultRow.is-recent .wbf-searchName{color:var(--dsw-alias-label-primary,#e6e6e6)}
 .wbf-searchHit{border-radius:2px;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 30%,transparent);color:var(--dsw-alias-label-primary,#fff)}
 .wbf-recentBadge{flex:none;padding:0 4px;border-radius:3px;color:var(--dsw-alias-state-success-primary,#3fb950);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 14%,transparent);font-size:9px;line-height:14px;white-space:nowrap}
 .wbf-quickMeta{display:flex;align-items:center;gap:6px;padding:0 8px 4px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px}
 .wbf-quickCount{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wbf-quickTruncated{flex:none;color:var(--dsw-alias-state-warn-primary,#e2a03f)}
-.wbf-srRecent{flex:none;padding:0 4px;border-radius:3px;color:var(--dsw-alias-state-success-primary,#3fb950);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 14%,transparent);font-size:9px;line-height:15px;white-space:nowrap}
-.wbf-searchPanel{display:flex;flex-direction:column;flex:1;min-height:0;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
-.wbf-srHead{display:flex;align-items:center;gap:4px;padding:4px 6px}
-.wbf-srTitle{flex:1;min-width:0;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
-.wbf-srQueryRow{position:relative;display:flex;align-items:center;padding:0 8px 5px}
-.wbf-srQueryIcon{position:absolute;left:15px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
-.wbf-srQuery{width:100%;min-width:0;height:26px;padding:0 26px 0 23px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
-.wbf-srQuery:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
-.wbf-srQuery:disabled{opacity:.5}
-.wbf-srControls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 8px 5px}
-.wbf-srModes{display:flex;flex:none;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;overflow:hidden}
-.wbf-srMode{border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;padding:3px 8px;cursor:pointer}
-.wbf-srMode.is-active{background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
-.wbf-srFlags{display:flex;gap:2px;margin-left:auto;flex:none}
 .wbf-srFlag{width:22px;height:20px;padding:0;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;line-height:1;cursor:pointer}
 .wbf-srFlag:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 .wbf-srFlag.is-active{color:var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 16%,transparent)}
@@ -3617,7 +3647,6 @@ window.__ModuleLoader__.load({
 .wbf-srStatus.is-busy{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
 .wbf-srStatus.is-error{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .wbf-srTruncated{flex:none;padding:0 5px;border-radius:3px;color:var(--dsw-alias-state-warn-primary,#e2a03f);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 16%,transparent);font-size:9px;line-height:15px}
-.wbf-srList{flex:1;min-height:0;overflow:auto;padding:3px 2px 8px;overscroll-behavior:contain}
 .wbf-srEmpty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:26px 14px;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:11px;line-height:1.5}
 .wbf-srFile,.wbf-srMatch{display:flex;align-items:center;gap:4px;width:100%;border:none;background:transparent;text-align:left;cursor:pointer;border-radius:4px}
 .wbf-srFile{padding:3px 6px;color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px}
@@ -3631,7 +3660,6 @@ window.__ModuleLoader__.load({
 .wbf-srLine{flex:none;width:36px;text-align:right;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .wbf-srSnippet{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre}
 .wbf-srHit{border-radius:2px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 34%,transparent);color:var(--dsw-alias-label-primary,#e6e6e6)}
-.wbf-srFootHint{flex:none;padding:3px 9px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wbf-content{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;background:var(--dsw-alias-bg-base,#14161a)}
 .wbf-tabs{display:flex;align-items:stretch;flex:none;min-height:29px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));scrollbar-width:thin}
 .wbf-tab{display:flex;align-items:center;gap:5px;flex:none;max-width:180px;padding:0 7px;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer}
@@ -3685,10 +3713,6 @@ window.__ModuleLoader__.load({
 .wbf-emptyView{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;flex:1;min-height:0;padding:26px 18px;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98);overflow:auto}
 .wbf-emptyTitle{font-size:14px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .wbf-emptyHint{max-width:440px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#8a8f98)}
-.wbf-emptyWorkspace{flex:1}
-.wbf-emptyRecent{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:5px;margin-top:3px}
-.wbf-recentChip{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 9px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer}
-.wbf-recentChip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 .wbf-binary{gap:7px}
 .wbf-binaryActions{display:flex;gap:6px;margin-top:3px}
 .wbf-spinner{width:20px;height:20px;border-radius:50%;border:2px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-top-color:var(--dsw-alias-brand-primary,#4d6bfe);animation:wbf-spin .8s linear infinite}
@@ -3803,6 +3827,7 @@ window.__ModuleLoader__.load({
       SEARCH_MODES,
       SEARCH_LIMIT,
       SEARCH_DEBOUNCE_MS,
+      SEARCH_PANEL_DEBOUNCE_MS,
       QUICK_OPEN_RECENT_LIMIT,
       extensionOf,
       classifyFile,
@@ -3830,6 +3855,7 @@ window.__ModuleLoader__.load({
       moveSearchFocus,
       parseGlobInput,
       buildSearchRequest,
+      buildNameSearchRequest,
       normalizeSearchResponse,
       normalizeNameSearchEntries,
       flattenSearchResults,
@@ -3842,6 +3868,10 @@ window.__ModuleLoader__.load({
       createQuickOpenState,
       reduceQuickOpen,
       quickOpenKeyCommand,
+      createUnifiedSearchState,
+      reduceUnifiedSearchState,
+      activeSearchView,
+      contentOptionsOf,
       isAbortError,
       mediaUrl,
       loadChunk,
@@ -3853,7 +3883,10 @@ window.__ModuleLoader__.load({
         ConflictBar,
         RootPicker,
         TreePanel,
-        SearchPanel,
+        SearchModeSegment,
+        SearchOptions,
+        QuickOpenResults,
+        ContentResults,
         Viewer,
         ViewerEmpty,
         EditorMount,

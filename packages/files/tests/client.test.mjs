@@ -561,7 +561,7 @@ test('buildSearchRequest maps §2.1 toggles, modes and globs', () => {
   state = api.reduceSearchState(state, { type: 'open' })
   state = api.reduceSearchState(state, { type: 'query', query: '  Needle  ' })
   const basic = api.buildSearchRequest(state, 'C:\\work')
-  assert.deepEqual(basic, { root: 'C:\\work', mode: 'content', query: '  Needle  ', maxResults: api.SEARCH_PANEL_MAX_RESULTS })
+  assert.deepEqual(basic, { root: 'C:\\work', mode: 'content', query: '  Needle  ', maxResults: api.SEARCH_PANEL_MAX_RESULTS, contextLines: 0 })
   assert.equal(api.buildSearchRequest(state, ''), null)
   assert.equal(api.buildSearchRequest(api.reduceSearchState(state, { type: 'query', query: '   ' }), 'C:\\work'), null)
 
@@ -795,202 +795,130 @@ test('isAbortError recognises AbortController failures', () => {
   assert.equal(api.isAbortError(null), false)
 })
 
-/* ============================== search panel: component smoke ============================== */
+/* ============================== unified search ============================== */
 
-function makeSearchState() {
-  let state = api.createSearchState()
-  state = api.reduceSearchState(state, { type: 'open' })
-  state = api.reduceSearchState(state, { type: 'query', query: 'foo' })
-  state = api.reduceSearchState(state, { type: 'request', seq: 1 })
-  const data = api.normalizeSearchResponse({
-    root: 'C:\\work',
-    mode: 'content',
-    query: 'foo',
-    files: [
-      { rel: 'src/a.ts', size: 20, mtimeMs: 5, matches: [{ line: 2, column: 4, length: 3, text: 'let foo = 1' }, { line: 8, column: 0, length: 3, text: 'foo bar' }] },
-      { rel: 'docs/b.md', size: 9, mtimeMs: 6, matches: [{ line: 1, column: 0, length: 3, text: 'foo doc' }] },
-    ],
-    totalMatches: 3,
-    scannedFiles: 9,
-    truncated: false,
-    elapsedMs: 42,
-  }, 'content', 'foo')
-  return api.reduceSearchState(state, { type: 'response', seq: 1, data })
-}
-
-function searchHandlers(overrides) {
-  const calls = []
-  const record = (name) => (...args) => calls.push([name].concat(args))
-  return {
-    calls,
-    props: Object.assign({
-      t: translate,
-      state: makeSearchState(),
-      root: 'C:\\work',
-      onQueryChange: record('query'),
-      onRun: record('run'),
-      onCancel: record('cancel'),
-      onClose: record('close'),
-      onModeChange: record('mode'),
-      onToggleFlag: record('flag'),
-      onToggleGlobOpen: record('globOpen'),
-      onGlobChange: record('glob'),
-      onCollapse: record('collapse'),
-      onOpenRow: record('openRow'),
-      onFocus: record('focus'),
-      onPickRoot: record('pickRoot'),
-      onClear: record('clear'),
-    }, overrides === undefined ? {} : overrides),
-  }
-}
-
-test('SearchPanel renders controls, grouped results, highlight spans and status', () => {
-  const handlers = searchHandlers()
-  const panel = E(api.components.SearchPanel, handlers.props)
-  const text = textOf(panel)
-  assert.ok(text.includes('Content'))
-  assert.ok(text.includes('Files'))
-  assert.ok(text.includes('Aa'))
-  assert.ok(text.includes('ab'))
-  assert.ok(text.includes('.*'))
-  assert.ok(text.includes('files to include'))
-  assert.ok(text.includes('files to exclude'))
-  assert.ok(text.includes('3 results in 2 files'))
-  assert.ok(text.includes('42 ms'))
-  assert.ok(text.includes('a.ts'))
-  assert.ok(text.includes('src'))
-  assert.ok(text.includes('b.md'))
-  assert.ok(text.includes('let') && text.includes('= 1'))
-
-  const fileRows = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
-  assert.equal(fileRows.length, 2)
-  const matchRows = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srMatch'))
-  assert.equal(matchRows.length, 3)
-  const hits = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.includes('wbf-srHit'))
-  assert.equal(hits.length, 3)
-  assert.ok(textOf(matchRows[0]).includes('1'))
-  assert.ok(textOf(matchRows[0]).includes('foo') && textOf(matchRows[0]).includes('doc'))
-})
-
-test('SearchPanel dispatches mode/flag/glob/clear/collapse/close and keyboard focus', () => {
-  const handlers = searchHandlers()
-  const panel = E(api.components.SearchPanel, handlers.props)
-
-  const modeButtons = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.includes('wbf-srMode'))
-  assert.equal(modeButtons.length, 2)
-  modeButtons[1].props.onClick()
-  assert.deepEqual(handlers.calls[0], ['mode', 'name'])
-
-  const flags = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.includes('wbf-srFlag'))
-  assert.equal(flags.length, 3)
-  flags[0].props.onClick()
-  assert.deepEqual(handlers.calls[1], ['flag', 'caseSensitive'])
-
-  const globHeads = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.includes('wbf-srGlobHead'))
-  assert.equal(globHeads.length, 2)
-  globHeads[0].props.onClick()
-  assert.deepEqual(handlers.calls[2], ['globOpen', 'includeOpen'])
-
-  const clear = nodesOf(panel, (node) => node.type === 'button' && node.props.title === 'Clear search')
-  assert.equal(clear.length, 1)
-  clear[0].props.onClick()
-  assert.deepEqual(handlers.calls[3], ['clear'])
-
-  const fileRows = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
-  fileRows[0].props.onClick()
-  assert.deepEqual(handlers.calls[4], ['collapse', 'docs/b.md'])
-
-  const matchRows = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srMatch'))
-  matchRows[0].props.onClick()
-  assert.equal(handlers.calls[5][0], 'openRow')
-  assert.equal(handlers.calls[5][1].line, 1)
-  assert.equal(handlers.calls[5][1].rel, 'docs/b.md')
-
-  const panelRoot = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.includes('wbf-searchPanel'))[0]
-  const key = (name, extra) => Object.assign({ key: name, preventDefault() {}, stopPropagation() {} }, extra === undefined ? {} : extra)
-  panelRoot.props.onKeyDown(key('ArrowDown'))
-  assert.deepEqual(handlers.calls[6], ['focus', 0])
-  panelRoot.props.onKeyDown(key('ArrowUp'))
-  assert.deepEqual(handlers.calls[7], ['focus', 4])
-  panelRoot.props.onKeyDown(key('Enter'))
-  assert.ok(handlers.calls.some((call) => call[0] === 'run' || call[0] === 'openRow'))
-  panelRoot.props.onKeyDown(key('Escape'))
-  assert.deepEqual(handlers.calls[handlers.calls.length - 1], ['close'])
-})
-
-test('SearchPanel opens the focused match on Enter and toggles file groups', () => {
-  const handlers = searchHandlers()
-  let state = handlers.props.state
-  state = api.reduceSearchState(state, { type: 'focus', index: 1 })
-  const panel = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state }))
-  const panelRoot = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.includes('wbf-searchPanel'))[0]
-  const key = (name, extra) => Object.assign({ key: name, preventDefault() {}, stopPropagation() {} }, extra === undefined ? {} : extra)
-  panelRoot.props.onKeyDown(key('Enter'))
-  assert.equal(handlers.calls[handlers.calls.length - 1][0], 'openRow')
-  assert.equal(handlers.calls[handlers.calls.length - 1][1].line, 1)
-
-  state = api.reduceSearchState(handlers.props.state, { type: 'focus', index: 0 })
-  const filePanel = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state }))
-  const fileRoot = nodesOf(filePanel, (node) => typeof node.props.className === 'string' && node.props.className.includes('wbf-searchPanel'))[0]
-  fileRoot.props.onKeyDown(key('Enter'))
-  assert.deepEqual(handlers.calls[handlers.calls.length - 1], ['collapse', 'docs/b.md'])
-
-  fileRoot.props.onKeyDown(key('Enter', { ctrlKey: true }))
-  assert.equal(handlers.calls[handlers.calls.length - 2][0], 'openRow')
-  assert.equal(handlers.calls[handlers.calls.length - 1][0], 'close')
-})
-
-test('SearchPanel renders collapsed groups, name mode, errors, glob displays and the no-root state', () => {
-  const handlers = searchHandlers()
-  let state = api.reduceSearchState(handlers.props.state, { type: 'collapse', rel: 'src/a.ts' })
-  const collapsed = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state }))
-  const collapsedMatches = nodesOf(collapsed, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srMatch'))
-  assert.equal(collapsedMatches.length, 1, 'collapsed file hides its matches')
-  assert.ok(textOf(collapsed).includes('2'), 'collapsed group still shows its count badge')
-
-  let nameState = api.reduceSearchState(handlers.props.state, { type: 'mode', mode: 'name' })
-  nameState = api.reduceSearchState(nameState, { type: 'request', seq: 2 })
-  const nameData = api.normalizeSearchResponse({ files: [{ rel: 'src/a.ts', matches: [] }, { rel: 'docs/b.md', matches: [] }] }, 'name', 'foo')
-  nameState = api.reduceSearchState(nameState, { type: 'response', seq: 2, data: nameData })
-  const namePanel = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state: nameState }))
-  assert.ok(textOf(namePanel).includes('Files'))
-  const nameRows = nodesOf(namePanel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
-  assert.equal(nameRows.length, 2)
-
-  const errorState = api.reduceSearchState(
-    api.reduceSearchState(api.createSearchState(), { type: 'open' }),
-    { type: 'error', seq: 0, message: translate('error.badRegex') },
-  )
-  const errored = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state: errorState }))
-  assert.ok(textOf(errored).includes('Invalid regular expression'))
-
-  const globState = Object.assign({}, handlers.props.state, {
-    includeOpen: true,
-    include: 'src/**/*.ts,!vendor/**',
-    excludeOpen: true,
-    exclude: 'bad token',
+test('per-mode request shapes: name uses SEARCH_LIMIT, content uses panel options', () => {
+  assert.deepEqual(api.buildNameSearchRequest('C:\\work', 'func a'), {
+    root: 'C:\\work', mode: 'name', query: 'func a', maxResults: api.SEARCH_LIMIT,
   })
-  const globPanel = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state: globState }))
-  assert.ok(textOf(globPanel).includes('src/**/*.ts'))
-  assert.ok(textOf(globPanel).includes('Invalid globs: bad token'))
+  assert.equal(api.buildNameSearchRequest('C:\\work', '   '), null)
+  assert.equal(api.buildNameSearchRequest('', 'a'), null)
 
-  const noRoot = E(api.components.SearchPanel, Object.assign({}, handlers.props, { root: '' }))
-  assert.ok(textOf(noRoot).includes('No workspace selected yet'))
+  let content = api.createSearchState()
+  content = api.reduceSearchState(content, { type: 'query', query: 'func' })
+  content = api.reduceSearchState(content, { type: 'flag', flag: 'caseSensitive' })
+  content = api.reduceSearchState(content, { type: 'flag', flag: 'regex' })
+  content = api.reduceSearchState(content, { type: 'glob', field: 'include', value: 'src/**/*.ts' })
+  const request = api.buildSearchRequest(content, 'C:\\work')
+  assert.equal(request.mode, 'content')
+  assert.equal(request.query, 'func')
+  assert.equal(request.caseSensitive, true)
+  assert.equal(request.regex, true)
+  assert.equal(request.include, 'src/**/*.ts')
+  assert.equal(request.maxResults, api.SEARCH_PANEL_MAX_RESULTS)
+  assert.equal(request.contextLines, 0)
 })
 
-test('SearchPanel in name mode opens a file row instead of collapsing it', () => {
-  const handlers = searchHandlers()
-  let state = makeSearchState()
-  state = api.reduceSearchState(state, { type: 'mode', mode: 'name' })
-  state = api.reduceSearchState(state, { type: 'request', seq: 2 })
-  const data = api.normalizeSearchResponse({ files: [{ rel: 'src/a.ts', matches: [] }, { rel: 'docs/b.md', matches: [] }] }, 'name', 'a')
-  state = api.reduceSearchState(state, { type: 'response', seq: 2, data })
-  const panel = E(api.components.SearchPanel, Object.assign({}, handlers.props, { state }))
-  const rows = nodesOf(panel, (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
-  assert.equal(rows.length, 2)
-  rows[0].props.onClick()
-  assert.equal(handlers.calls[handlers.calls.length - 1][0], 'openRow')
-  assert.equal(handlers.calls[handlers.calls.length - 1][1].line, 1)
+test('unified reducer keeps per-mode caches, mode switch and stale tokens', () => {
+  let state = api.createUnifiedSearchState()
+  assert.equal(state.mode, 'name')
+  assert.equal(state.query, '')
+  assert.equal(state.name.status, 'idle')
+  assert.equal(state.content.status, 'idle')
+
+  state = api.reduceUnifiedSearchState(state, { type: 'query', query: 'foo' })
+  assert.equal(state.query, 'foo')
+  assert.equal(state.name.focusIndex, -1)
+  assert.equal(state.content.focusIndex, -1)
+
+  state = api.reduceUnifiedSearchState(state, { type: 'name', action: { type: 'request', seq: 1 }, query: 'foo' })
+  assert.equal(state.name.status, 'loading')
+  assert.equal(state.name.query, 'foo')
+  state = api.reduceUnifiedSearchState(state, {
+    type: 'name',
+    action: { type: 'response', seq: 1, matches: [{ rel: 'a.ts' }], truncated: true },
+    query: 'foo',
+  })
+  assert.equal(state.name.status, 'ready')
+  assert.deepEqual(state.name.matches.map((entry) => entry.rel), ['a.ts'])
+  assert.equal(state.name.truncated, true)
+
+  state = api.reduceUnifiedSearchState(state, { type: 'mode', mode: 'content' })
+  assert.equal(state.mode, 'content')
+  assert.equal(state.name.status, 'ready', 'name cache survives the mode switch')
+  const data = api.normalizeSearchResponse({
+    files: [{ rel: 'src/a.ts', matches: [{ line: 3, column: 0, length: 3, text: 'foo' }] }],
+    totalMatches: 1,
+  }, 'content', 'foo')
+  state = api.reduceUnifiedSearchState(state, { type: 'content', action: { type: 'request', seq: 2 }, query: 'foo' })
+  assert.equal(state.content.status, 'loading')
+  state = api.reduceUnifiedSearchState(state, { type: 'content', action: { type: 'response', seq: 2, data }, query: 'foo' })
+  assert.equal(state.content.status, 'ready')
+  assert.equal(state.content.data.files.length, 1)
+
+  const staleContent = api.reduceUnifiedSearchState(state, {
+    type: 'content', action: { type: 'error', seq: 1, message: 'old' }, query: 'other',
+  })
+  assert.equal(staleContent.content.status, 'ready', 'stale content seq is ignored')
+  assert.equal(staleContent.content.query, 'foo', 'a stale response cannot relabel the cache')
+  const staleName = api.reduceUnifiedSearchState(state, {
+    type: 'name', action: { type: 'response', seq: 0, matches: [], truncated: false }, query: 'other',
+  })
+  assert.equal(staleName.name.status, 'ready')
+  assert.equal(staleName.name.seq, 1)
+  assert.equal(staleName.name.query, 'foo', 'a stale name response cannot relabel the cache')
+  assert.deepEqual(staleName.name.matches.map((entry) => entry.rel), ['a.ts'], 'stale name seq is ignored')
+
+  let backName = api.reduceUnifiedSearchState(state, { type: 'mode', mode: 'name' })
+  let view = api.activeSearchView(backName)
+  assert.equal(view.fresh, true)
+  assert.equal(view.status, 'ready')
+  assert.equal(backName.name.matches[0].rel, 'a.ts')
+
+  backName = api.reduceUnifiedSearchState(backName, { type: 'query', query: 'bar' })
+  view = api.activeSearchView(backName)
+  assert.equal(view.fresh, false)
+  assert.equal(view.status, 'loading')
+  assert.equal(backName.name.query, 'foo', 'old cache query is kept until the new response')
+  assert.equal(backName.content.query, 'foo')
+
+  let flags = api.reduceUnifiedSearchState(state, { type: 'content', action: { type: 'flag', flag: 'caseSensitive' } })
+  assert.equal(flags.content.caseSensitive, true)
+  assert.equal(flags.content.query, '', 'option changes invalidate the cached content query')
+  assert.equal(flags.content.status, 'loading')
+  flags = api.reduceUnifiedSearchState(flags, { type: 'content', action: { type: 'glob', field: 'include', value: 'src/**' } })
+  assert.equal(flags.content.include, 'src/**')
+  assert.equal(flags.content.query, '')
+  const globOpen = api.reduceUnifiedSearchState(flags, { type: 'content', action: { type: 'globOpen', field: 'includeOpen' } })
+  assert.equal(globOpen.content.includeOpen, true)
+  assert.equal(globOpen.content.query, '', 'opening a glob field does not invalidate results')
+
+  const escaped = api.reduceUnifiedSearchState(state, { type: 'escape' })
+  assert.equal(escaped.mode, 'content')
+  assert.equal(escaped.query, '')
+  assert.equal(escaped.name.status, 'idle')
+  assert.equal(escaped.content.status, 'idle')
+
+  const invalidated = api.reduceUnifiedSearchState(state, { type: 'invalidate' })
+  assert.equal(invalidated.revision, 1)
+  assert.equal(invalidated.mode, 'content')
+  assert.equal(invalidated.query, 'foo')
+  assert.equal(invalidated.name.matches.length, 0)
+  assert.equal(invalidated.content.data, null)
+
+  const sameQueryCancel = api.reduceUnifiedSearchState(state, {
+    type: 'content', action: { type: 'cancel', seq: 9 }, query: 'foo',
+  })
+  assert.equal(sameQueryCancel.content.status, 'ready')
+  assert.equal(sameQueryCancel.content.data.files.length, 1, 'cancel keeps the matching cached rows')
+
+  const changedQueryCancel = api.reduceUnifiedSearchState(
+    api.reduceUnifiedSearchState(state, { type: 'query', query: 'bar' }),
+    { type: 'content', action: { type: 'cancel', seq: 10 }, query: 'bar' },
+  )
+  assert.equal(changedQueryCancel.content.status, 'idle', 'cancelling a stale query cannot relabel old rows')
+  assert.equal(changedQueryCancel.content.data, null)
+  assert.equal(changedQueryCancel.content.query, 'bar')
 })
 
 /* ============================== i18n ============================== */
@@ -1254,14 +1182,22 @@ test('TreePanel renders a flat list, hides dotfiles by default and marks node_mo
     t: translate,
     root: 'R',
     tree,
-    expanded: new Set(),
     rows: api.flattenTree(tree, new Set(), { showHidden: false }),
     rowLimit: api.TREE_ROW_LIMIT,
     showHidden: false,
-    searchQuery: '',
-    search: { status: 'idle', matches: [], truncated: false, error: null },
+    search: api.createUnifiedSearchState(),
+    recentFiles: [],
     activeRel: null,
     onQueryChange() {},
+    onModeChange() {},
+    onSearchKeyDown() {},
+    onToggleFlag() {},
+    onGlobChange() {},
+    onToggleGlobOpen() {},
+    onCollapse() {},
+    onCancel() {},
+    onOpenQuickResult() {},
+    onOpenContentRow() {},
     onClearSearch() {},
     onToggleHidden() {},
     onRefresh() {},
@@ -1269,7 +1205,6 @@ test('TreePanel renders a flat list, hides dotfiles by default and marks node_mo
     onOpenFile() {},
     onRetryDir() {},
     onShowMore() {},
-    onOpenSearchResult() {},
   })
   const text = textOf(panel)
   assert.ok(text.includes('node_modules'))
@@ -1437,7 +1372,7 @@ test('orderRecentFirst is recent-first, stable, deduped and host-score ordered a
 
 test('quick-open reducer and keyboard commands', () => {
   let state = api.createQuickOpenState()
-  assert.deepEqual(state, { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1 })
+  assert.deepEqual(state, { query: '', status: 'idle', matches: [], truncated: false, error: '', focusIndex: -1, seq: 0 })
 
   state = api.reduceQuickOpen(state, { type: 'query', query: 'func a' })
   assert.equal(state.query, 'func a')
@@ -1466,7 +1401,57 @@ test('quick-open reducer and keyboard commands', () => {
   assert.deepEqual(state, api.createQuickOpenState())
 })
 
-test('TreePanel Quick Open renders fuzzy hits, recent badge, dir title and count', () => {
+function unifiedNameState(query, matches, truncated) {
+  let state = api.createUnifiedSearchState()
+  state = api.reduceUnifiedSearchState(state, { type: 'query', query })
+  state = api.reduceUnifiedSearchState(state, { type: 'name', action: { type: 'request' }, query })
+  return api.reduceUnifiedSearchState(state, {
+    type: 'name',
+    action: { type: 'response', matches, truncated: truncated === true },
+    query,
+  })
+}
+
+function unifiedContentState(query, data) {
+  let state = api.createUnifiedSearchState()
+  state = api.reduceUnifiedSearchState(state, { type: 'mode', mode: 'content' })
+  state = api.reduceUnifiedSearchState(state, { type: 'query', query })
+  state = api.reduceUnifiedSearchState(state, { type: 'content', action: { type: 'request', seq: 1 }, query })
+  return api.reduceUnifiedSearchState(state, { type: 'content', action: { type: 'response', seq: 1, data }, query })
+}
+
+function treePanelProps(search, overrides) {
+  return Object.assign({
+    t: translate,
+    root: 'C:\\work',
+    tree: { '': { status: 'ready', entries: [], truncated: false } },
+    rows: [],
+    rowLimit: api.TREE_ROW_LIMIT,
+    showHidden: false,
+    search,
+    recentFiles: [],
+    activeRel: null,
+    onQueryChange() {},
+    onModeChange() {},
+    onSearchKeyDown() {},
+    onToggleFlag() {},
+    onGlobChange() {},
+    onToggleGlobOpen() {},
+    onCollapse() {},
+    onCancel() {},
+    onOpenQuickResult() {},
+    onOpenContentRow() {},
+    onClearSearch() {},
+    onToggleHidden() {},
+    onRefresh() {},
+    onToggleDir() {},
+    onOpenFile() {},
+    onRetryDir() {},
+    onShowMore() {},
+  }, overrides === undefined ? {} : overrides)
+}
+
+test('TreePanel unified box: 文件名 Quick Open renders fuzzy hits, recent badge, dir title and count', () => {
   const rel = 'app/projects/functions/func_alarm.c'
   const offset = rel.length - 'func_alarm.c'.length
   const recentEntry = {
@@ -1477,39 +1462,18 @@ test('TreePanel Quick Open renders fuzzy hits, recent badge, dir title and count
     indices: [0, 1, 2, 5, 6].map((index) => index + offset),
   }
   const otherEntry = { rel: 'src/other.ts', name: 'other.ts', type: 'file', score: 10, indices: [] }
-  let search = api.reduceQuickOpen(api.createQuickOpenState(), { type: 'query', query: 'func a' })
-  search = api.reduceQuickOpen(search, { type: 'response', matches: [otherEntry, recentEntry], truncated: true })
+  const search = unifiedNameState('func a', [otherEntry, recentEntry], true)
   const opened = []
-  const keys = []
-  const panel = E(api.components.TreePanel, {
-    t: translate,
-    root: 'C:\\work',
-    tree: { '': { status: 'ready', entries: [], truncated: false } },
-    expanded: new Set(),
-    rows: [],
-    rowLimit: api.TREE_ROW_LIMIT,
-    showHidden: false,
-    searchQuery: 'func a',
-    search,
+  const panel = E(api.components.TreePanel, treePanelProps(search, {
     recentFiles: [rel],
-    activeRel: null,
-    onQueryChange() {},
-    onClearSearch() {},
-    onToggleHidden() {},
-    onRefresh() {},
-    onToggleDir() {},
-    onOpenFile() {},
-    onRetryDir() {},
-    onShowMore() {},
-    onOpenSearchResult: (entry) => opened.push(entry),
-    onSearchKeyDown: (event) => keys.push(event),
-  })
+    onOpenQuickResult: (entry) => opened.push(entry),
+  }))
   const text = textOf(panel)
   assert.ok(text.includes('Recently opened'))
   assert.ok(text.includes('2 matches'))
   assert.ok(text.includes('arm.c'), 'basename tail survives the highlight split')
   assert.ok(text.includes('app/projects/functions'))
-  const rows = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
+  const rows = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchResultRow'))
   assert.equal(rows.length, 2)
   assert.equal(rows[0].props.title, rel, 'recent file is first')
   assert.equal(rows[0].props.className.includes('is-recent'), true)
@@ -1521,74 +1485,65 @@ test('TreePanel Quick Open renders fuzzy hits, recent badge, dir title and count
 
   rows[0].props.onClick()
   assert.equal(opened[0].rel, rel)
-  const input = nodesOf(panel, (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')[0]
-  assert.equal(typeof input.props.onKeyDown, 'function')
+  const input = nodesOf(panel, (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')
+  assert.equal(input.length, 1, 'exactly ONE search input')
 
-  const empty = api.reduceQuickOpen(api.createQuickOpenState(), { type: 'query', query: 'zzz' })
-  const emptyReady = api.reduceQuickOpen(empty, { type: 'response', matches: [], truncated: false })
-  const emptyPanel = E(api.components.TreePanel, {
-    t: translate, root: 'C:\\work', tree: {}, expanded: new Set(), rows: [], rowLimit: api.TREE_ROW_LIMIT,
-    showHidden: false, searchQuery: 'zzz', search: emptyReady, recentFiles: [], activeRel: null,
-    onQueryChange() {}, onClearSearch() {}, onToggleHidden() {}, onRefresh() {}, onToggleDir() {},
-    onOpenFile() {}, onRetryDir() {}, onShowMore() {}, onOpenSearchResult() {}, onSearchKeyDown() {},
-  })
+  const emptyPanel = E(api.components.TreePanel, treePanelProps(unifiedNameState('zzz', [], false)))
   assert.ok(textOf(emptyPanel).includes('No matching files'))
-  const loading = api.reduceQuickOpen(empty, { type: 'request' })
-  const loadingPanel = E(api.components.TreePanel, {
-    t: translate, root: 'C:\\work', tree: {}, expanded: new Set(), rows: [], rowLimit: api.TREE_ROW_LIMIT,
-    showHidden: false, searchQuery: 'zzz', search: loading, recentFiles: [], activeRel: null,
-    onQueryChange() {}, onClearSearch() {}, onToggleHidden() {}, onRefresh() {}, onToggleDir() {},
-    onOpenFile() {}, onRetryDir() {}, onShowMore() {}, onOpenSearchResult() {}, onSearchKeyDown() {},
-  })
+  let loading = api.createUnifiedSearchState()
+  loading = api.reduceUnifiedSearchState(loading, { type: 'query', query: 'zzz' })
+  loading = api.reduceUnifiedSearchState(loading, { type: 'name', action: { type: 'request' }, query: 'zzz' })
+  const loadingPanel = E(api.components.TreePanel, treePanelProps(loading))
   assert.ok(textOf(loadingPanel).includes('Searching…'))
   assert.equal(textOf(loadingPanel).includes('No matching files'), false, 'empty state only when the result is really empty')
 })
 
-test('SearchPanel name mode uses fuzzy indices and recent-first ordering', () => {
-  let state = api.createSearchState()
-  state = api.reduceSearchState(state, { type: 'open' })
-  state = api.reduceSearchState(state, { type: 'query', query: 'a' })
-  state = api.reduceSearchState(state, { type: 'mode', mode: 'name' })
-  state = api.reduceSearchState(state, { type: 'request', seq: 2 })
+test('TreePanel unified box shows 内容-only controls and grouped content results', () => {
   const data = api.normalizeSearchResponse({
-    mode: 'name',
-    query: 'a',
-    files: [
-      { rel: 'src/a.ts', indices: [4, 5] },
-      { rel: 'src/b.ts', indices: [4] },
-    ],
-    totalMatches: 2,
-  }, 'name', 'a')
-  state = api.reduceSearchState(state, { type: 'response', seq: 2, data })
+    files: [{ rel: 'src/a.ts', matches: [{ line: 2, column: 0, length: 3, text: 'foo bar' }] }],
+    totalMatches: 1,
+    scannedFiles: 1,
+    truncated: false,
+    elapsedMs: 9,
+  }, 'content', 'foo')
+  const search = unifiedContentState('foo', data)
   const opened = []
-  const panel = E(api.components.SearchPanel, {
-    t: translate,
-    state,
-    root: 'C:\\work',
-    recentFiles: ['src/b.ts'],
-    onQueryChange() {}, onRun() {}, onCancel() {}, onClose() {}, onModeChange() {},
-    onToggleFlag() {}, onGlobChange() {}, onToggleGlobOpen() {}, onCollapse() {},
-    onOpenRow: (row) => opened.push(row), onFocus() {}, onPickRoot() {}, onClear() {},
-  })
-  const rows = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFile'))
-  assert.equal(rows.length, 2)
-  assert.equal(rows[0].props.title, 'src/b.ts', 'recent file first')
-  assert.ok(textOf(rows[0]).includes('Recently opened'))
-  const hits = nodesOf(rows[0], (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srHit'))
-  assert.equal(hits.length, 1)
-  assert.equal(textOf(hits[0]), 'b')
-  rows[0].props.onClick()
-  assert.equal(opened[0].rel, 'src/b.ts')
+  const collapsed = []
+  const panel = E(api.components.TreePanel, treePanelProps(search, {
+    onOpenContentRow: (row) => opened.push(row),
+    onCollapse: (rel) => collapsed.push(rel),
+  }))
+  const text = textOf(panel)
+  assert.ok(text.includes('Content'))
+  assert.ok(text.includes('1 results in 1 files'))
+  assert.ok(text.includes('9 ms'))
+  assert.ok(text.includes('foo'))
+  assert.ok(text.includes('bar'))
+  const flags = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFlag'))
+  assert.equal(flags.length, 3, 'Aa/ab/.* in content mode')
+  const globHeads = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srGlobHead'))
+  assert.equal(globHeads.length, 2)
+  const matches = nodesOf(panel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srMatch'))
+  assert.equal(matches.length, 1)
+  assert.ok(textOf(matches[0]).includes('2'))
+  matches[0].props.onClick()
+  assert.equal(opened[0].line, 2)
+  assert.equal(opened[0].rel, 'src/a.ts')
+
+  const namePanel = E(api.components.TreePanel, treePanelProps(unifiedNameState('foo', [])))
+  assert.equal(nodesOf(namePanel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFlag')).length, 0)
+  assert.equal(nodesOf(namePanel, (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srGlobHead')).length, 0)
 })
 
-test('i18n has recent strings and no Ctrl/Cmd+Shift+F hint', () => {
+test('i18n has recent strings and no removed panel/shortcut keys', () => {
   for (const dictionary of [api.dictionaries.zh, api.dictionaries.en]) {
     assert.equal(Object.values(dictionary).some((value) => /Ctrl\/Cmd\+Shift\+F|Ctrl\+Shift\+F/.test(String(value))), false)
     assert.equal(Object.prototype.hasOwnProperty.call(dictionary, 'search.recentBadge'), true)
     assert.equal(Object.prototype.hasOwnProperty.call(dictionary, 'search.resultCount'), true)
+    for (const removed of ['search.open', 'search.close', 'search.emptyName', 'search.noRoot', 'search.pickRoot', 'search.keyboardHint']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(dictionary, removed), false, removed)
+    }
   }
-  assert.equal(api.dictionaries.zh['search.open'], '搜索')
-  assert.equal(api.dictionaries.en['search.open'], 'Search')
 })
 
 /* ============================== Quick Open keyboard integration ============================== */
@@ -1768,7 +1723,7 @@ function createComponentRuntime() {
   }
 }
 
-test('Ctrl/Cmd+Shift+F no longer opens search; toolbar opens; inline Quick Open works', { timeout: 15000 }, async () => {
+test('single unified search box: Ctrl+Shift+F is inert, 文件名/内容 modes work end to end', { timeout: 20000 }, async () => {
   const runtime = createComponentRuntime()
   const fetchCalls = []
   const fakeFetch = async (url, options) => {
@@ -1779,6 +1734,17 @@ test('Ctrl/Cmd+Shift+F no longer opens search; toolbar opens; inline Quick Open 
     let data = { ok: true }
     if (method === 'roots') data = { root: 'C:/work', drives: [], recent: [] }
     else if (method === 'tree') data = { root: 'C:/work', dir: payload.dir || '', entries: [], truncated: false }
+    else if (method === 'search' && payload.mode === 'content') data = {
+      root: 'C:/work',
+      mode: 'content',
+      query: payload.query,
+      files: [{ rel: 'src/func_alarm.c', size: 5, mtimeMs: 5, matches: [{ line: 3, column: 2, length: 3, text: 'xx foo' }] }],
+      matches: [],
+      totalMatches: 1,
+      scannedFiles: 1,
+      truncated: false,
+      elapsedMs: 5,
+    }
     else if (method === 'search') data = {
       root: 'C:/work',
       mode: 'name',
@@ -1802,59 +1768,93 @@ test('Ctrl/Cmd+Shift+F no longer opens search; toolbar opens; inline Quick Open 
   runtime.mount(local.testApi.components.Page, { t: translate })
   await new Promise((resolve) => setTimeout(resolve, 80))
 
-  const queryInput = () => nodesOf(runtime.tree(), (node) => node.type === 'input' && node.props.className === 'wbf-srQuery')
-  assert.equal(queryInput().length, 0, 'search panel starts closed')
+  const searchInputs = () => nodesOf(runtime.tree(), (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')
+  const modeButton = (label) => nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchMode')).find((node) => textOf(node).includes(label))
+  assert.equal(searchInputs().length, 1, 'exactly ONE search input')
+  assert.equal(nodesOf(runtime.tree(), (node) => node.type === 'button' && node.props.title === 'search.open').length, 0, 'no separate panel opener')
+  assert.equal(nodesOf(runtime.tree(), (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-sideActions')).length, 0)
+  assert.ok(modeButton('Files'))
+  assert.ok(modeButton('Content'))
 
-  const keyEvent = (key) => ({
-    key,
-    ctrlKey: true,
-    metaKey: false,
-    shiftKey: true,
-    preventDefault() {},
-    stopPropagation() {},
-  })
   const listeners = local.listeners.get('keydown') || []
-  for (const listener of listeners) listener(keyEvent('f'))
-  await new Promise((resolve) => setTimeout(resolve, 30))
-  assert.equal(queryInput().length, 0, 'Ctrl+Shift+F must not open the panel anymore')
-
-  const toolbar = nodesOf(runtime.tree(), (node) => node.type === 'button' && node.props.title === translate('search.open'))[0]
-  assert.ok(toolbar !== undefined, 'toolbar search button exists')
-  toolbar.props.onClick()
-  await new Promise((resolve) => setTimeout(resolve, 30))
-  assert.equal(queryInput().length, 1, 'the toolbar still opens the panel')
-
   for (const listener of listeners) {
-    listener({ key: 'Escape', ctrlKey: false, metaKey: false, shiftKey: false, preventDefault() {}, stopPropagation() {} })
+    listener({ key: 'f', ctrlKey: true, metaKey: false, shiftKey: true, preventDefault() {}, stopPropagation() {} })
   }
-  await new Promise((resolve) => setTimeout(resolve, 30))
-  assert.equal(queryInput().length, 0, 'Esc still closes the panel')
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(searchInputs().length, 1)
+  assert.equal(searchInputs()[0].props.value, '', 'Ctrl+Shift+F does nothing')
+  assert.equal(fetchCalls.filter((call) => call.method === 'search').length, 0)
 
-  /* Inline Quick Open: host fuzzy results render, keyboard opens, recents stick. */
-  const inlineInput = () => nodesOf(runtime.tree(), (node) => node.type === 'input' && node.props.className === 'wbf-searchInput')[0]
-  assert.ok(inlineInput() !== undefined, 'inline Quick Open input exists in the explorer')
-  inlineInput().props.onChange({ target: { value: 'func a' } })
+  searchInputs()[0].props.onChange({ target: { value: 'func a' } })
   await new Promise((resolve) => setTimeout(resolve, 280))
-  const searchCall = fetchCalls.filter((call) => call.method === 'search').pop()
-  assert.equal(searchCall.payload.mode, 'name')
-  assert.equal(searchCall.payload.query, 'func a')
-  assert.equal(searchCall.payload.maxResults, api.SEARCH_LIMIT)
-  const quickRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
+  const nameCall = fetchCalls.filter((call) => call.method === 'search').pop()
+  assert.equal(nameCall.payload.mode, 'name')
+  assert.equal(nameCall.payload.query, 'func a')
+  assert.equal(nameCall.payload.maxResults, api.SEARCH_LIMIT)
+  assert.equal(nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFlag')).length, 0, 'no 内容 controls in 文件名 mode')
+  const quickRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchResultRow'))
   assert.equal(quickRows.length, 1)
-  assert.equal(quickRows[0].props.title, 'src/func_alarm.c')
   assert.ok(nodesOf(quickRows[0], (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchHit')).length >= 1)
 
-  let input = inlineInput()
+  let input = searchInputs()[0]
   input.props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
   await new Promise((resolve) => setTimeout(resolve, 20))
-  input = inlineInput()
+  input = searchInputs()[0]
   input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
   await new Promise((resolve) => setTimeout(resolve, 80))
   assert.ok(fetchCalls.some((call) => call.method === 'read' && call.payload.rel === 'src/func_alarm.c'), 'Enter opens the focused Quick Open file')
   assert.ok(textOf(runtime.tree()).includes('func_alarm.c'), 'opened file appears in the tab strip')
-  const recentRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchRow'))
-  assert.equal(recentRows[0].props.className.includes('is-recent'), true, 'opened file becomes a recent Quick Open hit')
-  assert.ok(textOf(recentRows[0]).includes('Recently opened'))
+  const recentRows = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchResultRow'))
+  assert.equal(recentRows[0].props.className.includes('is-recent'), true)
+
+  modeButton('Content').props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 380))
+  const contentCall = fetchCalls.filter((call) => call.method === 'search').pop()
+  assert.equal(contentCall.payload.mode, 'content')
+  assert.equal(contentCall.payload.query, 'func a')
+  assert.equal(contentCall.payload.maxResults, 200)
+  assert.equal(contentCall.payload.contextLines, 0)
+  assert.equal(nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFlag')).length, 3, 'Aa/ab/.* appear in 内容 mode')
+  assert.equal(nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srGlobHead')).length, 2)
+  let contentInput = searchInputs()[0]
+  contentInput.props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  contentInput = searchInputs()[0]
+  contentInput.props.onKeyDown({ key: 'ArrowDown', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const contentMatches = nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srMatch'))
+  assert.equal(contentMatches.length, 1)
+  assert.equal(contentMatches[0].props.className.includes('is-focused'), true, 'content result keyboard focus')
+  contentInput = searchInputs()[0]
+  contentInput.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(fetchCalls.filter((call) => call.method === 'read').pop().payload.rel, 'src/func_alarm.c')
+
+  const searchCountBeforeSwitch = fetchCalls.filter((call) => call.method === 'search').length
+  modeButton('Files').props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(fetchCalls.filter((call) => call.method === 'search').length, searchCountBeforeSwitch, 'same query reuses the cached 文件名 results')
+  assert.ok(nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-searchResultRow')).length >= 1)
+  assert.equal(nodesOf(runtime.tree(), (node) => node.type === 'button' && typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-srFlag')).length, 0)
+
+  /* Changing the shared query invalidates the other mode's cached set. */
+  input = searchInputs()[0]
+  input.props.onChange({ target: { value: 'func' } })
+  await new Promise((resolve) => setTimeout(resolve, 260))
+  assert.equal(fetchCalls.filter((call) => call.method === 'search').pop().payload.mode, 'name')
+  modeButton('Content').props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 380))
+  const rerun = fetchCalls.filter((call) => call.method === 'search').pop()
+  assert.equal(rerun.payload.mode, 'content')
+  assert.equal(rerun.payload.query, 'func', 'changed query re-runs the other mode')
+  modeButton('Files').props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+
+  input = searchInputs()[0]
+  input.props.onKeyDown({ key: 'Escape', preventDefault() {} })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(searchInputs()[0].props.value, '', 'Esc clears the unified box')
+  assert.equal(searchInputs().length, 1, 'still a single search input after clearing')
 
   runtime.unmount()
   assert.ok(fetchCalls.some((call) => call.method === 'tree'), 'page mounted far enough to load the tree')
