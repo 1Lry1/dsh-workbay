@@ -113,13 +113,16 @@ test('searchParts splits a line into hit/plain segments for highlighting', () =>
   assert.deepEqual(searchParts('x', '(', false, false, true), [{ text: 'x', hit: false }])
 })
 
-test('clicking a search hit merges its context back into the live stream', () => {
+test('searching splits the pane: live stream on top, results below, click locates', () => {
   assert.match(source, /\/log\/context\?/)
   assert.match(source, /const locate = React\.useCallback/)
   assert.match(source, /mergeLogs\(logsRef\.current, data\.logs/)
+  assert.match(source, /const resultRows = search\.matches/)
+  assert.match(source, /className: 'abw-log abw-resultList'/)
+  assert.match(source, /abw-split/)
+  assert.match(source, /setSelectedKey\(logKey\(l\)\); void locate\(l\)/)
   assert.match(source, /is-target/)
   assert.match(source, /已定位到实时日志/)
-  assert.match(source, /onClick: searching \?/)
 })
 
 test('mergeLogs dedupes, sorts and caps the live buffer', () => {

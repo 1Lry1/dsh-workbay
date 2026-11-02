@@ -187,6 +187,11 @@ window.__ModuleLoader__.load({
       .abw-search{flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-bottom:6px}
       .abw-hit{background:#4d3b00;color:#ffd866;border-radius:2px}
       .abw-ll.is-target{background:#3a3000;box-shadow:inset 2px 0 0 #ffd866}
+      .abw-ll.is-selected{background:#27364d}
+      .abw-split{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px}
+      .abw-result{flex:0 0 38%;min-height:120px;display:flex;flex-direction:column;min-height:0}
+      .abw-resultsBar{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+      .abw-resultList{flex:1 1 auto;min-height:0}
     `
 
     let injected = false
@@ -276,6 +281,11 @@ window.__ModuleLoader__.load({
       const [target, setTarget] = React.useState(null)
       const logsRef = React.useRef(st.logs)
       React.useEffect(() => { logsRef.current = st.logs }, [st.logs])
+      /* 搜索时下方结果栏有独立的滚动位置与高度（上方实时流不受影响）。 */
+      const [resultScrollTop, setResultScrollTop] = React.useState(0)
+      const [resultViewH, setResultViewH] = React.useState(200)
+      const resultRef = React.useRef(null)
+      const [selectedKey, setSelectedKey] = React.useState(null)
       // 内联提示（替代 alert）：不弹窗，在界面上就地显示几秒
       const [notice, setNotice] = React.useState('')
       // 提示自动消失（3 秒），不留残在界面上
@@ -380,6 +390,8 @@ window.__ModuleLoader__.load({
           }))
           setScrollTop(0)
           if (logRef.current) logRef.current.scrollTop = 0
+          setResultScrollTop(0)
+          if (resultRef.current) resultRef.current.scrollTop = 0
         }, 300)
         return () => { cancelled = true; clearTimeout(timer) }
       }, [search.query, search.caseSensitive, search.wholeWord, search.regex, filter, search.nonce])
@@ -399,8 +411,8 @@ window.__ModuleLoader__.load({
         const merged = mergeLogs(logsRef.current, data.logs, CLIENT_MAX_LOGS)
         logsRef.current = merged
         setSt(current => ({ ...current, logs: merged }))
-        setSearch({ query: '', caseSensitive: false, wholeWord: false, regex: false, loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0 })
         setTarget({ key, entry })
+        setSelectedKey(key)
         setFollow(false)
         const index = merged.findIndex((item) => logKey(item) === key)
         const top = Math.max(0, (index < 0 ? 0 : index) - 8) * ROW_HEIGHT
@@ -411,8 +423,23 @@ window.__ModuleLoader__.load({
       }, [setSt])
 
       const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
-      const rows = searching ? search.matches : shown
+      const rows = shown
       const range = virtualRange(scrollTop, viewH, rows.length, ROW_HEIGHT, OVERSCAN)
+      const resultRows = search.matches
+      const resultRange = virtualRange(resultScrollTop, resultViewH, resultRows.length, ROW_HEIGHT, OVERSCAN)
+
+      React.useEffect(() => {
+        const el = resultRef.current
+        if (el === null || el === undefined) return undefined
+        const measure = () => setResultViewH(el.clientHeight || 200)
+        measure()
+        if (typeof ResizeObserver === 'function') {
+          const observer = new ResizeObserver(measure)
+          observer.observe(el)
+          return () => observer.disconnect()
+        }
+        return undefined
+      }, [searching])
       React.useEffect(() => {
         if (follow && !searching && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
       }, [shown.length, follow, searching])
@@ -591,9 +618,7 @@ window.__ModuleLoader__.load({
       // ---- 下半：日志 ----
       const logBar = h('div', { className: 'abw-lbar' },
                 h('span', { className: 'abw-dim', style: { fontSize: 12 } },
-          searching
-            ? ('搜索 ' + search.total + ' 条' + (search.hasMore ? '（显示前 ' + search.matches.length + ' 条）' : '') + (search.loading ? ' · 搜索中…' : ''))
-            : ('日志 ' + shown.length + (older.hasMore ? ' · 上滚加载更早' : '') + (older.loading ? ' · 加载中…' : ''))),
+          '日志 ' + shown.length + (older.hasMore ? ' · 上滚加载更早' : '') + (older.loading ? ' · 加载中…' : '')),
         st.logFile && st.logFile.size > 0
           ? h('span', {
             className: 'abw-dim',
@@ -632,19 +657,13 @@ window.__ModuleLoader__.load({
       }
       const logBody = rows.length === 0
         ? h('div', { className: 'abw-empty' },
-          searching
-            ? (search.loading ? '搜索中…' : (search.error !== '' ? search.error : '没有匹配的日志'))
-            : (s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里'))
+          s.open ? '等待板卡输出…' : '打开串口或连接 Downloader 后，日志会显示在这里')
         : [
           h('div', { key: 'pad-top', style: { height: range.topPad } }),
           ...rows.slice(range.start, range.end).map((l, i) => h('div', {
             className: 'abw-ll' + (target !== null && logKey(l) === target.key ? ' is-target' : ''),
             key: (l.t || 0) + '-' + (range.start + i),
-            style: {
-              height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px',
-              cursor: searching ? 'pointer' : undefined,
-            },
-            onClick: searching ? () => { void locate(l) } : undefined,
+            style: { height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px' },
           },
           h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
           h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
@@ -678,6 +697,45 @@ window.__ModuleLoader__.load({
             onClick: () => setTarget(null),
           }, '清除定位'))
         : null
+
+      const resultBox = searching
+        ? h('div', { className: 'abw-result' },
+          h('div', { className: 'abw-resultsBar' },
+            h('span', { className: 'abw-dim', style: { fontSize: 11 } },
+              '搜索结果 ' + search.total + ' 条' +
+              (search.hasMore ? '（显示前 ' + search.matches.length + ' 条）' : '') +
+              (search.loading ? ' · 搜索中…' : '') +
+              (search.error !== '' ? ' · ' + search.error : '')),
+            h('span', { className: 'abw-sp' })),
+          h('div', {
+            className: 'abw-log abw-resultList', ref: resultRef,
+            onScroll: (e) => setResultScrollTop(e.currentTarget.scrollTop),
+          },
+            resultRows.length === 0
+              ? h('div', { className: 'abw-empty' },
+                search.loading ? '搜索中…' : (search.error !== '' ? search.error : '没有匹配的日志'))
+              : [
+                h('div', { key: 'rpad-top', style: { height: resultRange.topPad } }),
+                ...resultRows.slice(resultRange.start, resultRange.end).map((l, i) => h('div', {
+                  className: 'abw-ll' +
+                    (selectedKey !== null && logKey(l) === selectedKey ? ' is-selected' : '') +
+                    (target !== null && logKey(l) === target.key ? ' is-target' : ''),
+                  key: (l.t || 0) + '-r-' + (resultRange.start + i),
+                  style: { height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px', cursor: 'pointer' },
+                  onClick: () => { setSelectedKey(logKey(l)); void locate(l) },
+                },
+                h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
+                h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
+                h('span', { className: 'abw-lt' }, ...searchParts(l.text, search.query, search.caseSensitive, search.wholeWord, search.regex)
+                  .map((part, j) => (part.hit
+                    ? h('span', { key: j, className: 'abw-hit' }, part.text)
+                    : part.text))))),
+                h('div', { key: 'rpad-bottom', style: { height: resultRange.bottomPad } }),
+              ])
+        )
+        : null
+
+      const logSplit = h('div', { className: 'abw-split' }, logBox, resultBox)
 
       const searchRow = h('div', { className: 'abw-search' },
         h('input', {
@@ -734,7 +792,7 @@ window.__ModuleLoader__.load({
         h('button', { className: 'abw-btn', disabled: !s.open, onClick: send }, '发送')
       )
 
-      const bottom = h('div', { className: 'abw-logwrap' }, logBar, locateBar, searchRow, logBox, sendBar)
+      const bottom = h('div', { className: 'abw-logwrap' }, logBar, locateBar, searchRow, logSplit, sendBar)
 
       return h('div', { className: 'abw' }, top, bottom)
     }
