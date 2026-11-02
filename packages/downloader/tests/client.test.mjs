@@ -113,6 +113,13 @@ test('searchParts splits a line into hit/plain segments for highlighting', () =>
   assert.deepEqual(searchParts('x', '(', false, false, true), [{ text: 'x', hit: false }])
 })
 
+test('clicking a search hit opens the surrounding log context', () => {
+  assert.match(source, /\/log\/context\?/)
+  assert.match(source, /const locate = React\.useCallback/)
+  assert.match(source, /is-target/)
+  assert.match(source, /返回搜索结果/)
+  assert.match(source, /onClick: searching && jump\.logs === null/)
+})
 test('the page has a Notepad++-style search bar over the full log file', () => {
   assert.match(source, /placeholder: '搜索日志/)
   assert.match(source, /\/log\/search\?/)

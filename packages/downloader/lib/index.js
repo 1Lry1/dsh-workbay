@@ -1651,6 +1651,35 @@ async function handleHttp(req, res, state, api) {
       })
     }
 
+    // 定位：按时间戳（+文本）找到某条日志，返回它前后各 N 条上下文。
+    if (p === '/log/context' && req.method === 'GET') {
+      const qp = url.searchParams
+      const at = Number(qp.get('t') || 0)
+      const text = qp.get('text') || ''
+      const before = Math.max(0, Math.min(1000, Number(qp.get('before') || 200)))
+      const after = Math.max(0, Math.min(1000, Number(qp.get('after') || 200)))
+      const tail = readLogTail(LOG_FILE, LOG_FILE_LOAD_BYTES)
+      const all = parseLogLines(tail.text)
+      let index = -1
+      for (let i = all.length - 1; i >= 0; i -= 1) {
+        if (all[i].t !== at) continue
+        if (text !== '' && all[i].text !== text) continue
+        index = i
+        break
+      }
+      if (index < 0) return json(res, 200, { found: false, logs: [], index: -1, total: all.length })
+      const start = Math.max(0, index - before)
+      const end = Math.min(all.length, index + after + 1)
+      return json(res, 200, {
+        found: true,
+        logs: all.slice(start, end),
+        index: index - start,
+        total: all.length,
+        hasOlder: start > 0,
+        hasNewer: end < all.length,
+      })
+    }
+
     // 更早的历史：页面向上滚动时从本地 JSONL 继续加载（内存只留工作集，文件是全量）
     if (p === '/log/history' && req.method === 'GET') {
       const before = Number(url.searchParams.get('before') || 0) || (Date.now() + 1)

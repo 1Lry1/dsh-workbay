@@ -109,6 +109,16 @@ test('/log/search searches the whole file with Aa / ab / regex and src filter', 
   const badBody = await bad.json()
   assert.equal(badBody.error, 'bad-regex')
 })
+test('/log/context returns the surrounding lines and the target index', async () => {
+  const hit = await (await fetch(base + '/downloader/log/context?t=1700000001000&text=' + encodeURIComponent('board boot ok') + '&before=5&after=5')).json()
+  assert.equal(hit.found, true)
+  assert.equal(hit.logs.length, 3)
+  assert.equal(hit.index, 1)
+  assert.equal(hit.logs[hit.index].text, 'board boot ok')
+  const missing = await (await fetch(base + '/downloader/log/context?t=123')).json()
+  assert.equal(missing.found, false)
+  assert.deepEqual(missing.logs, [])
+})
 test('clearing the logs truncates the local file too', async () => {
   const cleared = await (await fetch(base + '/downloader/log/clear', { method: 'POST' })).json()
   assert.equal(cleared.ok, true)

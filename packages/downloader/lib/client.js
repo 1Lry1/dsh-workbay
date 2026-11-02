@@ -163,6 +163,7 @@ window.__ModuleLoader__.load({
       .abw-send{flex:0 0 auto;display:flex;gap:8px;margin-top:8px}
       .abw-search{flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-bottom:6px}
       .abw-hit{background:#4d3b00;color:#ffd866;border-radius:2px}
+      .abw-ll.is-target{background:#3a3000;box-shadow:inset 2px 0 0 #ffd866}
     `
 
     let injected = false
@@ -248,6 +249,8 @@ window.__ModuleLoader__.load({
         loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0,
       })
       const searching = search.query.trim() !== ''
+      /* 点击搜索结果后进入“定位视图”：显示该条前后各 200 条上下文。 */
+      const [jump, setJump] = React.useState({ loading: false, logs: null, index: -1, target: null })
       // 内联提示（替代 alert）：不弹窗，在界面上就地显示几秒
       const [notice, setNotice] = React.useState('')
       // 提示自动消失（3 秒），不留残在界面上
@@ -355,8 +358,29 @@ window.__ModuleLoader__.load({
         return () => { cancelled = true; clearTimeout(timer) }
       }, [search.query, search.caseSensitive, search.wholeWord, search.regex, filter, search.nonce])
 
+      const locate = React.useCallback(async (entry) => {
+        if (entry === null || entry === undefined || typeof entry.t !== 'number') return
+        setNotice('定位中…')
+        setJump({ loading: true, logs: null, index: -1, target: entry })
+        const params = new URLSearchParams({ t: String(entry.t), before: '200', after: '200' })
+        if (typeof entry.text === 'string') params.set('text', entry.text)
+        const data = await api.get('/log/context?' + params.toString())
+        if (!data || data.error || data.found !== true || !Array.isArray(data.logs)) {
+          setJump({ loading: false, logs: null, index: -1, target: null })
+          setNotice('这条日志不在本地文件可读范围内（可能已被轮转）')
+          return
+        }
+        const index = Number(data.index) || 0
+        setJump({ loading: false, logs: data.logs, index, target: entry })
+        const top = Math.max(0, index - 8) * ROW_HEIGHT
+        setScrollTop(top)
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => { if (logRef.current) logRef.current.scrollTop = top })
+        }
+      }, [])
+
       const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
-      const rows = searching ? search.matches : shown
+      const rows = jump.logs !== null ? jump.logs : (searching ? search.matches : shown)
       const range = virtualRange(scrollTop, viewH, rows.length, ROW_HEIGHT, OVERSCAN)
       React.useEffect(() => {
         if (follow && !searching && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -583,8 +607,13 @@ window.__ModuleLoader__.load({
         : [
           h('div', { key: 'pad-top', style: { height: range.topPad } }),
           ...rows.slice(range.start, range.end).map((l, i) => h('div', {
-            className: 'abw-ll', key: (l.t || 0) + '-' + (range.start + i),
-            style: { height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px' },
+            className: 'abw-ll' + (jump.logs !== null && (range.start + i) === jump.index ? ' is-target' : ''),
+            key: (l.t || 0) + '-' + (range.start + i),
+            style: {
+              height: ROW_HEIGHT, lineHeight: ROW_HEIGHT + 'px',
+              cursor: searching && jump.logs === null ? 'pointer' : undefined,
+            },
+            onClick: searching && jump.logs === null ? () => { void locate(l) } : undefined,
           },
           h('span', { className: 'abw-lt-time' }, fmtT(l.t)),
           h('span', { className: 'abw-ls', 'data-s': l.src || 'S' }, SRC[l.src] || '·'),
@@ -606,6 +635,26 @@ window.__ModuleLoader__.load({
           if (!searching && el.scrollTop < ROW_HEIGHT * 10 && older.hasMore && !older.loading) void loadOlder()
         },
       }, logBody)
+
+      const jumpBar = jump.logs !== null
+        ? h('div', { className: 'abw-search' },
+          h('span', {
+            className: 'abw-dim',
+            style: { fontSize: 11, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }, '已定位：' + fmtT(jump.target && jump.target.t) + ' [' + ((jump.target && jump.target.src) || 'S') + '] ' + ((jump.target && jump.target.text) || '')),
+          h('button', {
+            className: 'abw-btn', 'data-v': 'ghost',
+            onClick: () => { setJump({ loading: false, logs: null, index: -1, target: null }); setScrollTop(0) },
+          }, '返回搜索结果'),
+          h('button', {
+            className: 'abw-btn', 'data-v': 'ghost',
+            onClick: () => {
+              setSearch({ query: '', caseSensitive: false, wholeWord: false, regex: false, loading: false, error: '', matches: [], total: 0, hasMore: false, nonce: 0 })
+              setJump({ loading: false, logs: null, index: -1, target: null })
+              setScrollTop(0)
+            },
+          }, '回到实时'))
+        : null
 
       const searchRow = h('div', { className: 'abw-search' },
         h('input', {
@@ -662,7 +711,7 @@ window.__ModuleLoader__.load({
         h('button', { className: 'abw-btn', disabled: !s.open, onClick: send }, '发送')
       )
 
-      const bottom = h('div', { className: 'abw-logwrap' }, logBar, searchRow, logBox, sendBar)
+      const bottom = h('div', { className: 'abw-logwrap' }, logBar, jumpBar, searchRow, logBox, sendBar)
 
       return h('div', { className: 'abw' }, top, bottom)
     }

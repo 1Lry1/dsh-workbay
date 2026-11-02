@@ -188,8 +188,12 @@ GET /downloader/log/recent?since=<毫秒>          某时间之后
 - 搜索时日志区显示结果而不是实时流；`Enter` 重新搜索（构建过程中可刷新结果），
   `Esc` 或「清除」回到实时日志；
 - 源过滤（全部/板卡/烧录/系统）同时作用于搜索；
+- **点击任一结果**进入定位视图：从 JSONL 取出该条前后各 200 条上下文，目标行高亮，
+  可「返回搜索结果」或「回到实时」；
 - 宿主接口 `GET /log/search?q=&case=1&word=1&regex=1&src=B&limit=2000`，返回
   `{ matches, total, hasMore, scanned }`；`total` 是全部命中数，`matches` 最多 2000 条。
+- 定位用 `GET /log/context?t=<毫秒>&text=<内容>&before=200&after=200`，返回
+  `{ logs, index, found, hasOlder, hasNewer }`。
 
 ### 地址清单（让 AI 一步定位）
 
