@@ -71,7 +71,42 @@ window.__ModuleLoader__.load({
        pages coexist (they do, until the old two are retired) this page must not
        fight them for the same slot, and the two existing values are NOT the same
        thing: the workspace root can be an ancestor of the repository root. */
-    const ROOT_KEY = 'dsh-workbay.sc.root.v1'
+    const idle = (key) => ({ status: 'idle', [key]: [], error: null })
+
+/* Cross-mount cache.
+ *
+ * The dock mounts only the ACTIVE page (`E(current.component)`), so switching to
+ * Downloader and back remounts this page from scratch: every read — status, log,
+ * branches, stash — runs again, and the user stares at skeletons for a second.
+ * Keeping the last result at module scope makes the return instant: the state is
+ * seeded from it, then refreshed in the background.
+ *
+ * Keyed by workspace root so a different repository never shows another one's data.
+ */
+const PAGE_CACHE = {
+  root: '',
+  at: 0,
+  snapshot: null,
+  history: idle('commits'),
+  branches: idle('branches'),
+  stash: idle('stash'),
+}
+const PAGE_CACHE_MAX_AGE_MS = 10 * 60 * 1000
+
+function readPageCache() {
+  const stored = (() => {
+    try { return window.localStorage.getItem(ROOT_KEY) || '' } catch (error) { return '' }
+  })()
+  const fresh = Date.now() - PAGE_CACHE.at < PAGE_CACHE_MAX_AGE_MS
+  if (PAGE_CACHE.root !== '' && PAGE_CACHE.root === stored && fresh === true) return PAGE_CACHE
+  return { snapshot: null, history: idle('commits'), branches: idle('branches'), stash: idle('stash') }
+}
+
+function writePageCache(patch) {
+  PAGE_CACHE.at = Date.now()
+  for (const key of Object.keys(patch)) PAGE_CACHE[key] = patch[key]
+}
+const ROOT_KEY = 'dsh-workbay.sc.root.v1'
     const REPO_KEY = 'dsh-workbay.sc.repo.v1'
     const LAYOUT_KEY = 'dsh-workbay.sc.layout.v1'
     const HIDDEN_KEY = 'dsh-workbay.sc.hidden.v1'
@@ -1639,9 +1674,16 @@ const NARROW_PANE_W = 225
       const stacked = mode === 'S' || mode === 'M'
 
       /* ---- workspace / repo ---- */
+  /* 页面级缓存：dock 只挂载当前页，切走就卸载。没有缓存时，每切回来一次就要
+     重新跑一遍 status + log + branches，慢得像是卡住了。这里把上一次的结果留在
+     模块作用域里，重新挂载时先用它渲染，再在后台刷新（stale-while-revalidate）。 */
+  const pageCache = readPageCache()
+  const [snapshot, setSnapshot] = useState(() => pageCache.snapshot)
+  const [historyState, setHistoryState] = useState(() => pageCache.history)
+  const [branchState, setBranchState] = useState(() => pageCache.branches)
+  const [stashState, setStashState] = useState(() => pageCache.stash)
       const [workspaceRoot, setWorkspaceRoot] = useState(() => readString(ROOT_KEY, ''))
       const [repoRoot, setRepoRoot] = useState(() => readString(REPO_KEY, ''))
-      const [snapshot, setSnapshot] = useState(null)
       const [snapshotError, setSnapshotError] = useState(null)
       const [snapshotLoading, setSnapshotLoading] = useState(false)
 
@@ -1798,11 +1840,8 @@ const NARROW_PANE_W = 225
        */
       /* 默认落在变更页：这页最常见的工作是「看改了什么」（用户明确要求）。 */
       const [treeMode, setTreeMode] = useState('changes')
-      const [historyState, setHistoryState] = useState({ status: 'idle', commits: [], error: null })
   /* 内容区弹窗放大：只切一个类，不重新挂载面板（滚动位置、光标、未保存内容都不丢）。 */
   const [contentModal, setContentModal] = useState(false)
-      const [branchState, setBranchState] = useState({ status: 'idle', branches: [], error: null })
-      const [stashState, setStashState] = useState({ status: 'idle', stash: [], error: null })
       const [busyAction, setBusyAction] = useState(null)
       const [selectedCommit, setSelectedCommit] = useState(null)
       const [commitDetail, setCommitDetail] = useState({ status: 'idle', detail: null, error: null })
@@ -4995,6 +5034,8 @@ const NARROW_PANE_W = 225
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 

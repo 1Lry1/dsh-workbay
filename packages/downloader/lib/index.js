@@ -537,26 +537,32 @@ class LineHelper {
  */
 const TOOL_CONFIG_FILE = path.join(LOG_DIR, 'tool-path.json')
 
+/* 这个文件保存「页面选了什么」：exe 位置 + 工作目录。
+   工作目录也存，是因为宿主状态活不过 DSH 重启——每次重启都要用户重新选一遍目录，
+   那是最没必要的一次重复劳动。 */
 function readToolConfig() {
   try {
-    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '' }
+    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '', scanRoot: '' }
     const raw = JSON.parse(fs.readFileSync(TOOL_CONFIG_FILE, 'utf8'))
-    return { exe: typeof raw.exe === 'string' ? raw.exe : '' }
+    return {
+      exe: typeof raw.exe === 'string' ? raw.exe : '',
+      scanRoot: typeof raw.scanRoot === 'string' ? raw.scanRoot : '',
+    }
   } catch {
-    return { exe: '' }
+    return { exe: '', scanRoot: '' }
   }
 }
 
-function writeToolConfig(exe) {
+function writeToolConfig(patch) {
   try {
     fs.mkdirSync(LOG_DIR, { recursive: true })
-    fs.writeFileSync(TOOL_CONFIG_FILE, JSON.stringify({ exe }, null, 2), 'utf8')
+    const merged = Object.assign({}, readToolConfig(), patch)
+    fs.writeFileSync(TOOL_CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf8')
     return { ok: true }
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) }
   }
 }
-
 /**
  * Downloader.config 所在目录。
  *
@@ -674,9 +680,9 @@ export function apply(ctx) {
     /* 自动烧录默认开启：用户的工作流是「改代码 -> 编译 -> 自动烧」，
        还要求每次手动点一下按钮才是反直觉的。 */
     watch: { on: true, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
-  /* 由「源码管理」页告知的工作目录：扫描 dcf 时只认它。
-     为空时才退回工具自己的目录。 */
-  scanRoot: '',
+    /* 由「源码管理」页告知的工作目录：扫描 dcf 时只认它，为空时才退回工具自己的目录。
+       启动时从配置恢复，DSH 重启后不用再选一次。 */
+    scanRoot: readToolConfig().scanRoot,
   }
   // 为 AI 阅读而设：保留很长的环形缓冲（不落盘、不导出）。
   // 50000 条大约是几百次烧录 / 数小时板卡输出；每条实体约 100B，总内存约 5MB。
@@ -2167,7 +2173,7 @@ async function handleHttp(req, res, state, api) {
       if (next !== '' && !fs.existsSync(next)) {
         return json(res, 400, { error: '找不到这个文件', exe: next })
       }
-      const saved = writeToolConfig(next)
+      const saved = writeToolConfig({ exe: next })
       if (saved.ok !== true) return json(res, 500, { error: saved.error })
       const dir = resolveDlDir()
       pushLog('S', next === ''
@@ -2208,6 +2214,8 @@ async function handleHttp(req, res, state, api) {
         return json(res, 200, { ok: true, unchanged: true, root: state.scanRoot, watch: state.watch.path })
       }
       state.scanRoot = next
+      /* 记下来，DSH 重启后不用再选一次。 */
+      writeToolConfig({ scanRoot: next })
       /* 扫描目录变了之后只打一行摘要，把「找到哪个 dcf / 写没写进配置」并进去。 */
       let summary = '扫描目录已切换：' + (next === '' ? '(工具默认)' : next)
       const pick = freshestDcf()
@@ -2337,6 +2345,7 @@ function findForeignDownloader() {
     return []
   }
 }
+
 
 
 
