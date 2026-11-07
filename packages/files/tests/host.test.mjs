@@ -322,7 +322,7 @@ test('browse rejects a relative or file named dir', async () => {
 
 /* ============================== tree ============================== */
 
-test('tree lists one level with rel/type/size/hasChildren', async () => {
+test('tree lists one level with rel/type/size', async () => {
   const out = await call('tree', { root: ws })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.equal(out.data.root, asJson(ws))
@@ -336,7 +336,11 @@ test('tree lists one level with rel/type/size/hasChildren', async () => {
   assert.equal(typeof readme.mtimeMs, 'number')
   const src = out.data.entries.find((entry) => entry.name === 'src')
   assert.equal(src.type, 'dir')
-  assert.equal(src.hasChildren, true)
+  /* `hasChildren` is deliberately GONE: no client ever read it and it cost one
+     `opendir`+`read` per directory (~0.49 ms each on a real workspace, 45x an
+     lstat). A directory's emptiness is knowable only when you list it, and
+     `tree` lists it. Guard the removal so nobody "helpfully" adds it back. */
+  assert.equal(Object.hasOwn(src, 'hasChildren'), false, 'hasChildren must not come back — no client reads it')
   /* Directories first, then files. */
   assert.equal(out.data.entries[0].type, 'dir')
   assert.equal(out.data.entries[out.data.entries.length - 1].type, 'file')
@@ -986,7 +990,7 @@ test('stat reports an entry inside the root', async () => {
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.equal(out.data.entry.type, 'dir')
   assert.equal(out.data.entry.rel, 'src')
-  assert.equal(out.data.entry.hasChildren, true)
+  assert.equal(Object.hasOwn(out.data.entry, 'hasChildren'), false, 'hasChildren must not come back')
 
   const root = await call('stat', { root: ws, rel: '' })
   assert.equal(root.ok, true)

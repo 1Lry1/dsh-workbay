@@ -75,6 +75,9 @@ function boot({ betterSidebar, native, locale, dock, react, fetch }) {
       return { tag, attributes: {}, textContent: '', setAttribute(name, value) { this.attributes[name] = value }, remove() {} }
     },
     baseURI: 'http://127.0.0.1:3080/',
+    /* The `/watch` loop parks itself while the window is hidden (each `changed`
+       result costs a full snapshot). Exposed so a test can drive the state. */
+    visibilityState: 'visible',
   }
   const window = {
     /* The workbench dock publishes its page registry on this global, and the
@@ -221,13 +224,274 @@ test('the API base is mount-relative so a reverse proxy prefix still resolves', 
 })
 
 test('every mutating call goes through the shared run() guard', () => {
-  for (const method of ['stage', 'unstage', 'discard', 'commit', 'merge', 'rebase', 'cherryPick', 'revert', 'reset', 'stashPush', 'tagCreate', 'branchDelete']) {
+  for (const method of ['stage', 'unstage', 'discard', 'commit', 'merge', 'rebase', 'cherryPick', 'revert', 'reset', 'stashPush', 'tagCreate', 'tagReset', 'branchDelete']) {
     assert.match(source, new RegExp("call\\('" + method + "'"), 'client references ' + method)
   }
 })
 
-test('the repo picker wires the workspace scan and browse endpoints', () => {
-  assert.match(source, /call\('workspace'/)
+test('the CSS template contains no backtick (it would end the literal early)', () => {
+  /*
+   * This has now bitten twice, both times from a comment like "the `.gwc-root`
+   * rule": ONE backtick inside the template literal terminates it, and the
+   * resulting bundle is a syntax error — the whole panel fails to load, but the
+   * diff looks like a harmless comment edit.
+   */
+  const open = 'const CSS = `'
+  const start = source.indexOf(open)
+  assert.ok(start >= 0, 'the CSS template exists')
+  const end = source.indexOf('\n`', start + open.length)
+  assert.ok(end > start, 'the CSS template is terminated by a backtick on its own line')
+  const css = source.slice(start + open.length, end)
+  assert.ok(css.length > 1000, 'the extracted stylesheet is not truncated: ' + css.length + ' chars')
+  assert.equal((css.match(/`/g) ?? []).length, 0, 'no backtick may appear inside the CSS template')
+  assert.ok(css.trimEnd().endsWith('}'), 'the stylesheet ends on a complete rule')
+})
+
+/* --------------------------------------------------- toolbar notification dots */
+
+test('Pull and Push carry an independent red dot, driven by behind/ahead', () => {
+  /* Pull lights up when the remote has commits we do not (`behind > 0`). */
+  assert.match(source, /const pullPending = snapshot !== null && snapshot\.upstream !== null && snapshot\.behind > 0/,
+    'the Pull dot must be driven by `behind`')
+  /* Push lights up when we have commits the remote does not (`ahead > 0`). */
+  assert.match(source, /const pushPending = snapshot !== null && snapshot\.detached !== true && snapshot\.ahead > 0/,
+    'the Push dot must be driven by `ahead`')
+  /* The two must not share a source: a single "something differs" flag would
+     light both buttons and tell the user nothing about which way to sync. */
+  assert.doesNotMatch(source, /pullPending[^\n]*ahead/, 'the Pull dot must not be driven by `ahead`')
+  assert.doesNotMatch(source, /pushPending[^\n]*behind/, 'the Push dot must not be driven by `behind`')
+  /* ...and both dots feed the buttons they belong to. */
+  assert.match(source, /name: 'pull'[\s\S]{0,200}?dot: pullPending/)
+  assert.match(source, /name: 'push'[\s\S]{0,200}?dot: pushPending/)
+})
+
+test('the dot is absolutely positioned so it cannot grow the 24px button', () => {
+  /* A wider entry once shifted an entire sidebar (packages/dock README §4); the
+     same class of bug here would push the header buttons out of line. */
+  const dotRule = /\.gwc-dot\{[^}]*\}/.exec(source)
+  assert.ok(dotRule !== null, 'a .gwc-dot rule exists')
+  assert.match(dotRule[0], /position:absolute/)
+  assert.match(dotRule[0], /width:6px/)
+  assert.match(dotRule[0], /height:6px/)
+  assert.match(dotRule[0], /pointer-events:none/)
+  /* The button must be the containing block, and keep its own fixed size. */
+  const btnRule = /\.gwc-iconBtn\{[^}]*\}/.exec(source)
+  assert.ok(btnRule !== null)
+  assert.match(btnRule[0], /position:relative/)
+  assert.match(btnRule[0], /width:24px/)
+  assert.match(btnRule[0], /height:24px/)
+})
+
+test('the dot does not leak into aria-hidden or swallow clicks', () => {
+  assert.match(source, /'aria-hidden': 'true' \}\) : null\)/, 'the dot is aria-hidden')
+  /* No onClick may be attached to the dot itself: the whole 24px button is the
+     target, and a nested handler would double-fire. */
+  assert.doesNotMatch(source, /gwc-dot[^)]*onClick/)
+})
+
+/* ------------------------------------------------------------ tag revoke UI */
+
+test('a tag row offers revoke instead of a bare local delete', () => {
+  assert.match(source, /kind: 'tagRevoke'/, 'the tag action opens the revoke dialog')
+  assert.match(source, /function TagRevokeDialog/)
+  /* The old path deleted ONLY the local ref, which a fetch silently undid. */
+  assert.doesNotMatch(source, /call\('tagDelete'/, 'the local-only delete path is gone from the UI')
+})
+
+test('revoke defaults to also removing the remote tag', () => {
+  const dialog = source.slice(source.indexOf('function TagRevokeDialog'))
+  const body = dialog.slice(0, dialog.indexOf('\n    function '))
+  assert.match(body, /useState\(true\)/, 'remoteToo defaults to true — a pushed tag needs both halves')
+  assert.match(body, /onSubmit\(\{ name, remoteToo \}\)/)
+})
+
+test('revoke goes through the shared run() guard and refreshes the ref lists', () => {
+  assert.match(source, /call\('tagReset'/)
+  assert.match(source, /store\.apply\(await call\('tagReset'[\s\S]{0,160}?invalidateRefs\(\)/,
+    'a tag ref change is not visible in the snapshot, so the lists must be invalidated')
+})
+
+/* ------------------------------------------------- bulk stage / discard all */
+
+test('bulk stage and unstage send a flag, never one path per file', () => {
+  /*
+   * THE REPORTED BUG: "点击全部暂存时提示找不到 git 命令". Expanding the change set
+   * into argv blew the Win32 command-line cap, and the spawn failure was
+   * mis-reported as a missing git. The client must therefore ASK for the bulk
+   * operation instead of enumerating.
+   */
+  assert.match(source, /call\('stage', withScope\(\{ all: true \}\)\)/, 'stage-all uses the flag')
+  assert.match(source, /call\('unstage', withScope\(\{ all: true \}\)\)/, 'unstage-all uses the flag')
+  /* The old enumeration must be gone from both bulk buttons. */
+  assert.doesNotMatch(source, /doStage\(changeGroups\.unstaged\.concat\(changeGroups\.untracked\)\.map/,
+    'stage-all must not build a path list')
+  assert.doesNotMatch(source, /doUnstage\(changeGroups\.staged\.map/,
+    'unstage-all must not build a path list')
+  assert.match(source, /const doStageAll = useCallback/)
+  assert.match(source, /const doUnstageAll = useCallback/)
+})
+
+test('「全部撤销」exists and is destructive-gated', () => {
+  assert.match(source, /const doDiscardAll = useCallback/)
+  assert.match(source, /kind: 'confirm'[\s\S]{0,240}?changes\.confirmDiscardAll/, 'discard-all asks before acting')
+  assert.match(source, /call\('discard', withScope\(\{ all: true, confirm: true \}\)\)/,
+    'the host requires an explicit confirm flag')
+  assert.match(source, /danger: true, onClick: doDiscardAll/, 'it is styled as a destructive action')
+})
+
+test('「全部撤销」is offered on BOTH change groups', () => {
+  /* Discarding is about the worktree, not about which column a file is in: a
+     fully-staged tree still needs a way to throw it away. */
+  const groupHead = source.slice(source.indexOf('const renderGroup ='), source.indexOf('const diffHunkActions'))
+  assert.match(groupHead, /id === 'staged'[\s\S]*?doUnstageAll/, 'the staged group keeps its unstage-all')
+  assert.match(groupHead, /id === 'unstaged'[\s\S]*?doStageAll/, 'the unstaged group keeps its stage-all')
+  assert.match(groupHead, /gwc-groupActions[\s\S]*?doDiscardAll[\s\S]*?renderChangeRow/,
+    'discard-all sits outside the per-group branch so both groups get it')
+})
+
+test('the bulk-action row is a flex container so the two buttons never wrap', () => {
+  const rule = /\.gwc-groupActions\{[^}]*\}/.exec(source)
+  assert.ok(rule !== null, 'a .gwc-groupActions rule exists')
+  assert.match(rule[0], /display:flex/)
+  assert.match(rule[0], /flex:none/)
+})
+
+test('every new error code has both dictionaries', () => {
+  for (const key of ['error.argv-too-long', 'error.git-spawn-failed']) {
+    assert.equal((source.match(new RegExp("'" + key + "'", 'g')) ?? []).length, 2,
+      key + ' must exist in ZH and EN')
+  }
+})
+
+/* ------------------------------------------------- files page: search + history */
+
+test('a Files page exists with a search box and name/content modes', () => {
+  /* The panel previously had NO way to reach a file's history: `fileHistory` and
+     `blame` were implemented host-side but the client never called them, so on a
+     clean tree there was simply no path to "when was this file changed". */
+  assert.match(source, /'nav\.files'/)
+  assert.match(source, /const filesView = E\('div'/)
+  assert.match(source, /call\('search'/)
+  assert.match(source, /call\('fileHistory'/)
+  assert.match(source, /files\.mode\.name/, 'name mode has a label')
+  assert.match(source, /files\.mode\.content/, 'content mode has a label')
+})
+
+test('the Files tab is wired into the nav and the body router', () => {
+  const nav = source.slice(source.indexOf('const navBar ='), source.indexOf('/* ---- render: changes'))
+  assert.match(nav, /\['files', 'search', 0\]/, 'the tab is in the nav list')
+  assert.match(source, /if \(nav === 'files'\) return filesView/, 'the router serves it')
+})
+
+test('file search is debounced instead of firing per keystroke', () => {
+  /* Each search costs a git spawn (~100 ms). One per keystroke would queue up
+     and the panel would show results for a prefix the user has moved past. */
+  const effect = source.slice(source.indexOf('File search, debounced'), source.indexOf('Leaving the Files page'))
+  assert.match(effect, /setTimeout\(\(\) => \{ void runSearch/)
+  assert.match(effect, /clearTimeout\(timer\)/, 'the pending search is cancelled')
+  assert.match(effect, /\}, 220\)/, 'a real debounce interval is used')
+})
+
+test('a stale search response cannot overwrite a newer one', () => {
+  /* Two requests can be in flight; the older one must not win. */
+  assert.match(source, /previous\.query !== text/, 'responses are matched against the typed query')
+})
+
+test('clicking a file row opens its history, and rows are keyboard reachable', () => {
+  assert.match(source, /void loadFileHistory\(file\.path\)/)
+  assert.match(source, /void loadFileHistory\(match\.path\)/)
+  /* role=button + tabIndex + Enter is what makes the rows usable without a mouse. */
+  const rows = source.slice(source.indexOf('const searchRows ='), source.indexOf('const filesView ='))
+  assert.match(rows, /role: 'button'/)
+  assert.match(rows, /tabIndex: 0/)
+  assert.match(rows, /event\.key === 'Enter'/)
+})
+
+test('per-commit line counts and rename-following are surfaced', () => {
+  assert.match(source, /formatDate\(commit\.authorTime\)/, 'each row shows when it changed')
+  assert.match(source, /commit\.added/, 'the +count is rendered')
+  assert.match(source, /commit\.deleted/, 'the −count is rendered')
+  assert.match(source, /files\.binary/, 'a binary change is labelled instead of showing 0/0')
+  assert.match(source, /files\.commitCount/, 'the number of commits is shown')
+})
+
+test('switching repository clears the file search and the open history', () => {
+  /* Otherwise the panel keeps showing the previous repository's history, which
+     looks like the new repository is wrong. */
+  const at = source.indexOf('Leaving the Files page')
+  assert.ok(at > 0, 'the reset effect is present')
+  const body = source.slice(at, at + 700)
+  assert.match(body, /setHistoryFor\(null\)/)
+  assert.match(body, /setFileQuery\(''\)/)
+  assert.match(body, /setSearchResult\(/, 'the stale results are dropped too')
+})
+
+test('every files.* string exists in both dictionaries', () => {
+  /* Keys may be referenced from several render sites; what matters is that each
+     one has a ZH and an EN DEFINITION. Dynamically built keys
+     (`t('files.mode.' + mode)`) are skipped — their concrete keys are checked
+     separately below. */
+  const used = [...source.matchAll(/t\('(files\.[A-Za-z.]+)'/g)].map((m) => m[1])
+  assert.ok(used.length >= 8, 'the page uses a real set of strings: ' + used.length)
+  const definitions = [...source.matchAll(/'(files\.[A-Za-z.]+)':/g)].map((m) => m[1])
+  for (const key of new Set(used)) {
+    /* A trailing dot means the key is completed at runtime. */
+    if (key.endsWith('.')) continue
+    const count = definitions.filter((entry) => entry === key).length
+    assert.equal(count, 2, key + ' must be DEFINED in ZH and EN (found ' + count + ')')
+  }
+  /* The two dynamically composed mode keys must still be defined. */
+  for (const mode of ['files.mode.name', 'files.mode.content']) {
+    assert.equal(definitions.filter((entry) => entry === mode).length, 2, mode + ' must exist in ZH and EN')
+  }
+})
+
+test('a file-history row opens a POPUP instead of jumping to the History tab', () => {
+  /*
+   * Reported: "查看提交记录的修改会跳转到历史页中，能在文件页中弹窗显示吗".
+   * Clicking a commit in the Files page used to call setNav('history'), which
+   * dropped the file the user was reading. Reading one commit's effect on one
+   * file is a DETAIL, not a navigation.
+   */
+  const row = source.slice(source.indexOf('const renderFileHistoryRow ='), source.indexOf('const searchRows ='))
+  assert.doesNotMatch(row, /setNav\('history'\)/, 'the row must not navigate away')
+  assert.match(row, /onClick: \(\) => openFileCommit\(commit\)/, 'it opens the popup')
+  assert.match(row, /openFileCommit\(commit\)/, 'keyboard activation does the same')
+})
+
+test('the commit popup loads the commit detail AND this file\'s own diff', () => {
+  const open = source.slice(source.indexOf('const openFileCommit ='), source.indexOf('const loadStash ='))
+  assert.match(open, /call\('commitDetail'/, 'metadata comes from commitDetail')
+  assert.match(open, /call\('diff'/, 'the file diff comes from diff')
+  assert.match(open, /base: 'commit'/, 'the diff is read AT that commit')
+  assert.match(open, /rev: commit\.hash/, 'and pinned to the commit hash')
+  /* A binary file cannot be diffed; the popup must not even try. */
+  assert.match(open, /if \(commit\.binary === true\) return/)
+})
+
+test('the popup shows metadata, the other files, and the diff', () => {
+  assert.match(source, /const fileCommitModal = fileCommit === null \? null : E\(Modal/)
+  assert.match(source, /gwc-commitPopupMeta/, 'author/time/hash are shown')
+  assert.match(source, /fileCommit\.detail\.body/, 'the commit body is shown when it adds something')
+  assert.match(source, /files\.alsoChanged/, 'other files touched by the same commit are listed')
+  assert.match(source, /E\(DiffView, \{[\s\S]{0,500}?hunkActions: undefined/, 'no staging controls on a committed diff')
+  /* It is mounted at the root, or it would never render. */
+  assert.match(source, /diffModal,\s*\n\s*fileCommitModal,/, 'the popup is in the root node list')
+})
+
+test('closing the popup clears both its detail and its diff', () => {
+  const modal = source.slice(source.indexOf('const fileCommitModal ='), source.indexOf('/* ---- render: conflict banner'))
+  assert.match(modal, /setFileCommit\(null\)/)
+  assert.match(modal, /setFileCommitDiff\(/, 'a stale diff must not survive into the next commit')
+})
+
+test('the Files tab still exists and still owns its own search state', () => {
+  /* The popup must not have replaced the page itself. */
+  assert.match(source, /const filesView = E\('div'/)
+  assert.match(source, /if \(nav === 'files'\) return filesView/)
+})
+
+test('the repo picker wires the workspace scan and browse endpoints', () => {  assert.match(source, /call\('workspace'/)
   assert.match(source, /call\('browse'/)
   assert.match(source, /function RepoPicker/)
   // the picker must be reachable from the header, not only from an empty state
@@ -555,6 +819,11 @@ function makeFixture() {
     branchCalls: 0,
     failLog: false,
     watchResolvers: [],
+    /* Sync state the toolbar dots read. Mutated per test via setSync(). */
+    ahead: 0,
+    behind: 0,
+    upstream: 'origin/main',
+    detached: false,
   }
   const reply = (body) => ({ status: 200, json: async () => body })
   const snapshot = () => ({
@@ -563,10 +832,10 @@ function makeFixture() {
     headShort: state.head.slice(0, 7),
     unborn: false,
     branch: 'main',
-    detached: false,
-    upstream: 'origin/main',
-    ahead: 0,
-    behind: 0,
+    detached: state.detached,
+    upstream: state.upstream,
+    ahead: state.ahead,
+    behind: state.behind,
     changes: [],
     operation: null,
     conflictedFiles: [],
@@ -615,7 +884,46 @@ function makeFixture() {
     state.watchResolvers = []
     for (const resolve of resolvers) resolve(result)
   }
+  /**
+   * Resolve the pending watch AFTER making sure one is actually parked.
+   *
+   * The watch loop starts from an effect and then awaits a fetch; a test that
+   * resolved "the repository changed" too early found zero listeners, the event
+   * was dropped, and the assertion failed — but only when the surrounding tests
+   * happened to make the loop slower. Waiting for the parked request removes the
+   * race instead of making the assertion looser.
+   */
+  state.waitForWatch = async (flush, result) => {
+    for (let attempt = 0; attempt < 40 && state.watchResolvers.length === 0; attempt += 1) {
+      await flush()
+    }
+    assert.ok(state.watchResolvers.length > 0, 'the watch long-poll is parked and waiting')
+    state.resolveWatch(result)
+  }
   return { state, fetch: fetchStub }
+}
+
+/** Turn a snapshot fixture into a handable state for the dot tests. */
+function setSync(state, { ahead, behind, upstream, detached }) {
+  state.ahead = ahead === undefined ? 0 : ahead
+  state.behind = behind === undefined ? 0 : behind
+  if (upstream !== undefined) state.upstream = upstream
+  if (detached !== undefined) state.detached = detached
+}
+
+/** The dot badges that actually RENDERED, in header order. */
+function renderedDots(runtime) {
+  const dots = []
+  for (const element of runtime.elements) {
+    if (element.props.className !== 'gwc-dot') continue
+    /* Which button owns it: walk up through the collected elements by identity. */
+    const owner = runtime.elements.find((candidate) =>
+      typeof candidate.props.className === 'string'
+      && candidate.props.className.startsWith('gwc-iconBtn')
+      && (candidate.children ?? []).some((child) => child === element))
+    dots.push(owner === undefined ? '?' : (owner.props['aria-label'] || ''))
+  }
+  return dots
 }
 
 /** Mount the registered page with the hook runtime. */
@@ -643,14 +951,14 @@ test('History reloads when the watched revision moves while it is active', async
   /* A pull / external commit moves HEAD; the long-poll reports it. */
   fixture.state.head = 'b'.repeat(40)
   fixture.state.subject = 'after pull'
-  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
   await runtime.flush()
   assert.equal(fixture.state.logCalls, 2, 'exactly one reload for the new revision')
   assert.match(runtime.text(), /after pull/, 'the commit list shows the new HEAD')
   assert.doesNotMatch(runtime.text(), /before pull/)
 
   /* The same revision reported again must NOT reload (burst coalescing). */
-  fixture.state.resolveWatch({ supported: true, revision: 2, changed: true, root: 'D:\\repo' })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 2, changed: true, root: 'D:\\repo' })
   await runtime.flush()
   assert.equal(fixture.state.logCalls, 2, 'a repeated revision does not reload')
 })
@@ -660,7 +968,7 @@ test('an inactive History view reloads lazily on activation, and so do branches'
 
   fixture.state.head = 'c'.repeat(40)
   fixture.state.subject = 'pulled while on Changes'
-  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
   await runtime.flush()
   assert.equal(fixture.state.logCalls, 0, 'no eager fetch while History is inactive')
   assert.equal(fixture.state.branchCalls, 0, 'no eager fetch while Branches is inactive')
@@ -685,7 +993,7 @@ test('a failed History reload keeps the previous commits and shows the error', a
   fixture.state.failLog = true
   fixture.state.head = 'd'.repeat(40)
   fixture.state.subject = 'never rendered'
-  fixture.state.resolveWatch({ supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
   await runtime.flush()
   assert.equal(fixture.state.logCalls, 2, 'the revision triggered a reload attempt')
   assert.match(runtime.text(), /before pull/, 'the previous list is kept on failure')
@@ -695,5 +1003,70 @@ test('a failed History reload keeps the previous commits and shows the error', a
   /* A failed revision is not retried in a loop. */
   await runtime.flush()
   assert.equal(fixture.state.logCalls, 2, 'no retry storm after a failed reload')
+})
+
+/* ------------------------------- rendered toolbar dots (real React tree) */
+
+test('nothing is in sync yet -> neither Pull nor Push shows a dot', async () => {
+  const { runtime } = await mountPanel()
+  assert.deepEqual(renderedDots(runtime), [], 'a fully synced branch shows no dots')
+})
+
+test('an unpushed commit lights ONLY Push', async () => {
+  const { fixture, runtime } = await mountPanel()
+  setSync(fixture.state, { ahead: 2, behind: 0 })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+
+  const dots = renderedDots(runtime)
+  assert.equal(dots.length, 1, 'exactly one dot: ' + JSON.stringify(dots))
+  assert.match(dots[0], /Push|推送/, 'the dot belongs to Push, got ' + JSON.stringify(dots))
+})
+
+test('a remote-only update lights ONLY Pull', async () => {
+  const { fixture, runtime } = await mountPanel()
+  setSync(fixture.state, { ahead: 0, behind: 3 })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+
+  const dots = renderedDots(runtime)
+  assert.equal(dots.length, 1, 'exactly one dot: ' + JSON.stringify(dots))
+  assert.match(dots[0], /Pull|拉取/, 'the dot belongs to Pull, got ' + JSON.stringify(dots))
+})
+
+test('a diverged branch lights BOTH dots', async () => {
+  const { fixture, runtime } = await mountPanel()
+  setSync(fixture.state, { ahead: 1, behind: 1 })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+
+  const dots = renderedDots(runtime)
+  assert.equal(dots.length, 2, 'both directions are pending: ' + JSON.stringify(dots))
+  assert.ok(dots.some((label) => /Push|推送/.test(label)), JSON.stringify(dots))
+  assert.ok(dots.some((label) => /Pull|拉取/.test(label)), JSON.stringify(dots))
+})
+
+test('the dot disappears again once the push lands (no stale badge)', async () => {
+  const { fixture, runtime } = await mountPanel()
+  setSync(fixture.state, { ahead: 1 })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.equal(renderedDots(runtime).length, 1)
+
+  setSync(fixture.state, { ahead: 0 })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 2, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+  assert.deepEqual(renderedDots(runtime), [], 'a synced branch has no dots')
+})
+
+test('a detached HEAD never lights Push (nothing to compare against)', async () => {
+  const { fixture, runtime } = await mountPanel()
+  setSync(fixture.state, { ahead: 4, detached: true, upstream: null })
+  await fixture.state.waitForWatch(runtime.flush, { supported: true, revision: 1, changed: true, root: 'D:\\repo' })
+  await runtime.flush()
+
+  const dots = renderedDots(runtime)
+  assert.equal(dots.some((label) => /Push|推送/.test(label)), false,
+    'a detached HEAD cannot push a branch, so it must not advertise one: ' + JSON.stringify(dots))
 })
 

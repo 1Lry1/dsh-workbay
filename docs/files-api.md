@@ -33,8 +33,13 @@
 
 `entry`：
 ```ts
-{ name: string, rel: string, type: 'dir'|'file'|'symlink', size?: number, mtimeMs?: number, hasChildren?: boolean }
+{ name: string, rel: string, type: 'dir'|'file'|'symlink', size?: number, mtimeMs?: number }
 ```
+
+> **`hasChildren` 已移除**（2026-11）。它曾由宿主为每个目录做一次 `opendirSync().readSync()`
+> 填出来，但全仓没有任何客户端读过它：真实工作区实测每个目录约 **0.49 ms**，是 `lstat`
+> 的 45 倍，且随目录数线性增长。目录是否为空只有列它的时候才有意义，而 `tree` 本来就会列。
+> 若要恢复，必须同时给出「谁在读它」和「为什么不能用 `readdirSync` 已在手的 dirent 代替」。
 
 ### 2.1 `search`（VSCode 级搜索）
 

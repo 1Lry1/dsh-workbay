@@ -49,7 +49,22 @@ function fakeRes() {
 
 async function call(handler, reqOptions) {
   const res = fakeRes()
-  await handler(fakeReq(reqOptions), res)
+  /* Default to exactly what the browser clients send. The handler now requires a
+     JSON content type (a cross-site form can POST without a CORS preflight using
+     a "simple" type, so the header is load-bearing), and a test that forgot it
+     would be testing a request no real caller makes. */
+  const merged = Object.assign({}, reqOptions)
+  merged.headers = Object.assign(
+    { 'content-type': 'application/json' },
+    merged.headers === undefined ? {} : merged.headers,
+  )
+  /* A real request carries its length; `fakeReq` does not, and the handler uses
+     it to tell "no body" from "a body that happens to be empty" (a cross-site
+     form always has one). Setting it here keeps the fake faithful. */
+  if (merged.headers['content-length'] === undefined) {
+    merged.headers['content-length'] = String(Buffer.byteLength(merged.body === undefined ? '' : merged.body, 'utf8'))
+  }
+  await handler(fakeReq(merged), res)
   return res
 }
 
@@ -351,3 +366,45 @@ test('resolveInside reports a dangling symlink as outside-root', () => withSandb
   }
   assert.throws(() => resolveInside(root, 'dangling'), (error) => error.code === 'outside-root')
 }))
+
+
+test('handler refuses a non-JSON content type (the CSRF gap the trust fence leaves)', async () => {
+  /* WHY THIS EXISTS
+   *
+   * `isTrustedRequest` passes any loopback peer — and a page from ANOTHER site
+   * loaded in the user's browser is served by a loopback peer too. A cross-site
+   * HTML form can POST here with no CORS preflight, because `text/plain` and
+   * `application/x-www-form-urlencoded` are "simple" content types. So the peer
+   * check alone would let an attacker's page drive a local git/filesystem RPC.
+   *
+   * `application/json` is NOT simple: sending it cross-origin triggers a
+   * preflight this server never answers. Requiring it closes the gap.
+   */
+  let called = 0
+  const handle = createJsonApiHandler({
+    prefix: '/x/api',
+    methods: { ping: async () => { called += 1; return 'pong' } },
+  })
+
+  for (const bad of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data', '']) {
+    const res = await call(handle, { url: '/x/api/ping', body: '{"a":1}', headers: { 'content-type': bad } })
+    assert.equal(res.status, 415, 'content-type "' + bad + '" must be refused')
+    assert.equal(res.json().error.code, 'unsupported-media-type')
+  }
+  assert.equal(called, 0, 'the method must not run for a refused request')
+
+  /* The real client shape still works, including the charset suffix browsers add. */
+  const ok1 = await call(handle, { url: '/x/api/ping', body: '{}', headers: { 'content-type': 'application/json' } })
+  assert.equal(ok1.status, 200)
+  const ok2 = await call(handle, { url: '/x/api/ping', body: '{}', headers: { 'content-type': 'application/json; charset=utf-8' } })
+  assert.equal(ok2.status, 200)
+  const ok3 = await call(handle, { url: '/x/api/ping', body: '{}', headers: { 'content-type': 'APPLICATION/JSON' } })
+  assert.equal(ok3.status, 200, 'content type is case-insensitive')
+  assert.equal(called, 3)
+
+  /* An empty text/plain probe stays allowed: it cannot carry a payload, and the
+     integration tests use it as a liveness check. */
+  const probe = await call(handle, { url: '/x/api/ping', body: '', headers: { 'content-type': 'text/plain' } })
+  assert.equal(probe.status, 200, 'an empty text/plain probe is not a form submission')
+})
+

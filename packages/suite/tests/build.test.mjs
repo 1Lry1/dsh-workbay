@@ -32,7 +32,7 @@ test('build generates the host, client, patch and vendored packages', () => {
   for (const file of [hostPath, clientPath, path.join(suiteDir, 'cordis.patch.yml')]) {
     assert.equal(existsSync(file), true, 'missing generated file: ' + file)
   }
-  for (const name of ['dock', 'files', 'terminal', 'gitcraft', 'downloader', 'kit']) {
+  for (const name of ['dock', 'files', 'terminal', 'gitcraft', 'downloader', 'source-control', 'kit']) {
     assert.equal(existsSync(path.join(suiteDir, 'vendor', name, 'package.json')), true, 'missing vendored ' + name)
   }
   /* The helpers travel with their packages. */

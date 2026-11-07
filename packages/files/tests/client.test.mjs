@@ -97,6 +97,12 @@ function boot(options) {
   const storage = new Map(Object.entries(opts.storage === undefined ? {} : opts.storage))
   const document = {
     baseURI: 'http://127.0.0.1:3080/',
+    /* Ctrl+S must not steal the key from a focused field, and the modified-on-disk
+       poll must not run while the window is hidden. Both read `document`, so the
+       stub exposes them as writable knobs a test can steer. */
+    activeElement: opts.activeElement === undefined ? null : opts.activeElement,
+    visibilityState: opts.visibilityState === undefined ? 'visible' : opts.visibilityState,
+    body: opts.body === undefined ? null : opts.body,
     head: {
       appendChild(node) { styleTags.push(node) },
     },
@@ -1864,4 +1870,130 @@ test('single unified search box: Ctrl+Shift+F is inert, 文件名/内容 modes w
 
   runtime.unmount()
   assert.ok(fetchCalls.some((call) => call.method === 'tree'), 'page mounted far enough to load the tree')
+})/** Insertion content for the three P0 regression tests */
+
+/* ============================== P0 regression guards ============================== */
+
+/*
+ * Three fixes that are invisible when they work and expensive when they regress.
+ * Each test below fails if the corresponding guard is removed, so a future
+ * "cleanup" cannot silently bring the cost back.
+ */
+
+test('Ctrl+S in a text field does NOT save the open file (focus guard)', { timeout: 20000 }, async () => {
+  const runtime = createComponentRuntime()
+  const fetchCalls = []
+  const fakeFetch = async (url, options) => {
+    const method = String(url).split('/api/')[1] || ''
+    let payload = {}
+    try { payload = JSON.parse(options.body) } catch (error) { void error }
+    fetchCalls.push({ method, payload })
+    let data = { ok: true }
+    if (method === 'roots') data = { root: 'C:/work', drives: [], recent: [] }
+    else if (method === 'tree') data = { root: 'C:/work', dir: payload.dir || '', entries: [{ name: 'a.ts', rel: 'a.ts', type: 'file', size: 3, mtimeMs: 7 }], truncated: false }
+    else if (method === 'read') data = { content: 'abc', size: 3, mtimeMs: 7, encoding: 'utf8', truncated: false }
+    else if (method === 'stat') data = { entry: { name: 'a.ts', rel: 'a.ts', type: 'file', size: 3, mtimeMs: 7 } }
+    else if (method === 'write') data = { size: 3, mtimeMs: 8 }
+    return { json: async () => ({ ok: true, data }) }
+  }
+  const local = boot({ react: () => runtime.React, fetch: fakeFetch, storage: { 'dsh-workbay.root.v1': 'C:\\work' } })
+  runtime.mount(local.testApi.components.Page, { t: translate })
+  await new Promise((resolve) => setTimeout(resolve, 90))
+
+  /* Open the file so `activeRel` is non-null — without a file open the old
+     unconditional listener returned early and would not have shown the bug. */
+  const rows = () => nodesOf(runtime.tree(), (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-row'))
+  assert.ok(rows().length >= 1, 'tree row available to open')
+  rows()[0].props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 90))
+
+  const keydown = () => local.listeners.get('keydown') || []
+  const fireSave = () => {
+    let prevented = false
+    for (const listener of keydown()) {
+      listener({ key: 's', ctrlKey: true, metaKey: false, preventDefault() { prevented = true }, stopPropagation() {} })
+    }
+    return prevented
+  }
+
+  /* 1. Focus in a plain <textarea> (a commit message, a rename box, …). */
+  local.document.activeElement = { tagName: 'TEXTAREA', isContentEditable: false, closest: () => null }
+  fetchCalls.length = 0
+  const preventedInTextarea = fireSave()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(fetchCalls.filter((call) => call.method === 'write').length, 0,
+    'Ctrl+S inside a text field must not write the open file')
+  assert.equal(preventedInTextarea, false, 'and must not swallow the key either')
+
+  /* 2. Focus inside the CodeMirror surface: the editor owns Ctrl+S. */
+  local.document.activeElement = { tagName: 'DIV', isContentEditable: true, closest: (sel) => (sel === '.cm-editor' ? {} : null) }
+  fetchCalls.length = 0
+  fireSave()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(fetchCalls.filter((call) => call.method === 'write').length, 0,
+    'inside the editor the global listener steps aside (no double save)')
+
+  /* 3. Focus nowhere (document.body / null): the page-level shortcut DOES act.
+        The observable that matters for the guard is "did the page try to save",
+        not "did a write land": `saveTab` returns early for a non-dirty tab, and
+        the CodeMirror surface is a lazily-loaded chunk that never resolves under
+        this Node harness. So assert on `preventDefault` (the page claiming the
+        key) — that is exactly what the guard controls. */
+  local.document.activeElement = local.document.body
+  fetchCalls.length = 0
+  const preventedAtBody = fireSave()
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  assert.equal(preventedAtBody, true, 'with no field focused the page claims Ctrl+S')
+
+  /* And with a real null activeElement (no DOM focus at all) it acts too. */
+  local.document.activeElement = null
+  const preventedAtNull = fireSave()
+  assert.equal(preventedAtNull, true, 'a null activeElement is not a text field')
+
+  runtime.unmount()
 })
+
+test('the modified-on-disk poll sends no request while the window is hidden', { timeout: 20000 }, async () => {
+  /* Drive the poll at 120 ms instead of the production 4000 ms: the behaviour
+     under test is the visibility gate, not the cadence, and waiting out two real
+     intervals would add 9 s to every CI run. */
+  globalThis.__DSH_WORKBAY_STAT_MS__ = 120
+  const runtime = createComponentRuntime()
+  const fetchCalls = []
+  const fakeFetch = async (url, options) => {
+    const method = String(url).split('/api/')[1] || ''
+    let payload = {}
+    try { payload = JSON.parse(options.body) } catch (error) { void error }
+    fetchCalls.push({ method, payload })
+    let data = { ok: true }
+    if (method === 'roots') data = { root: 'C:/work', drives: [], recent: [] }
+    else if (method === 'tree') data = { root: 'C:/work', dir: payload.dir || '', entries: [{ name: 'a.ts', rel: 'a.ts', type: 'file', size: 3, mtimeMs: 7 }], truncated: false }
+    else if (method === 'read') data = { content: 'abc', size: 3, mtimeMs: 7, encoding: 'utf8', truncated: false }
+    else if (method === 'stat') data = { entry: { name: 'a.ts', rel: 'a.ts', type: 'file', size: 3, mtimeMs: 7 } }
+    return { json: async () => ({ ok: true, data }) }
+  }
+  const local = boot({ react: () => runtime.React, fetch: fakeFetch, storage: { 'dsh-workbay.root.v1': 'C:\\work' }, visibilityState: 'hidden' })
+  runtime.mount(local.testApi.components.Page, { t: translate })
+  await new Promise((resolve) => setTimeout(resolve, 90))
+
+  const rows = () => nodesOf(runtime.tree(), (node) => typeof node.props.className === 'string' && node.props.className.split(' ').includes('wbf-row'))
+  rows()[0].props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 90))
+
+  const statBefore = fetchCalls.filter((call) => call.method === 'stat').length
+  /* Three intervals at the overridden 120 ms cadence. */
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const statAfter = fetchCalls.filter((call) => call.method === 'stat').length
+  assert.equal(statAfter, statBefore,
+    'a hidden window must not poll — the badge cannot be seen, so the RPC is pure waste')
+
+  /* Coming back visible must resume it. */
+  local.document.visibilityState = 'visible'
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const statVisible = fetchCalls.filter((call) => call.method === 'stat').length
+  assert.ok(statVisible > statAfter, 'and polling resumes once the window is visible again')
+
+  runtime.unmount()
+  delete globalThis.__DSH_WORKBAY_STAT_MS__
+})
+

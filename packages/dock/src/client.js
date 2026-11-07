@@ -222,6 +222,11 @@ window.__ModuleLoader__.load({
       try { window.localStorage.setItem(STORAGE_DOCK_W, String(width)) } catch (error) { void error }
     }
 
+    /** Non-null, non-array object. Guards the optional `panes`/`commands` fields. */
+    function isPlainObject(value) {
+      return value !== null && value !== undefined && typeof value === 'object' && Array.isArray(value) === false
+    }
+
     /* ============================== page registry ============================== */
 
     function createRegistry() {
@@ -240,13 +245,38 @@ window.__ModuleLoader__.load({
             order: Number.isFinite(page.order) ? page.order : 100,
             component: page.component,
             icon: typeof page.icon === 'function' ? page.icon : undefined,
+            /* OPTIONAL embedding surface. A page that wants to be composed into
+               ANOTHER page (rather than shown as its own tab) publishes mounted
+               panes plus the commands a host may call. Purely additive: a page
+               that omits both fields behaves exactly as before.
+               See `panes` below and docs/panes-contract.md. */
+            panes: isPlainObject(page.panes) ? page.panes : undefined,
+            commands: isPlainObject(page.commands) ? page.commands : undefined,
+            /* Retirement switches, both optional:
+               `hidden: true` keeps a page out of the tab strip immediately;
+               `supersededBy: '<pageId>'` keeps it visible until that page
+               registers, then hides it. The second form is what makes "ship the
+               new page, retire the old one, keep rollback free" a one-line
+               change — the old page stays registered and callable by id. */
+            hidden: page.hidden === true,
+            supersededBy: typeof page.supersededBy === 'string' && page.supersededBy !== '' ? page.supersededBy : undefined,
           })
           notify()
           return () => { entries.delete(id); notify() }
         },
         list() {
-          return [...entries.values()].sort((a, b) => (a.order === b.order ? a.id.localeCompare(b.id) : a.order - b.order))
+          return [...entries.values()]
+            /* A page may declare itself superseded by another page. We keep it
+               registered (so a rollback needs no rebuild) but hide it once the
+               replacement is actually present — that is what makes retiring a
+               page a one-line change instead of an uninstall. */
+            .filter((page) => page.supersededBy === undefined || entries.has(page.supersededBy) === false)
+            .filter((page) => page.hidden !== true)
+            .sort((a, b) => (a.order === b.order ? a.id.localeCompare(b.id) : a.order - b.order))
         },
+        /** Direct lookup that IGNORES the tab-visibility filters: a page that is
+            hidden from the tab strip can still be composed by another page. */
+        get(id) { return entries.get(id) },
         subscribe(listener) {
           listeners.add(listener)
           return () => { listeners.delete(listener) }
@@ -417,8 +447,12 @@ window.__ModuleLoader__.load({
 
     /* ============================== icons ============================== */
 
+    /* The glyph's INK must measure like the host's own sidebar icons, which
+       fill roughly 12.5–13 of their 16px box (插件 / 自动化任务 / 更多). The
+       previous drawing was 12.4×8.2 — a wide flat bar sitting low in the box —
+       so the entry read as "not aligned" even with a correctly centred box. */
     const ICONS = {
-      workbench: ['M1.8 4.2h12.4v8.2H1.8z', 'M1.8 7.4h12.4', 'M6.2 7.4v5'],
+      workbench: ['M1.8 1.8h12.4v12.4H1.8z', 'M1.8 6.2h12.4', 'M6.2 6.2v8'],
       close: ['M4 4l8 8', 'M12 4l-8 8'],
       minimize: ['M3.5 8h9'],
       resize: ['M13.5 2.5v11h-11', 'M13.5 6.5v7h-7'],
@@ -726,6 +760,14 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      /* The glyph must occupy exactly the box the host's own icons do (16px at
+         `size`, inside the row's 22px line box). The host sizes the seat with
+         `padding:7px 8px; gap:8px; line-height:22px`, so a taller/wider entry
+         inflates the whole row (42px instead of 36px) and pushes the label —
+         and every row below it — out of line with 插件 / 自动化任务 / 更多.
+         Size comes from the svg itself; the wrapper adds no box. */
+      const glyph = Math.max(12, Math.min(size, 22))
+
       return E('span', {
         ref: hostRef,
         className: 'wbd-entryBtn' + (isOpen ? ' is-open' : ''),
@@ -734,7 +776,7 @@ window.__ModuleLoader__.load({
         title: t('button.tooltip'),
         'aria-label': t('button.tooltip'),
         'aria-pressed': isOpen,
-      }, E(Icon, { name: 'workbench', size }))
+      }, E(Icon, { name: 'workbench', size: glyph }))
     }
 
     /* ============================== styles ============================== */
@@ -746,10 +788,22 @@ window.__ModuleLoader__.load({
 .wbd-footerBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
 .wbd-footerBtn.is-open{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));color:var(--dsw-alias-label-primary,#fff)}
 .wbd-footerLabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* ---- global overlay ---- */
-.wbd-entryBtn{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;cursor:pointer;border:none;border-radius:7px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
-.wbd-entryBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
-.wbd-entryBtn.is-open{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.2));color:var(--dsw-alias-brand-primary,#7c93ff)}
+/* ---- left-sidebar entry ----
+   The wrapper contributes NO box of its own: the svg it holds is the glyph's
+   own 16/18px box, exactly like the host's peer icons (插件 / 自动化任务 / 更多),
+   and the host's button.panelRow already supplies the 36px row, its padding,
+   the 8px gap and the hover fill. An earlier min-width:28px/height:28px rule
+   beat that and inflated the host row to 42px, pushing the glyph +6px and the
+   label +12px out of line with those peers. */
+.wbd-entryBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;padding:0;border:none;border-radius:4px;background:transparent;color:inherit;cursor:pointer}
+.wbd-entryBtn:hover{color:var(--dsw-alias-label-primary,#fff)}
+.wbd-entryBtn.is-open{color:var(--dsw-alias-brand-primary,#7c93ff)}
+/* Open state gets the host's own row fill, applied to the host's button rather
+   than to this span: padding/height stay the host's, so nothing below moves.
+   The seat nests BUTTON > span.panelGlyph > div(display:contents) > this span,
+   and this class exists nowhere else, so no other button can match. :has() is
+   Chromium-only in practice, and the desktop shell is Chromium. */
+button:has(.wbd-entryBtn.is-open){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 /* Docked: a real column on the right edge; the shell is padded so the
    conversation keeps its own space and both stay interactive. */
 .wbd-docked{position:fixed;top:0;right:0;bottom:0;width:var(--wbd-dock-width,620px);z-index:700;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));box-shadow:-8px 0 24px rgba(0,0,0,.28);overflow:hidden}

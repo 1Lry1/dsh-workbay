@@ -71,6 +71,17 @@ const BUNDLES = [
     config: {},
   },
   {
+    /* The composed page. It owns no routes; it reads the files and gitcraft
+       hosts at runtime, so it must be vendored (the client half needs to be in
+       the one client bundle) but it adds nothing to the host RPC surface. */
+    dir: 'source-control',
+    host: 'src/index.js',
+    client: 'src/client.js',
+    include: ['src', 'icon.svg', 'package.json'],
+    inject: ['@deepseek-ai/dsh-client-locale'],
+    config: {},
+  },
+  {
     dir: 'kit',
     host: 'src/host.js',
     include: ['src', 'package.json'],

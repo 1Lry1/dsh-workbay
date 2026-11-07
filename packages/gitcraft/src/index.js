@@ -61,6 +61,30 @@ function messageOf(error) {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Translate a spawn() failure into the RIGHT error code.
+ *
+ * History: every spawn failure used to be reported as `git-missing` ("找不到 git
+ * 命令"), so passing an argv longer than the Win32 limit (~32767 chars) told the
+ * user git was not installed — a completely wrong diagnosis for what is really
+ * "the file list did not fit on a command line". The two cases must stay
+ * distinguishable, because only one of them is fixed by installing git.
+ *
+ *   ENOENT        the executable itself is absent        -> git-missing
+ *   ENAMETOOLONG  argv exceeded the OS command-line cap  -> argv-too-long
+ *   anything else spawn refused for another reason       -> git-spawn-failed
+ */
+function spawnFailure(error) {
+  const code = error !== null && typeof error === 'object' && typeof error.code === 'string' ? error.code : ''
+  if (code === 'ENOENT') return new PanelError('git-missing', 'cannot run git: ' + messageOf(error), 500)
+  if (code === 'ENAMETOOLONG') {
+    return new PanelError('argv-too-long',
+      'the file list is too long for one command line (Win32 caps it at ~32767 characters); '
+      + 'narrow the operation down instead of passing every path: ' + messageOf(error), 413)
+  }
+  return new PanelError('git-spawn-failed', 'cannot run git: ' + messageOf(error), 500)
+}
+
 /* ============================== config ============================== */
 
 let Schema = null
@@ -160,7 +184,7 @@ function runGit(cwd, args, options = {}) {
         env: gitEnv(),
       })
     } catch (error) {
-      reject(new PanelError('git-missing', 'cannot start git: ' + messageOf(error), 500))
+      reject(spawnFailure(error))
       return
     }
     const out = []
@@ -222,7 +246,7 @@ function runGitWithInput(cwd, args, input, options = {}) {
         env: gitEnv(),
       })
     } catch (error) {
-      reject(new PanelError('git-missing', 'cannot start git: ' + messageOf(error), 500))
+      reject(spawnFailure(error))
       return
     }
     const out = []
@@ -382,7 +406,124 @@ function clipDiff(text) {
   return text.slice(0, MAX_DIFF_CHARS) + `\n… [diff truncated: ${text.length - MAX_DIFF_CHARS} more chars] …\n`
 }
 
+/**
+ * Short-lived cache for the two lists the panel re-reads every time the user
+ * switches tabs: the commit list and the branch/tag list.
+ *
+ * Both cost ONE full git spawn (~110 ms on a cold Windows profile, measured in
+ * tests/bench.mjs), and switching Changes -> History -> Branches -> History used
+ * to pay that every single time, which is what made the panel feel sluggish.
+ *
+ * They are keyed on the same revision token the watcher already maintains, so a
+ * real repository change invalidates them immediately rather than after a timer:
+ * the watcher bumps `revision`, and every cached list is stored together with
+ * the revision it was read at. A key that includes `revision` is therefore
+ * self-invalidating — no manual bookkeeping, no stale list after a commit.
+ *
+ * Bounded so a long session cannot grow it without limit.
+ */
+const LIST_CACHE_LIMIT = 24
+const listCache = new Map()
+
+function listCacheKey(kind, root, revision, extra) {
+  return kind + '\u0000' + root + '\u0000' + revision + '\u0000' + extra
+}
+
+function cachedList(key) {
+  const hit = listCache.get(key)
+  if (hit === undefined) return undefined
+  /* Refresh LRU position. */
+  listCache.delete(key)
+  listCache.set(key, hit)
+  return hit
+}
+
+function rememberList(key, value) {
+  if (listCache.size >= LIST_CACHE_LIMIT) {
+    const oldest = listCache.keys().next()
+    if (oldest.done !== true) listCache.delete(oldest.value)
+  }
+  listCache.set(key, value)
+  return value
+}
+
+/** Drop every cached list (a write happened, so the revision is about to move). */
+function invalidateLists() {
+  listCache.clear()
+}
+
+/**
+ * The change counter the watcher for `root` has observed so far, or 0 when no
+ * watcher exists yet.
+ *
+ * Used as a cache generation: any filesystem event the watcher saw means the
+ * commit list / branch list MAY have changed, and because the counter is part of
+ * the cache key the old entries simply stop being reachable. No invalidation
+ * call is needed, so nothing can forget to call it.
+ */
+function watcherRevisionOf(root) {
+  /* `watchState` is declared further down, next to the watcher machinery; this
+     function only runs during a request, long after module initialisation. */
+  const state = watchState.get(root)
+  return state === undefined ? 0 : state.revision
+}
+
 /* ============================== repository ============================== */
+
+/**
+ * Cache of `dir -> resolved repository root`.
+ *
+ * `git rev-parse --show-toplevel` costs a full process spawn (~100 ms on a cold
+ * Windows profile, which is what this app runs on). The panel makes a dozen
+ * calls per screen, so paying for it on EVERY request was the single largest
+ * fixed cost in the whole API — measured at 97 ms per request in tests/bench.mjs,
+ * i.e. it roughly DOUBLED the latency of `snapshot` and `status`.
+ *
+ * The mapping "this directory belongs to that repository" only changes when the
+ * directory is created, moved, or turns into a worktree — all rare. A short TTL
+ * plus explicit invalidation from the operations that can create a repository
+ * (`init`) or move one (`clone`-style flows do not exist here) keeps it honest.
+ *
+ * A NEGATIVE result is cached too (as `null`): the picker probes many folders
+ * that are not repositories, and re-spawning git for each of them made browsing
+ * feel dead. Those entries expire faster so a fresh `git init` is picked up
+ * quickly.
+ */
+const ROOT_CACHE_TTL_MS = 30_000
+const ROOT_CACHE_NEGATIVE_TTL_MS = 3_000
+const ROOT_CACHE_LIMIT = 64
+const rootCache = new Map()
+
+function rootCacheKey(dir) {
+  return process.platform === 'win32' ? dir.toLowerCase() : dir
+}
+
+function cachedRootOf(dir) {
+  const entry = rootCache.get(rootCacheKey(dir))
+  if (entry === undefined) return undefined
+  if (Date.now() >= entry.expiresAt) {
+    rootCache.delete(rootCacheKey(dir))
+    return undefined
+  }
+  return entry
+}
+
+function rememberRoot(dir, root) {
+  const key = rootCacheKey(dir)
+  if (rootCache.size >= ROOT_CACHE_LIMIT && rootCache.has(key) === false) {
+    const oldest = rootCache.keys().next()
+    if (oldest.done !== true) rootCache.delete(oldest.value)
+  }
+  rootCache.set(key, {
+    root,
+    expiresAt: Date.now() + (root === null ? ROOT_CACHE_NEGATIVE_TTL_MS : ROOT_CACHE_TTL_MS),
+  })
+}
+
+/** Drop cached roots (a new repository may have appeared under one of them). */
+export function invalidateRepoRoots() {
+  rootCache.clear()
+}
 
 /**
  * Resolve the repository root for a payload. `repoRoot` wins when the client
@@ -402,9 +543,17 @@ async function repoRootOf(cwd, payload) {
      still enforced is that the path is absolute and that `rev-parse` confirms a
      repository there, so this can never become an arbitrary directory read. */
   const probeDir = declared !== null ? declared : cwd
+  const cached = cachedRootOf(probeDir)
+  if (cached !== undefined) {
+    if (cached.root === null) throw notARepoError()
+    return cached.root
+  }
   const top = await runGit(probeDir, ['rev-parse', '--show-toplevel'], { timeoutMs: 15_000 })
   if (top.code !== 0) {
     const detail = top.stderr.trim()
+    /* Only a genuine "not a repository" answer is worth remembering; a timeout
+       or a locked index must be retried on the next call, not cached as truth. */
+    if (top.code === 128 && /not a git repository/i.test(detail)) rememberRoot(probeDir, null)
     throw new PanelError(
       top.code === 128 && /not a git repository/i.test(detail) ? 'not-a-repo' : 'repo-unavailable',
       detail === '' ? 'not a git repository' : detail,
@@ -412,7 +561,16 @@ async function repoRootOf(cwd, payload) {
     )
   }
   const raw = top.stdout.trim()
-  return normalizeSeparators(raw === '' ? probeDir : raw)
+  const resolved = normalizeSeparators(raw === '' ? probeDir : raw)
+  rememberRoot(probeDir, resolved)
+  /* Also key the RESOLVED root, so the next call from the panel (which sends
+     repoRoot) hits the cache instead of spawning git again. */
+  if (declared === null) rememberRoot(resolved, resolved)
+  return resolved
+}
+
+function notARepoError() {
+  return new PanelError('not-a-repo', 'not a git repository', 400)
 }
 
 function normalizeSeparators(value) {
@@ -652,7 +810,7 @@ const WRITE_METHODS = new Set([
   'branchUpstream', 'merge', 'mergeAbort', 'mergeContinue', 'rebase', 'rebaseAbort', 'rebaseContinue',
   'cherryPick', 'revert', 'reset', 'fetch', 'pull', 'push', 'pushTags',
   'stashPush', 'stashApply', 'stashPop', 'stashDrop', 'stashClear',
-  'tagCreate', 'tagDelete', 'tagDeleteRemote', 'remoteAdd', 'remoteRemove',
+  'tagCreate', 'tagDelete', 'tagDeleteRemote', 'tagPush', 'tagReset', 'remoteAdd', 'remoteRemove',
   'conflictResolve', 'cleanUntracked', 'init',
 ])
 
@@ -854,6 +1012,39 @@ function operationOf(gitDir) {
 }
 
 /**
+ * The configured remote names, in git's own order.
+ *
+ * Parsed from one `git remote` spawn. An empty list means the repository is
+ * purely local, which `fetch` must report as such rather than as a failure.
+ */
+async function remoteNamesOf(root) {
+  const res = await runGit(root, ['remote'], { timeoutMs: 15_000 })
+  if (res.code !== 0) return []
+  return res.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+}
+
+/* ============================== tags on the remote ============================== */
+
+/**
+ * Does `remote` already carry `name`?
+ *
+ * Tags are NOT folded into `refs/remotes/<remote>/` the way branches are: a
+ * `git fetch` writes them straight into `refs/tags/`, which makes a local-only
+ * tag and a published one indistinguishable from local refs alone. The only
+ * authoritative answer is `ls-remote`, so this always costs one network round
+ * trip — callers must not put it on a poll.
+ */
+async function tagOnRemote(root, remote, name) {
+  const res = await runGit(root, ['ls-remote', '--tags', '--refs', '--end-of-options', remote, `refs/tags/${name}`], {
+    timeoutMs: hostConfig.networkTimeoutMs,
+  })
+  if (res.code !== 0) {
+    throw new PanelError('tag-ls-remote-failed', (res.stderr + res.stdout).trim() || 'git ls-remote failed', 409)
+  }
+  return res.stdout.trim() !== ''
+}
+
+/**
  * One snapshot of a repository, with EXACTLY THREE git processes:
  *
  *   1. `status --porcelain=v2 --branch`  head/branch/upstream/ahead-behind,
@@ -997,6 +1188,55 @@ function parseNumstat(raw) {
   return map
 }
 
+/**
+ * Read every ref (local branches, remote branches, tags) in ONE `for-each-ref`.
+ *
+ * Split out of the `branches` method so the result can be cached: switching to
+ * the Branches tab used to pay a full git spawn every time even when nothing
+ * had changed.
+ */
+async function branchesOf(root) {
+  const format = ['%(refname)', '%(refname:short)', '%(objectname)', '%(committerdate:unix)', '%(HEAD)', '%(upstream:short)', '%(upstream:track,nobracket)', '%(subject)'].join('%1f')
+  const res = await runGit(root, [
+    'for-each-ref', '--format=' + format + '%1e',
+    'refs/heads', 'refs/remotes', 'refs/tags',
+  ], { timeoutMs: 30_000 })
+  if (res.code !== 0) throw new PanelError('branch-failed', res.stderr.trim() || 'for-each-ref failed', 409)
+  const list = []
+  for (const record of res.stdout.split('\u001e')) {
+    const trimmed = record.replace(/^\n/, '')
+    if (trimmed.trim() === '') continue
+    const fields = trimmed.split('\u001f')
+    if (fields.length < 8) continue
+    const fullName = fields[0]
+    let kind = 'local'
+    if (fullName.startsWith('refs/remotes/')) kind = 'remote'
+    else if (fullName.startsWith('refs/tags/')) kind = 'tag'
+    const tracking = fields[6]
+    const aheadMatch = /ahead (\d+)/.exec(tracking)
+    const behindMatch = /behind (\d+)/.exec(tracking)
+    list.push({
+      refName: fullName,
+      name: fields[1],
+      hash: fields[2],
+      short: fields[2].slice(0, 7),
+      time: Number(fields[3]) * 1000 || 0,
+      head: fields[4] === '*',
+      upstream: fields[5] === '' ? null : fields[5],
+      ahead: aheadMatch === null ? 0 : Number(aheadMatch[1]),
+      behind: behindMatch === null ? 0 : Number(behindMatch[1]),
+      subject: fields[7],
+      kind,
+    })
+  }
+  list.sort((a, b) => {
+    if (a.head !== b.head) return a.head ? -1 : 1
+    if (a.kind !== b.kind) return a.kind === 'local' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  return { branches: list }
+}
+
 async function logOf(root, options) {
   const limit = Math.min(400, Math.max(1, Number(options.limit) || 60))
   const skip = Math.max(0, Number(options.skip) || 0)
@@ -1011,7 +1251,14 @@ async function logOf(root, options) {
   if (search !== '' || author !== '') args.push('--regexp-ignore-case')
   // The revision range must precede `--`: everything after it is a pathspec,
   // and `--follow` refuses to run with more than one.
-  args.push(ref !== null ? ref : '--all')
+  /**
+   * `--all` includes `refs/stash`, so the history list used to be polluted with
+   * synthetic commits ("index on main: …", "WIP on main: …") that belong to no
+   * branch. They are not history — every git UI lists stashes in their own panel,
+   * and mine does too. Exclude the stash ref while keeping other branches.
+   */
+  if (ref !== null) args.push(ref)
+  else { args.push('--exclude=refs/stash', '--all') }
   if (filePath !== '') args.push('--follow', '--', filePath)
   const res = await runGit(root, args, { timeoutMs: 60_000 })
   if (res.code !== 0) {
@@ -1043,6 +1290,189 @@ async function logOf(root, options) {
     })
   }
   return { commits, hasMore: commits.length === limit }
+}
+
+/**
+ * Parse the `%x1e`-separated pretty format used by the commit lists.
+ *
+ * One record is `<H>\x1f<h>\x1f<author>\x1f<email>\x1f<at>\x1f<parents>\x1f<subject>\x1f<refs>`.
+ */
+function parseLogCommits(stdout) {
+  const commits = []
+  for (const record of stdout.split('\u001e')) {
+    const trimmed = record.replace(/^\n+/, '')
+    if (trimmed.trim() === '') continue
+    const fields = trimmed.split('\u001f')
+    if (fields.length < 7) continue
+    commits.push({
+      hash: fields[0],
+      short: fields[1],
+      authorName: fields[2],
+      authorEmail: fields[3],
+      authorTime: Number(fields[4]) * 1000 || 0,
+      parents: fields[5] === '' ? [] : fields[5].split(' ').filter((entry) => entry !== ''),
+      subject: fields[6],
+      refs: (fields[7] === undefined ? '' : fields[7])
+        .split(',')
+        .map((entry) => entry.trim().replace(/^HEAD -> /, ''))
+        .filter((entry) => entry !== '' && entry !== 'HEAD'),
+      added: 0,
+      deleted: 0,
+      binary: false,
+    })
+  }
+  return commits
+}
+
+/**
+ * Turn a `%B` commit message into just its BODY (everything after the subject).
+ *
+ * `%B` is the full raw message, so it carries three things this API does not
+ * want to hand the UI as "body":
+ *
+ *   1. the `%x1e` record separator the caller appended to the format;
+ *   2. the subject line itself (already returned separately);
+ *   3. surrounding newlines.
+ *
+ * A commit with no body must yield '' — not its subject — or every subject-only
+ * commit would render its title a second time.
+ */
+function cleanCommitBody(raw, subject) {
+  if (typeof raw !== 'string' || raw === '') return ''
+  let text = raw.replace(/\u001e+$/, '').replace(/\s+$/, '')
+  if (typeof subject === 'string' && subject !== '') {
+    if (text === subject) return ''
+    if (text.startsWith(subject)) text = text.slice(subject.length).replace(/^[\r\n]+/, '')
+  }
+  return text.trim()
+}
+
+/**
+ * Every name the file has had, derived from the numstat output itself.
+ *
+ * The blocks are newest-first (that is how `git log` walks), so following a
+ * `new => old` rename BACKWARDS from the current path finds each earlier name.
+ * Repeating over the whole page handles a file renamed several times.
+ *
+ *   block:  2\t1\tsrc/main.c
+ *   block:  0\t0\tsrc/{old.c => main.c}      -> previous name was src/old.c
+ *
+ * `--follow` guarantees a rename appears exactly once per file, so a single
+ * pass is enough; a final safety loop covers the (impossible in practice) case
+ * of a chain that needs more than one sweep.
+ */
+function pathsOfFileInHistory(numstatStdout, currentPath) {
+  const accepted = new Set([normalizeSeparators(currentPath)])
+  /* Collect (newName, oldName) pairs in output order (newest first). */
+  const renames = []
+  for (const line of numstatStdout.split('\n')) {
+    const match = /^(?:\d+|-)\t(?:\d+|-)\t(.+)$/.exec(line)
+    if (match === null) continue
+    const raw = match[1].trim()
+    if (!raw.includes('=>')) continue
+    renames.push(raw)
+  }
+  /* Walk backwards: whenever a pair's NEW side is already known, adopt its OLD
+     side too. Repeat until nothing new is learned. */
+  for (let pass = 0; pass < renames.length + 1; pass += 1) {
+    let learned = false
+    for (const raw of renames) {
+      for (const pair of expandRename(raw)) {
+        if (accepted.has(pair.next) && !accepted.has(pair.previous)) {
+          accepted.add(pair.previous)
+          learned = true
+        }
+        /* A reverse-ordered record (some git versions print old first). */
+        if (accepted.has(pair.previous) && !accepted.has(pair.next)) {
+          accepted.add(pair.next)
+          learned = true
+        }
+      }
+    }
+    if (!learned) break
+  }
+  return accepted
+}
+
+/**
+ * Expand one rename row into edge pairs, handling both forms git prints:
+ *
+ *   `old.txt => new.txt`              simple rename
+ *   `dir/{a.txt => b.txt}/keep`       brace form: only the inner part moved
+ *
+ * The brace form is why a naive `split('=>')` produced paths that matched
+ * nothing: it yields `dir/{a.txt` and `b.txt}/keep`, neither of which is a real
+ * path. Rebuilding the two full paths is required.
+ */
+function expandRename(raw) {
+  const clean = raw.trim()
+  const brace = /^(.*)\{(.*) => (.*)\}(.*)$/.exec(clean)
+  if (brace !== null) {
+    const [, prefix, left, right, suffix] = brace
+    return [{
+      previous: normalizeSeparators((prefix + left + suffix).replace(/\/{2,}/g, '/')),
+      next: normalizeSeparators((prefix + right + suffix).replace(/\/{2,}/g, '/')),
+    }]
+  }
+  const simple = clean.split('=>')
+  if (simple.length !== 2) return []
+  return [{
+    previous: normalizeSeparators(simple[0].trim()),
+    next: normalizeSeparators(simple[1].trim()),
+  }]
+}
+
+/**
+ * Fold `git log --numstat --format=%H` output into already-parsed commits,
+ * counting ONLY the file the caller asked about.
+ *
+ * Blocks look like:
+ *
+ *   <hash>
+ *   <added>\t<deleted>\t<path>
+ *   <added>\t<deleted>\t<old> => <new>     (a rename, possibly `dir/{a => b}/f`)
+ *
+ * WHY THE PATH FILTER IS BACK (and why it is different this time):
+ * A first version summed the WHOLE block, because `--follow` had already chosen
+ * the commits and "the block is this commit's change to this file". That is
+ * wrong whenever a commit touches more than one file: a commit that edited a
+ * source file AND added a font/image reported `binary` for the SOURCE file,
+ * since a binary sibling contributes `-\t-`. That is exactly the "为什么记录中
+ * 显示二进制文件" report — the source file clearly had line changes.
+ *
+ * The earlier attempt at filtering failed for a different reason: it compared
+ * against the caller's CURRENT path, so pre-rename commits (which name the OLD
+ * path) were dropped. The fix is to match the file's path AS IT WAS in each
+ * block — i.e. accept both sides of a `old => new` pair — which `applyNumstat`
+ * gets from the `appliedPaths` set the caller accumulates while walking history.
+ */
+function applyNumstat(commits, stdout, acceptedPaths) {
+  const byHash = new Map(commits.map((commit) => [commit.hash, commit]))
+  const wanted = acceptedPaths instanceof Set ? acceptedPaths : null
+  const matches = (rawPath) => {
+    if (wanted === null) return true
+    const raw = rawPath.trim()
+    if (!raw.includes('=>')) return wanted.has(normalizeSeparators(raw))
+    /* Both sides of a rename are valid names for this file at different points
+       in its life; either one being accepted means this row is about our file. */
+    return expandRename(raw).some((pair) => wanted.has(pair.previous) || wanted.has(pair.next))
+  }
+  let current = null
+  for (const line of stdout.split('\n')) {
+    if (line === '') continue
+    /* A bare 40-hex line starts a commit block. */
+    if (/^[0-9a-f]{40}$/.test(line.trim())) {
+      current = byHash.get(line.trim()) ?? null
+      continue
+    }
+    if (current === null) continue
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line)
+    if (match === null) continue
+    if (!matches(match[3])) continue
+    if (match[1] === '-' || match[2] === '-') { current.binary = true; continue }
+    current.added += Number(match[1])
+    current.deleted += Number(match[2])
+  }
 }
 
 /* ============================== hunks ============================== */
@@ -1277,6 +1707,89 @@ const METHODS = {
   },
 
   /**
+   * Find FILES in the repository by name or by content.
+   *
+   * The panel needs this to answer "which file do I even want to look at?" —
+   * before this, the only way in was to already have the file in the Changes
+   * list, which meant a clean tree had no path to file history at all.
+   *
+   * Two modes, both served by ONE `git grep` for content and one `git ls-files`
+   * for names (a repository walk from Node would be far slower and would pay a
+   * syscall per file):
+   *
+   *   mode: 'name'     -> paths whose basename or full path matches (substring,
+   *                       case-insensitive by default) — fast even on big trees
+   *   mode: 'content'  -> paths whose TEXT matches, with line/column and a short
+   *                       excerpt, using `git grep -n -I` (binary files skipped)
+   *
+   * Results are capped: a bare query like "a" on a large repository would
+   * otherwise return tens of thousands of rows and freeze the panel.
+   */
+  async search(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const query = typeof payload.query === 'string' ? payload.query.trim() : ''
+    if (query === '') return { files: [], matches: [], truncated: false }
+    if (query.length > 200) throw badRequest('query is too long')
+    const mode = payload.mode === 'content' ? 'content' : 'name'
+    const limit = Math.min(500, Math.max(1, Number(payload.limit) || 200))
+    const caseSensitive = boolOf(payload.caseSensitive)
+
+    if (mode === 'name') {
+      const res = await runGit(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { timeoutMs: 30_000 })
+      if (res.code !== 0) throw new PanelError('search-failed', res.stderr.trim() || 'git ls-files failed', 409)
+      const needle = caseSensitive ? query : query.toLowerCase()
+      const matches = []
+      let truncated = false
+      for (const raw of res.stdout.split('\u0000')) {
+        if (raw === '') continue
+        const filePath = normalizeSeparators(raw)
+        const haystack = caseSensitive ? filePath : filePath.toLowerCase()
+        /* Rank a basename hit above a directory-only hit: typing "index" should
+           surface index.ts before src/index-helpers/readme.txt. */
+        if (!haystack.includes(needle)) continue
+        if (matches.length >= limit) { truncated = true; break }
+        const base = filePath.split('/').pop()
+        const baseHit = (caseSensitive ? base : base.toLowerCase()).includes(needle)
+        matches.push({ path: filePath, baseHit })
+      }
+      matches.sort((a, b) => (a.baseHit === b.baseHit ? a.path.length - b.path.length : a.baseHit ? -1 : 1))
+      return { files: matches.map((entry) => ({ path: entry.path })), matches: [], truncated, mode }
+    }
+
+    /* Content search. `-I` skips binary files, `-n` gives the line number,
+       `--null` keeps paths parseable when they contain a colon.
+       NOTE: `-i` must come AFTER the `grep` subcommand — putting it first makes
+       git read it as a global option and fail with "unknown option: -i". */
+    const args = ['grep', '-n', '-I', '--null', '--no-color']
+    if (!caseSensitive) args.push('-i')
+    args.push('-e', query, '--', '.')
+    const res = await runGit(root, args, { timeoutMs: 60_000 })
+    /* git grep exits 1 when there is no match — that is data, not an error. */
+    if (res.code !== 0 && res.code !== 1) {
+      throw new PanelError('search-failed', res.stderr.trim() || 'git grep failed', 409)
+    }
+    const matches = []
+    let truncated = false
+    for (const line of res.stdout.split('\n')) {
+      if (line === '') continue
+      /* With `--null`, git terminates BOTH the path and the line number with NUL:
+         `<path>\0<lineNo>\0<text>`. Splitting on ':' instead (the non-null
+         format) silently produced nothing, which is why content search came back
+         empty. */
+      const first = line.indexOf('\u0000')
+      if (first < 0) continue
+      const second = line.indexOf('\u0000', first + 1)
+      if (second < 0) continue
+      const filePath = normalizeSeparators(line.slice(0, first))
+      const lineNumber = Number(line.slice(first + 1, second))
+      const text = line.slice(second + 1)
+      if (matches.length >= limit) { truncated = true; break }
+      matches.push({ path: filePath, line: Number.isFinite(lineNumber) ? lineNumber : 0, text: text.slice(0, 240) })
+    }
+    return { files: [], matches, truncated, mode }
+  },
+
+  /**
    * One level of directory listing for the picker.
    *
    * Unlike the earlier revision this is NOT restricted to the session workspace:
@@ -1379,12 +1892,10 @@ const METHODS = {
    * poll because this filesystem refused a recursive watch.
    */
   async watch(payload) {
-    const cwd = await cwdOfPayload(payload)
-    const top = await runGit(cwd, ['rev-parse', '--show-toplevel'], { timeoutMs: 10_000 })
-    if (top.code !== 0) {
-      throw new PanelError('not-a-repo', messageOf(new Error(top.stderr)), 409)
-    }
-    const root = normalizeSeparators(top.stdout.trim())
+    /* Reuses the cached root: this endpoint is polled continuously, and paying a
+       spawn per poll just to re-learn the same answer kept the long-poll from
+       ever being genuinely idle. */
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const state = watcherFor(root)
     const since = Number.isFinite(payload.since) ? Number(payload.since) : 0
     if (state.watcher === null) {
@@ -1432,50 +1943,25 @@ const METHODS = {
 
   async log(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    return logOf(root, payload)
+    /* Keyed on the watcher revision: the commit list only changes when the
+       repository does, and the watcher already knows that. */
+    const revision = watcherRevisionOf(root)
+    const key = listCacheKey('log', root, revision, JSON.stringify([
+      payload.limit ?? 60, payload.skip ?? 0, payload.ref ?? '',
+      payload.search ?? '', payload.author ?? '', payload.path ?? '',
+    ]))
+    const hit = cachedList(key)
+    if (hit !== undefined) return hit
+    return rememberList(key, await logOf(root, payload))
   },
 
   async branches(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    const format = ['%(refname)', '%(refname:short)', '%(objectname)', '%(committerdate:unix)', '%(HEAD)', '%(upstream:short)', '%(upstream:track,nobracket)', '%(subject)'].join('%1f')
-    const res = await runGit(root, [
-      'for-each-ref', '--format=' + format + '%1e',
-      'refs/heads', 'refs/remotes', 'refs/tags',
-    ], { timeoutMs: 30_000 })
-    if (res.code !== 0) throw new PanelError('branch-failed', res.stderr.trim() || 'for-each-ref failed', 409)
-    const list = []
-    for (const record of res.stdout.split('\u001e')) {
-      const trimmed = record.replace(/^\n/, '')
-      if (trimmed.trim() === '') continue
-      const fields = trimmed.split('\u001f')
-      if (fields.length < 8) continue
-      const fullName = fields[0]
-      let kind = 'local'
-      if (fullName.startsWith('refs/remotes/')) kind = 'remote'
-      else if (fullName.startsWith('refs/tags/')) kind = 'tag'
-      const tracking = fields[6]
-      const aheadMatch = /ahead (\d+)/.exec(tracking)
-      const behindMatch = /behind (\d+)/.exec(tracking)
-      list.push({
-        refName: fullName,
-        name: fields[1],
-        hash: fields[2],
-        short: fields[2].slice(0, 7),
-        time: Number(fields[3]) * 1000 || 0,
-        head: fields[4] === '*',
-        upstream: fields[5] === '' ? null : fields[5],
-        ahead: aheadMatch === null ? 0 : Number(aheadMatch[1]),
-        behind: behindMatch === null ? 0 : Number(behindMatch[1]),
-        subject: fields[7],
-        kind,
-      })
-    }
-    list.sort((a, b) => {
-      if (a.head !== b.head) return a.head ? -1 : 1
-      if (a.kind !== b.kind) return a.kind === 'local' ? -1 : 1
-      return a.name.localeCompare(b.name)
-    })
-    return { branches: list }
+    const revision = watcherRevisionOf(root)
+    const key = listCacheKey('branches', root, revision, '')
+    const hit = cachedList(key)
+    if (hit !== undefined) return hit
+    return rememberList(key, await branchesOf(root))
   },
 
   async commitDetail(payload) {
@@ -1512,7 +1998,13 @@ const METHODS = {
       commitTime: Number(fields[7]) * 1000 || 0,
       parents: fields[8] === '' ? [] : fields[8].split(' '),
       subject: fields[9],
-      body: fields[10] === undefined ? '' : fields[10],
+      /* `%B` is the raw commit message: it STARTS with the subject line and ends
+         with the format's `%x1e` record separator.
+           - leaving the separator in renders an invisible control character and
+             breaks the "body equals subject" check;
+           - leaving the subject in makes a body-less commit echo its own title.
+         So: strip the separator, then drop the subject prefix when present. */
+      body: cleanCommitBody(fields[10], fields[9]),
       files,
     }
   },
@@ -1561,23 +2053,66 @@ const METHODS = {
 
   async stage(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    /* `all` must NOT enumerate paths: the UI used to expand "stage all" into
+       every change and pass them as argv, which dies with ENAMETOOLONG once a
+       build produces a few thousand files (Win32 caps a command line at ~32767
+       characters, ~800 paths). `git add -A` expresses the same intent with one
+       process and no argument list at all. */
+    if (boolOf(payload.all)) {
+      await git(root, ['add', '-A'])
+      return snapshotOf(root)
+    }
     const paths = requirePaths(payload.paths)
-    if (boolOf(payload.all)) await git(root, ['add', '-A'])
-    else await git(root, ['add', '--', ...paths])
+    await git(root, ['add', '--', ...paths])
     return snapshotOf(root)
   },
 
   async unstage(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    const paths = requirePaths(payload.paths)
     const head = await readHead(root)
+    /* Same reasoning as `stage`: the staged group can be thousands of rows, so
+       the bulk form uses a pathspec-free command instead of the path list. */
+    if (boolOf(payload.all)) {
+      if (head.unborn) await git(root, ['rm', '--cached', '-r', '--quiet', '--', '.'])
+      else await git(root, ['reset', '--quiet', 'HEAD', '--'])
+      return snapshotOf(root)
+    }
+    const paths = requirePaths(payload.paths)
     if (head.unborn) await git(root, ['rm', '--cached', '-r', '--quiet', '--', ...paths])
     else await git(root, ['restore', '--staged', '--', ...paths])
     return snapshotOf(root)
   },
 
+  /**
+   * Throw away worktree changes.
+   *
+   * `all: true` is the bulk form behind「全部撤销」: it restores EVERY tracked
+   * path to HEAD (both the index and the worktree, so a staged edit is dropped
+   * too) and deletes untracked files. It is destructive and irreversible, so it
+   * requires an explicit `confirm` — the same guard `cleanUntracked` uses.
+   *
+   * Like `stage`/`unstage`, the bulk form never enumerates paths: the whole
+   * point is to work on a change set too large for one command line.
+   */
   async discard(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    if (boolOf(payload.all)) {
+      if (boolOf(payload.confirm) !== true) {
+        throw new PanelError('confirm-required', 'discarding every change needs explicit confirmation', 400)
+      }
+      const head = await readHead(root)
+      /* One `restore --source=HEAD --staged --worktree` over the whole tree: it
+         resets the index AND the worktree, which is what "撤销全部" means, and it
+         also collapses any unmerged (conflicted) entries back to HEAD. */
+      if (head.unborn) await git(root, ['rm', '--cached', '-r', '--quiet', '--', '.'])
+      else await git(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', '.'])
+      /* Untracked files are invisible to `git restore`, so they need `clean`.
+         `-d` covers untracked directories; `-x` is deliberately NOT passed so
+         .gitignore'd build output survives — dropping it would be a much bigger
+         data loss than the user asked for. */
+      await git(root, ['clean', '-d', '--force', '--quiet'])
+      return snapshotOf(root)
+    }
     const paths = requirePaths(payload.paths)
     const snapshot = await snapshotOf(root)
     const byPath = new Map(snapshot.changes.map((entry) => [entry.path, entry]))
@@ -1911,20 +2446,53 @@ const METHODS = {
     return snapshotOf(root)
   },
 
+  /**
+   * Fetch from a remote (or from every remote).
+   *
+   * WHY THIS IS NOT `git fetch --all` ANY MORE:
+   * `--all` is all-or-nothing at the exit-code level — if ANY remote fails (a
+   * stale/unreachable second remote, a repo with an empty URL, an offline
+   * mirror), git exits non-zero even though every other remote fetched fine.
+   * The panel reported that as "fetch failed" and threw away the successful
+   * result, which is the "有时候获取时会报错" report: it looked random because it
+   * depended on which unrelated remote happened to be unreachable.
+   *
+   * So each remote is fetched on its own and the failures are REPORTED, not
+   * fatal. Only when nothing at all succeeded does it throw, because then the
+   * user genuinely has no network access to any remote.
+   */
   async fetch(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    const remote = typeof payload.remote === 'string' && payload.remote.trim() !== ''
+    const named = typeof payload.remote === 'string' && payload.remote.trim() !== ''
       ? requireRef(payload.remote, 'remote')
       : null
-    const args = ['fetch', '--prune']
-    if (boolOf(payload.tags)) args.push('--tags')
-    if (boolOf(payload.all) || remote === null) args.push('--all')
-    else args.push('--end-of-options', remote)
-    const result = await runGit(root, args, { timeoutMs: hostConfig.networkTimeoutMs })
-    if (result.code !== 0) {
-      throw new PanelError('fetch-failed', (result.stderr + result.stdout).trim() || 'git fetch failed', 409)
+    const remotes = named !== null ? [named] : await remoteNamesOf(root)
+    if (remotes.length === 0) {
+      throw new PanelError('no-remote', 'this repository has no remote configured', 409)
     }
-    return { output: (result.stderr + result.stdout).trim(), snapshot: await snapshotOf(root) }
+    const base = ['fetch', '--prune']
+    if (boolOf(payload.tags)) base.push('--tags')
+    const succeeded = []
+    const failed = []
+    for (const remote of remotes) {
+      const result = await runGit(root, [...base, '--end-of-options', remote], { timeoutMs: hostConfig.networkTimeoutMs })
+      const detail = (result.stderr + result.stdout).trim()
+      if (result.code === 0) succeeded.push(remote)
+      else failed.push({ remote, message: detail === '' ? 'git fetch failed' : detail })
+    }
+    if (succeeded.length === 0) {
+      const detail = failed.map((entry) => entry.remote + ': ' + entry.message).join('\n')
+      throw new PanelError('fetch-failed', detail, 409)
+    }
+    return {
+      output: 'fetched ' + succeeded.join(', '),
+      /* A PARTIAL success is returned as data, so the UI can show a warning
+         toast instead of an error that makes a successful fetch look broken. */
+      partial: failed.length > 0,
+      failedRemotes: failed,
+      succeededRemotes: succeeded,
+      snapshot: await snapshotOf(root),
+    }
   },
 
   async pull(payload) {
@@ -1990,6 +2558,60 @@ const METHODS = {
     return snapshotOf(root)
   },
 
+  /** Push ONE tag, so a single tag can be published without sweeping --tags. */
+  async tagPush(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const name = requireRef(payload.name, 'name')
+    const remote = typeof payload.remote === 'string' && payload.remote.trim() !== ''
+      ? requireRef(payload.remote, 'remote')
+      : 'origin'
+    await git(root, ['push', '--end-of-options', remote, `refs/tags/${name}`], { timeoutMs: hostConfig.networkTimeoutMs })
+    return snapshotOf(root)
+  },
+
+  /**
+   * Retract a tag: remove it locally AND on the remote when it was published.
+   *
+   * This is the "撤销" operation for a release tag — the counterpart of
+   * `tagCreate`. It deliberately does not touch commits: a tag is only a ref, so
+   * undoing it never rewrites history.
+   *
+   * `remoteToo` defaults to TRUE when the tag exists on the remote, because a
+   * tag that is gone locally but still on origin comes back with the next
+   * `git fetch --tags` and keeps the release page alive. Callers that only want
+   * the local ref gone pass `remoteToo: false`.
+   *
+   * Order matters: delete locally FIRST (cheap, reversible through the reflog if
+   * it was annotated) and then the remote. If the remote step fails, the error
+   * says so explicitly instead of silently leaving a half-undone tag.
+   */
+  async tagReset(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const name = requireRef(payload.name, 'name')
+    const remote = typeof payload.remote === 'string' && payload.remote.trim() !== ''
+      ? requireRef(payload.remote, 'remote')
+      : 'origin'
+    /* Fail EARLY and clearly: `git tag -d` on a missing tag exits non-zero with a
+       message about a "malformed object name", which reads like repository
+       corruption instead of "that tag is not here". */
+    const local = await runGit(root, ['rev-parse', '--verify', '--quiet', `refs/tags/${name}`], { timeoutMs: 20_000 })
+    if (local.code !== 0) throw new PanelError('tag-not-found', `there is no local tag named ${name}`, 404)
+    const onRemote = await tagOnRemote(root, remote, name)
+    const remoteToo = payload.remoteToo === undefined ? onRemote : boolOf(payload.remoteToo)
+    await git(root, ['tag', '-d', '--end-of-options', name], { timeoutMs: 20_000 })
+    if (remoteToo) {
+      const result = await runGit(root, ['push', '--delete', '--end-of-options', remote, `refs/tags/${name}`], { timeoutMs: hostConfig.networkTimeoutMs })
+      if (result.code !== 0) {
+        const detail = (result.stderr + result.stdout).trim()
+        /* The local ref is already gone; report that plainly so the user knows
+           the tag is half-retracted and can re-run the remote half. */
+        throw new PanelError('tag-remote-delete-failed',
+          `local tag ${name} was removed, but deleting ${remote}/${name} failed: ${detail || 'git push --delete failed'}`, 409)
+      }
+    }
+    return { ...(await snapshotOf(root)), removedRemote: remoteToo }
+  },
+
   async stashList(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const res = await runGit(root, ['stash', 'list', '--format=%gd%x1f%ci%x1f%gs%x1e'], { timeoutMs: 20_000 })
@@ -2041,6 +2663,67 @@ const METHODS = {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     await git(root, ['stash', 'clear'], { timeoutMs: 20_000 })
     return snapshotOf(root)
+  },
+
+  /**
+   * Which TAGS exist locally, and which of them are already on the remote.
+   *
+   * The panel needs this to show "publish" only where it makes sense, and to
+   * tell the user why a push is even necessary. It is ONE `ls-remote --tags`
+   * per remote (git returns every tag in a single response), not one call per
+   * tag: a repository with 40 release tags would otherwise cost 40 spawns.
+   *
+   * Tags are NOT folded into `refs/remotes/<remote>/` the way branches are, so
+   * there is no local ref that answers this — the network is the only source of
+   * truth. That is why this is a SEPARATE call instead of part of `branches`:
+   * `branches` is polled and cached, while this must be explicit and fresh.
+   */
+  async tagRemoteState(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const named = typeof payload.remote === 'string' && payload.remote.trim() !== ''
+      ? requireRef(payload.remote, 'remote')
+      : null
+    const remotes = named !== null ? [named] : await remoteNamesOf(root)
+    if (remotes.length === 0) {
+      return { remotes: [], published: {}, localTags: [], error: 'no-remote' }
+    }
+    /* Local tags, so the caller can diff them against what the remote reports. */
+    const localRes = await runGit(root, ['for-each-ref', '--format=%(refname:short)', 'refs/tags'], { timeoutMs: 20_000 })
+    const localTags = localRes.code === 0
+      ? localRes.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+      : []
+    const published = {}
+    const failures = []
+    for (const remote of remotes) {
+      const res = await runGit(root, ['ls-remote', '--tags', '--refs', '--end-of-options', remote], {
+        timeoutMs: hostConfig.networkTimeoutMs,
+      })
+      if (res.code !== 0) {
+        failures.push({ remote, message: (res.stderr + res.stdout).trim() || 'git ls-remote failed' })
+        continue
+      }
+      for (const line of res.stdout.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed === '') continue
+        /* `<sha>\trefs/tags/<name>` */
+        const tab = trimmed.indexOf('\t')
+        if (tab < 0) continue
+        const ref = trimmed.slice(tab + 1)
+        if (!ref.startsWith('refs/tags/')) continue
+        const name = ref.slice('refs/tags/'.length)
+        if (published[name] === undefined) published[name] = []
+        published[name].push(remote)
+      }
+    }
+    return {
+      remotes,
+      localTags,
+      /** tag name -> array of remotes that already have it */
+      published,
+      /** local tags that exist nowhere on the remote */
+      unpublished: localTags.filter((name) => published[name] === undefined),
+      failures,
+    }
   },
 
   async tagCreate(payload) {
@@ -2130,11 +2813,74 @@ const METHODS = {
     return { lines }
   },
 
+  /**
+   * The commit history of ONE file — "这个文件被改过几次、每次改了什么".
+   *
+   * TWO git calls, deliberately:
+   *
+   *   1. `git log --follow` for the COMMITS. `--follow` makes git keep
+   *      reporting the file across RENAMES, which is the case that made a file's
+   *      history look like it started yesterday.
+   *   2. `git log --numstat` for the per-commit line counts.
+   *
+   * Why not one call: `--follow` is incompatible with `--numstat` here — git
+   * silently drops the follow behaviour (this is a real, long-standing git
+   * limitation: `--follow` only works with a limited option set). Combining them
+   * gave back ONLY post-rename commits, which is exactly the bug this feature
+   * exists to fix. Two spawns is the correct price; the panel caches the result.
+   */
   async fileHistory(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const filePath = String(payload.path ?? '')
     if (filePath === '' || path.isAbsolute(filePath)) throw badRequest('path must be repository-relative')
-    return logOf(root, { limit: payload.limit, skip: payload.skip, path: filePath })
+    if (filePath.includes('\u0000')) throw badRequest('path must not contain NUL')
+    const limit = Math.min(400, Math.max(1, Number(payload.limit) || 60))
+    const skip = Math.max(0, Number(payload.skip) || 0)
+    const ref = typeof payload.ref === 'string' && payload.ref.trim() !== '' ? requireRef(payload.ref, 'ref') : null
+    const format = ['%H', '%h', '%an', '%ae', '%at', '%P', '%s', '%D'].join('%x1f')
+
+    /* 1. the commits, following renames back through history */
+    const logRes = await runGit(root, [
+      'log', '--follow', '--date-order',
+      `--pretty=format:${format}%x1e`,
+      `--max-count=${limit}`, `--skip=${skip}`,
+      ref !== null ? ref : 'HEAD',
+      '--', filePath,
+    ], { timeoutMs: 60_000 })
+    if (logRes.code !== 0) {
+      if (/does not have any commits yet|does not have any files/i.test(logRes.stderr)) {
+        return { commits: [], hasMore: false, path: filePath }
+      }
+      throw new PanelError('file-history-failed', logRes.stderr.trim() || 'git log failed', 409)
+    }
+    const commits = parseLogCommits(logRes.stdout)
+
+    /* 2. this file's own +/- counts.
+     *
+     * Three traps to avoid at once:
+     *   - `-- <newPath>` only matches commits AFTER a rename (git diffs against
+     *     the given path), so every earlier commit silently counted 0;
+     *   - a `<oldest>^..<head>` range is invalid when the oldest is a root commit
+     *     (`git log <root>^` fails with "ambiguous argument"), which a young
+     *     repository always hits;
+     *   - summing the whole `--numstat` block picks up SIBLING files, so a commit
+     *     that also added a font/image made a purely textual source file report
+     *     `binary` — the reported bug.
+     *
+     * So: collect every name this file has had (walking the numstat output and
+     * following each `old => new` pair), then count only rows naming one of them.
+     */
+    if (commits.length > 0) {
+      const hashes = commits.map((commit) => commit.hash)
+      const statRes = await runGit(root, [
+        'log', '--numstat', '--format=%H', '--no-walk=unsorted', ...hashes,
+      ], { timeoutMs: 60_000 })
+      if (statRes.code === 0) {
+        const accepted = pathsOfFileInHistory(statRes.stdout, filePath)
+        applyNumstat(commits, statRes.stdout, accepted)
+      }
+    }
+    return { commits, hasMore: commits.length === limit, path: filePath }
   },
 
   async reflog(payload) {
@@ -2193,6 +2939,8 @@ const METHODS = {
     if (!existsSync(dir)) throw badRequest('cwd does not exist')
     const result = await runGit(dir, ['init'], { timeoutMs: 30_000 })
     if (result.code !== 0) throw new PanelError('init-failed', result.stderr.trim() || 'git init failed', 409)
+    /* This directory was cached as "not a repository"; that answer is now wrong. */
+    invalidateRepoRoots()
     return snapshotOf(dir)
   },
 
@@ -2278,6 +3026,11 @@ export function apply(ctx, config) {
             return await invoke()
           } finally {
             invalidateSnapshots()
+            /* A write may move refs without the filesystem watcher having fired
+               yet (a commit writes .git/ files, which the watcher may or may not
+               report, and a fetch can land during the same tick). Drop the list
+               cache explicitly so the very next read is a fresh one. */
+            invalidateLists()
           }
         })
       }
@@ -2301,3 +3054,4 @@ export function apply(ctx, config) {
     }, 'dsh-gitcraft: session workspace resolution')
   })
 }
+

@@ -100,6 +100,12 @@ importers:
 
   packages/kit: {}
 
+  packages/source-control:
+    dependencies:
+      '@dsh-workbay/kit':
+        specifier: file:../kit
+        version: link:../kit
+
   packages/suite: {}
 
   packages/terminal:

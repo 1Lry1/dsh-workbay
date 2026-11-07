@@ -26,7 +26,12 @@ window.__ModuleLoader__.load({
     const OVERSCAN = 20
 
     /** 批量追加 + 环形裁剪；返回新数组，不修改入参。 */
-    function appendLogs(current, items, max) {
+/* The last workspace root this PAGE told the host. Module scope on purpose: the
+   sync effect re-runs on every remount and a per-run variable starts at null —
+   that sent the same root three times in one second. */
+let lastSentRoot = null
+
+function appendLogs(current, items, max) {
       if (!Array.isArray(items) || items.length === 0) return current
       if (items.length >= max) return items.slice(items.length - max)
       const overflow = current.length + items.length - max
@@ -311,6 +316,40 @@ window.__ModuleLoader__.load({
       }
       React.useEffect(() => { loadPorts() }, [])
 
+  /* ---- 跟随「源码管理」页的工作目录 ----------------------------------------
+   * dcf 扫描原来只认 Downloader 工具自己的目录。用户在大仓里换到另一个工程后，
+   * 扫描结果还是旧工程 —— 会烧错文件，而且自动烧录盯的也是旧的 dcf。
+   *
+   * 工作台里两个页面共享同一个根键（源码管理页会写它）。这里轮询这个键并告知宿主，
+   * 而不是用 storage 事件：同一文档内写 localStorage 不触发 storage 事件。
+   */
+  React.useEffect(() => {
+    let stopped = false
+    const read = () => {
+      try { return window.localStorage.getItem('dsh-workbay.sc.root.v1') || '' } catch (e) { return '' }
+    }
+    const sync = async () => {
+      if (stopped) return
+      const root = read()
+      /* Module-level memo, not a local one: this effect re-runs on every remount
+         (StrictMode double-invoke, page re-open), and a local last starts at null
+         each time — that sent the same root three times in one second and filled
+         the host log with identical lines. */
+      if (root === '' || root === lastSentRoot) return
+      lastSentRoot = root
+      await api.post('/workspace', { root })
+    }
+    void sync()
+    const timer = setInterval(() => { void sync() }, 2000)
+    const onFocus = () => { void sync() }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [])
+
       React.useEffect(() => {
         const el = logRef.current
         if (!el) return undefined
@@ -476,13 +515,30 @@ window.__ModuleLoader__.load({
         setInput('')
       }
 
-      // ---- 上半：设备状态 + 串口选择 ----
+      const yToolPath = React.useState(() => ({ exe: '', dir: '', configExists: false }))
+  const toolPath = yToolPath[0]
+  const setToolPath = yToolPath[1]
+  const toolDlg = React.useState(() => ({ open: false, value: '', error: null }))
+  const toolDialog = toolDlg[0]
+  const setToolDialog = toolDlg[1]
+  // ---- 上半：设备状态 + 串口选择 ----
       const rowStatus = h('div', { className: 'abw-line', key: 'status' },
-        h('span', { className: 'abw-dot', 'data-s': dot }),
-        h('span', null, statusText),
-        f.com ? h('span', { className: 'abw-badge abw-mono' }, f.com) : null,
-        f.mac ? h('span', { className: 'abw-badge abw-mono' }, f.mac) : null,
-        h('span', { className: 'abw-sp' }),
+    h('span', { className: 'abw-dot', 'data-s': dot }),
+    h('span', null, statusText),
+    f.com ? h('span', { className: 'abw-badge abw-mono' }, f.com) : null,
+    f.mac ? h('span', { className: 'abw-badge abw-mono' }, f.mac) : null,
+    /* 工具路径放状态栏：它是「当前连着哪个 Downloader」的一部分，
+       和串口/波特率同级。点一下就能改，换工具版本不用去翻菜单。 */
+    h('span', { className: 'abw-sp' }),
+    h('button', {
+      className: 'abw-btn', 'data-v': 'ghost',
+      style: { maxWidth: '48ch', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      title: (toolPath.exe || '点击设置 Downloader.exe 的位置')
+        + (toolPath.dir ? '\\n配置目录：' + toolPath.dir + (toolPath.configExists ? '' : '（未找到 Downloader.config）') : ''),
+      onClick: () => setToolDialog({ open: true, value: toolPath.exe || '' }),
+    }, toolPath.exe === ''
+      ? '工具路径未设置'
+      : ('工具：' + (toolPath.dir ? toolPath.dir.split(/[\\\\/]/).filter(Boolean).pop() : toolPath.exe))),
         h('span', { className: 'abw-dim' }, '串口'),
         h('select', {
           className: 'abw-sel', value: selPort, disabled: busy,
@@ -539,6 +595,43 @@ window.__ModuleLoader__.load({
       }, busy
         ? (f.stage || '连接中…')
         : (f.connected ? '重新连接' : '连接 Downloader'))
+  /* 选择 Downloader.exe 的位置。
+   *
+   * 为什么需要这个按钮：配置文件的目录是从工具位置推导出来的（Downloader.config
+   * 就在 exe 旁边）。原来只认环境变量，用户没配就只能写到 ~/Downloader —— 于是
+   * 「切换工作目录」写配置静默失败，工具里还是旧文件。 */
+  React.useEffect(() => {
+    let stop = false
+    void (async () => {
+      const r = await api.get('/tool')
+      if (stop || r === null || r === undefined) return
+      setToolPath({ exe: r.exe || '', dir: r.dir || '', configExists: r.configExists === true })
+    })()
+    return () => { stop = true }
+  }, [])
+
+  /* 页面内的输入框，不用 window.prompt：
+   *
+   * Electron 里 prompt() 是**不支持**的（调用会抛错/直接返回），点了按钮看起来
+   * 毫无反应。alert/confirm 可用，但 prompt 不行。 */
+  const saveToolPath = async () => {
+    const value = toolDialog.value.trim()
+    const r = await api.post('/tool', { exe: value })
+    if (r && r.ok === true) {
+      setToolPath({ exe: r.exe || '', dir: r.dir || '', configExists: r.configExists === true })
+      setToolDialog({ open: false, value: '', error: null })
+    } else {
+      /* 404 的兜底文案是 'not found'：它意味着宿主半侧还没有 /tool 路由。
+         文件已经同步到磁盘，但**宿主插件只在 DSH 启动时加载**。
+         直接说清楚，比让用户对着 not found 猜要好。 */
+      const raw = (r && r.error) ? String(r.error) : '保存失败'
+      const hint = raw === 'not found'
+        ? '宿主还没有 /tool 接口：请完全退出并重新打开 DSH（只刷新页面不够，宿主插件在启动时加载）'
+        : raw
+      setToolDialog((d) => ({ ...d, error: hint }))
+    }
+  }
+
 
       // ⚠️ 这里曾经写成 disabled: !busy，结果握手成功后 busy 复位成 false，
       //    按钮反而被禁用（用户看到"开始烧录"是灰的）。
@@ -593,7 +686,7 @@ window.__ModuleLoader__.load({
       }, w.on ? '◉ 自动烧录' : '○ 自动烧录')
 
       const rowActions = h('div', { className: 'abw-line', key: 'actions', style: { marginBottom: 10 } },
-        btnConnect, btnBurn, btnSerial, btnStop, btnWatch,
+      btnConnect, btnBurn, btnSerial, btnStop, btnWatch,
         h('span', { className: 'abw-sp' }),
         lastBurnText
           ? h('span', { className: 'abw-dim',
@@ -794,7 +887,45 @@ window.__ModuleLoader__.load({
 
       const bottom = h('div', { className: 'abw-logwrap' }, logBar, locateBar, searchRow, logSplit, sendBar)
 
-      return h('div', { className: 'abw' }, top, bottom)
+  /* 工具路径对话框：内联渲染，不依赖任何弹窗 API。 */
+  const toolModal = toolDialog.open === true
+    ? h('div', {
+      key: 'toolmodal',
+      style: {
+        position: 'fixed', inset: 0, zIndex: 9999, display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(0,0,0,.45)', padding: 16,
+      },
+    },
+    h('div', {
+      style: {
+        width: 'min(560px,100%)', background: '#161b22', color: '#e6edf3',
+        border: '1px solid #30363d', borderRadius: 8, padding: 16,
+        font: 'inherit', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 10,
+      },
+    },
+    h('div', { style: { fontWeight: 600 } }, 'Downloader.exe 的位置'),
+    h('div', { style: { fontSize: 12, color: '#8b949e', lineHeight: 1.6 } },
+      '配置文件（Downloader.config）就在这个 exe 旁边，切换工作目录时要写进它。'),
+    h('input', {
+      type: 'text', value: toolDialog.value, spellCheck: false,
+      placeholder: 'D:\\AB\\软件工具\\Downloader_v3.6.0_内部版\\Downloader.exe',
+      style: {
+        height: 30, padding: '0 8px', borderRadius: 5,
+        border: '1px solid #30363d', background: '#0d1117', color: 'inherit',
+        font: 'inherit', fontSize: 12,
+      },
+      onChange: (e) => setToolDialog((d) => ({ ...d, value: e.target.value, error: null })),
+      onKeyDown: (e) => { if (e.key === 'Enter') void saveToolPath() },
+    }),
+    toolDialog.error ? h('div', { style: { fontSize: 12, color: '#f85149' } }, String(toolDialog.error)) : null,
+    h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+      h('button', { className: 'abw-btn', onClick: () => setToolDialog({ open: false, value: '' }) }, '取消'),
+      h('button', { className: 'abw-btn', 'data-v': 'pri', onClick: () => { void saveToolPath() } }, '保存')))
+    )
+: null
+
+      return h('div', { className: 'abw' }, top, bottom, toolModal)
     }
 
     function VsIcon({ size = 14 }) {
@@ -853,3 +984,9 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
+
+
+
+
+

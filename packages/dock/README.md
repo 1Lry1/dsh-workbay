@@ -68,16 +68,23 @@ dsh plugin --profile desktop add 'file:<repo>/packages/dock'
 ## 测试
 
 ```powershell
-node tests/split.e2e.mjs <base-url> <browser-exe> <repo-path> [shot.png]   # 17 项
-node tests/row-click.e2e.mjs <base-url> <browser-exe>                     #  2 项
-node tests/interaction.e2e.mjs <base-url> <browser-exe>                   # 10 项
+node tests/entry-align.mjs [browser-exe]                                     #  9 项，无需 DSH
+node tests/split.e2e.mjs <base-url> <browser-exe> <repo-path> [shot.png]     # 17 项
+node tests/row-click.e2e.mjs <base-url> <browser-exe>                        #  2 项
+node tests/interaction.e2e.mjs <base-url> <browser-exe>                      # 10 项
+node tests/entry-align-shot.mjs [browser-exe] [out.png]                      # 视觉对照图
 ```
 
+- **entry-align（9）**：**不需要运行 DSH**。取出 `src/client.js` 里真实的样式表，
+  套上宿主的 `SidebarRoot.module.css`（`.panelRow` 的 36px / `padding:7px 8px` /
+  `gap:8px` / `line-height:22px`），用无头浏览器量四行的行高、字形盒宽、字形中心、
+  文字起始 x。最后**一条断言是自检**：把旧的 `min-width:28px;height:28px` 重新注入，
+  行高 / 字形盒 / 字形中心 / 文字起点这些断言必须失败 —— 否则说明测试本身是坏的（这个坑真实发生过一次，见下面第 4 条）。
 - **split.e2e（17）**：入口位置、停靠分屏、会话仍可用、选择器全盘选仓库、路径实时校验。
 - **row-click.e2e（2）**：点击行内**文字区域**（离图标 150px 以上）也能打开。
 - **interaction.e2e（10）**：点击 Downloader 页签、点面板内部、点其它侧栏行、切走再回来 —— 工作台都不该关；再点一次入口才关。
 
-### 三个已经踩过、不要退回去的坑
+### 四个已经踩过、不要退回去的坑
 
 **1. 不要用 `element.click()` 测入口。**
 合成事件绕过命中测试。曾经「真实鼠标点不动」的 bug 因此全绿地发版出去；测试必须用 `Input.dispatchMouseEvent`。
@@ -106,6 +113,29 @@ NAV    .wtg9ga_panelList    256x156 text "插件 自动化任务 工作台 更�
 **3. 用 `pointerdown` 而不是 `click`。**
 宿主把槽位包进它自己的 `<button class="…panelRow">`；`pointerdown` 是交互链第一个事件，
 不会被外层抢先，也不会因为行被卸载而丢失。
+
+**4. 入口自己的盒子必须和宿主图标一样大 —— 不要给 `.wbd-entryBtn` 设尺寸。**
+
+用户报「工作台的位置没对齐其他图标」。实测（截图逐列量出来的）：
+
+| 行 | 行高 | 图标墨迹 x | 文字起始 x |
+|---|---|---|---|
+| 插件 | 36 | 18–33 | 42 |
+| 自动化任务 | 36 | 19–32 | 43 |
+| **工作台（坏）** | **42** | **25–38** | **54** |
+| 更多 | 36 | 19–32 | 42 |
+
+原因：`.wbd-entryBtn` 曾被写成 `min-width:28px;height:28px`，而宿主的行是
+`padding:7px 8px; gap:8px; line-height:22px`，图标只有 16px。28px 的盒子把行从 36px
+撑到 42px、字形中心右移 6px、文字右移 12px，还让后面每一行都往下串。
+
+正确做法：入口**只画 16px 的 svg，自己不加盒子**（`flex:none;padding:0`），
+hover / 选中只换颜色 —— 底色、圆角、36px 行高都由宿主那一层 `button.panelRow` 提供。
+另外字形**墨迹**也要和 插件 / 自动化任务 / 更多 同一个光学尺寸（宿主的图标在
+16px 盒子里画满约 12.8×12.8）。原来是 12.4×8.2 的扁长条，盒子居中了看起来仍然
+「矮一截」；现在是 12.4×12.4 的方形。
+
+回归守卫是 `tests/entry-align.mjs`，它自带「旧规则必须被检出」的自检。
 
 ## License
 

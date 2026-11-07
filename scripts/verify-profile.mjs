@@ -51,6 +51,9 @@ const SUITE_FILES = [
   'vendor/downloader/lib/client.js',
   'vendor/downloader/helper/AbSerialHost.exe',
   'vendor/downloader/ipc-helper/DownloaderIpcBridge.exe',
+  'vendor/source-control/package.json',
+  'vendor/source-control/src/index.js',
+  'vendor/source-control/src/client.js',
   'vendor/kit/package.json',
   'vendor/kit/src/host.js',
 ]
@@ -62,6 +65,7 @@ const STANDALONE = {
   'dsh-workbay-terminal': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js', 'lib/chunks/xterm.js', 'helper/WorkbayPty.exe'],
   'dsh-gitcraft': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js'],
   'dsh-downloader': ['package.json', 'cordis.patch.yml', 'lib/index.js', 'lib/client.js', 'helper/AbSerialHost.exe', 'ipc-helper/DownloaderIpcBridge.exe'],
+  'dsh-workbay-source-control': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js'],
   '@dsh-workbay/kit': ['package.json', 'src/host.js'],
 }
 const STANDALONE_SOURCE = {
@@ -70,6 +74,7 @@ const STANDALONE_SOURCE = {
   'dsh-workbay-terminal': 'terminal',
   'dsh-gitcraft': 'gitcraft',
   'dsh-downloader': 'downloader',
+  'dsh-workbay-source-control': 'source-control',
   '@dsh-workbay/kit': 'kit',
 }
 
@@ -146,7 +151,7 @@ if (usesSuite) {
   }
   /* Extra workbay packages in the profile show up as disabled plugins in the UI,
      which is exactly what the merged layout exists to avoid. */
-  const extra = ['dsh-workbay-dock', 'dsh-workbay-files', 'dsh-workbay-terminal', 'dsh-gitcraft', 'dsh-downloader', '@dsh-workbay/kit']
+  const extra = ['dsh-workbay-dock', 'dsh-workbay-files', 'dsh-workbay-terminal', 'dsh-gitcraft', 'dsh-downloader', 'dsh-workbay-source-control', '@dsh-workbay/kit']
     .filter((name) => Object.hasOwn(deps, name) || existsSync(path.join(installedRoot, name)))
   if (extra.length > 0) {
     failures.push(`merged layout must not carry ${extra.join(', ')} — remove them from profile dependencies and node_modules`)

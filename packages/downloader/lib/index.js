@@ -517,6 +517,126 @@ class LineHelper {
  *   2) 串口 helper 的 open 失败以前走全局 err 事件（没有 id），宿主每重试一次
  *      就多打一条“串口错误”，而且 command('open') 等不到回包、每次卡 3 秒。
  */
+/**
+ * 把 dcf 写进 Downloader 工具自己的配置（DownFile 槽位）。
+ *
+ * 为什么必须写配置：Downloader 的 IPC 协议里**没有**"打开指定 dcf"的命令
+ * （见 /flash/openfile 的注释），它只认自己 config 里的 DownFile。
+ * 只改我们自己的 state.flash.dcfPath 只是"显示对了"，真正烧的还是工具记着的那个文件。
+ *
+ * 注意：Downloader 在**启动时**读配置，所以这个改动对已经在运行的实例不生效 ——
+ * 但我们的启动流程是「先写配置再 launch」，正常路径下正好赶上。
+ */
+/* ---------------------------------------------------------------- 工具路径
+ *
+ * Downloader.exe 装在哪，决定了 `Downloader.config` 在哪 —— 而"配置下载路径"
+ * 必须写到那个文件里。原来只认环境变量 DSH_DOWNLOADER_DIR，没设就退回
+ * ~/Downloader，于是写配置静默失败（界面显示"已切换"，工具里还是旧文件）。
+ *
+ * 现在允许在页面上直接选 exe 并持久化，不再要求用户配环境变量。
+ */
+const TOOL_CONFIG_FILE = path.join(LOG_DIR, 'tool-path.json')
+
+function readToolConfig() {
+  try {
+    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '' }
+    const raw = JSON.parse(fs.readFileSync(TOOL_CONFIG_FILE, 'utf8'))
+    return { exe: typeof raw.exe === 'string' ? raw.exe : '' }
+  } catch {
+    return { exe: '' }
+  }
+}
+
+function writeToolConfig(exe) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true })
+    fs.writeFileSync(TOOL_CONFIG_FILE, JSON.stringify({ exe }, null, 2), 'utf8')
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) }
+  }
+}
+
+/**
+ * Downloader.config 所在目录。
+ *
+ * 优先级：页面上选的 exe 所在目录 > 环境变量 DSH_DOWNLOADER_DIR > ~/Downloader。
+ * 页面设置优先，是因为它是"用户刚在这个界面上确认过的那个工具"。
+ */
+function resolveDlDir() {
+  const configured = readToolConfig().exe
+  if (configured !== '') {
+    const dir = path.dirname(configured)
+    if (fs.existsSync(path.join(dir, 'Downloader.config'))) return dir
+    /* 选了 exe 但同目录没有配置：仍然用它（config 可能在第一次启动后生成），
+       但要如实告诉调用方 —— 由调用方决定怎么报错。 */
+    return dir
+  }
+  return DEFAULT_DL_DIR
+}
+export function writeDownFile(dcfPath, overrideDir) {
+  const dlDir = typeof overrideDir === 'string' && overrideDir !== '' ? overrideDir : resolveDlDir()
+  const cfgPath = path.join(dlDir, 'Downloader.config')
+  try {
+    if (!fs.existsSync(cfgPath)) return { ok: false, error: 'config not found', path: cfgPath }
+    if (!fs.existsSync(dcfPath)) return { ok: false, error: 'dcf not found', path: dcfPath }
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+    const re = /<add key="DownFile" value="[^"]*"\s*\/>/
+    if (!re.test(cfg)) return { ok: false, error: 'no DownFile key', path: cfgPath }
+    const next = cfg.replace(re, `<add key="DownFile" value="${dcfPath}" />`)
+    if (next === cfg) return { ok: true, changed: false, path: dcfPath }
+    const bak = cfgPath + '.bak-' + Date.now()
+    fs.copyFileSync(cfgPath, bak)
+    fs.writeFileSync(cfgPath, next, 'utf8')
+    /* Every workspace switch makes a backup, and a backup nobody ever looks at is just
+       clutter in the vendor's install directory (it also shows up in their file lists).
+       Keep the last few so a bad write is still recoverable, drop the rest. */
+    pruneBackups(cfgPath, 3)
+    return { ok: true, changed: true, backup: bak, path: dcfPath }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e), path: dcfPath }
+  }
+}
+
+/**
+ * 这个路径是否在当前工作目录之下？
+ *
+ * `scanRoot` 为空表示"还没有工作目录信息"，此时一律视为在范围内（保持旧行为：
+ * 以 Downloader 报的为准）。
+ */
+export function isUnderScanRoot(filePath, scanRoot) {
+  if (typeof scanRoot !== 'string' || scanRoot === '') return true
+  if (typeof filePath !== 'string' || filePath === '') return false
+  const root = path.resolve(scanRoot)
+  const abs = path.resolve(filePath)
+  return abs === root || abs.startsWith(root + path.sep)
+}
+/**
+ * Keep only the newest `keep` backups of a config file.
+ *
+ * The suffix is `Date.now()`, so a plain name sort is chronological for every
+ * timestamp this century — no need to stat ten files to find out which are old.
+ * Failures are swallowed: a leftover backup is harmless, an exception during a
+ * write is not.
+ */
+export function pruneBackups(cfgPath, keep) {
+  const limit = Math.max(0, Number(keep) || 0)
+  try {
+    const dir = path.dirname(cfgPath)
+    const prefix = path.basename(cfgPath) + '.bak-'
+    const olds = fs.readdirSync(dir)
+      .filter((name) => name.startsWith(prefix))
+      .sort()
+      .slice(0, Math.max(0, fs.readdirSync(dir).filter((n) => n.startsWith(prefix)).length - limit))
+    for (const name of olds) {
+      try { fs.unlinkSync(path.join(dir, name)) } catch (e) { void e }
+    }
+    return olds.length
+  } catch (e) {
+    return 0
+  }
+}
+
 export function shouldLaunchFlash(flash, helperAlive) {
   if (flash.connected) return false
   if (flash.launching) return false
@@ -538,7 +658,7 @@ export function serialErrorLine(state, msg, now = Date.now()) {
   return `串口错误: ${text}${merged}`
 }
 
-export const __test = { shouldLaunchFlash, serialErrorLine, locationPayload }
+export const __test = { shouldLaunchFlash, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups }
 
 export function apply(ctx) {
   const state = {
@@ -551,7 +671,12 @@ export function apply(ctx) {
     logBatchTimer: null,
     logFile: { size: 0, lines: 0, exists: false, truncated: false, rotated: false, error: null },
     // 自动烧录：监听编译产物 dcf 的变化
-    watch: { on: false, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
+    /* 自动烧录默认开启：用户的工作流是「改代码 -> 编译 -> 自动烧」，
+       还要求每次手动点一下按钮才是反直觉的。 */
+    watch: { on: true, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
+  /* 由「源码管理」页告知的工作目录：扫描 dcf 时只认它。
+     为空时才退回工具自己的目录。 */
+  scanRoot: '',
   }
   // 为 AI 阅读而设：保留很长的环形缓冲（不落盘、不导出）。
   // 50000 条大约是几百次烧录 / 数小时板卡输出；每条实体约 100B，总内存约 5MB。
@@ -729,45 +854,54 @@ export function apply(ctx) {
    * 实测依据：编译完的 dcf 一定是最新的（今天 17:15），
    * 而 Downloader config 里的默认槽位可能是几个月前的。
    */
-  function freshestDcf() {
-    const cands = new Set()
-    if (state.flash.dcfPath) cands.add(state.flash.dcfPath)
-    if (state.watch.path) cands.add(state.watch.path)
-    // ★ 扫一遍工作区下的 dcf，取最近编译的那个。
-    //   注意：DCF_CANDIDATE 是「相对工程根」的路径，
-    //   而工程根往往比工作区深好几层，所以不能直接拼。
+function freshestDcf(override) {
+  /* override exists for tests: real callers always read the live state. */
+  const st = override === undefined || override === null ? state : override
+  const cands = new Set()
+  if (st.flash !== undefined && st.flash !== null && st.flash.dcfPath) cands.add(st.flash.dcfPath)
+  if (st.watch !== undefined && st.watch !== null && st.watch.path) cands.add(st.watch.path)
     //   这里直接深度有限地扫 Output\bin 目录。
-    const scanRoots = [DEFAULT_WORKSPACE, state.root, state.project].filter(Boolean)
+    /* 用户在工作台里选的目录优先，而且**独占**：一旦设置了 scanRoot，就不再扫
+     Downloader 工具自己的目录 —— 否则会在几个仓库的同名工程之间挑错 dcf。 */
+  const scanRoots = st.scanRoot !== undefined && st.scanRoot !== ''
+    ? [st.scanRoot]
+    : [DEFAULT_WORKSPACE, st.root, st.project].filter(Boolean)
     for (const root of scanRoots) {
-      try {
-        const stack = [{ d: root, depth: 0 }]
-        let guard = 0
-        while (stack.length && guard++ < 20000) {
-          const { d, depth } = stack.pop()
-          if (depth > 6) continue
-          let ents
-          try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { continue }
-          for (const e of ents) {
-            if (!e.isDirectory()) continue
-            if (/^(\.git|node_modules|cmake|\.vscode|__pycache__)$/i.test(e.name)) continue
-            const full = path.join(d, e.name)
-            if (/^Output$/i.test(e.name)) {
-              // Output\bin\*.dcf
-              const binDir = path.join(full, 'bin')
-              try {
-                for (const f of fs.readdirSync(binDir)) {
-                  if (f.toLowerCase().endsWith('.dcf')) cands.add(path.join(binDir, f))
-                }
-              } catch { }
-              continue
-            }
-            stack.push({ d: full, depth: depth + 1 })
+    try {
+      const stack = [{ d: root, depth: 0 }]
+      let guard = 0
+      while (stack.length && guard++ < 40000) {
+        const { d, depth } = stack.pop()
+        if (depth > 8) continue
+        let ents
+        try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { continue }
+        for (const e of ents) {
+          const full = path.join(d, e.name)
+          if (!e.isDirectory()) {
+            /* Not just Output\bin any more: projects differ in where the build
+               lands, and a *.dcf anywhere under the workspace is a candidate.
+               "Freshest wins" then picks the one that was actually just built. */
+            if (e.name.toLowerCase().endsWith('.dcf')) cands.add(full)
+            continue
           }
+          if (/^(\.git|node_modules|cmake|\.vscode|__pycache__)$/i.test(e.name)) continue
+          stack.push({ d: full, depth: depth + 1 })
         }
-      } catch { }
-    }
+      }
+    } catch { }
+  }
+  /* 换过工作目录之后，旧工程里那个 dcf 往往更**新**（刚烧过），只按 mtime 排序
+     会把旧文件又选回来。所以 scanRoot 存在时，先按目录过滤候选。 */
+  let pool = cands
+  if (st.scanRoot !== undefined && st.scanRoot !== '') {
+    const rootResolved = path.resolve(st.scanRoot)
+    pool = [...cands].filter((c) => {
+      const abs = path.resolve(c)
+      return abs === rootResolved || abs.startsWith(rootResolved + path.sep)
+    })
+  }
     let best = null, bestT = 0
-    for (const c of cands) {
+  for (const c of pool) {
       try {
         const st = fs.statSync(c)
         if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = c }
@@ -1220,12 +1354,27 @@ export function apply(ctx) {
           // 它们是烧录开始前的那几帧，误判会导致"以为没在烧"而提前放开按钮。
         } else if (head === 'FileInfo') {
           const newDcf = f[1]
-          state.flash.dcfPath = newDcf
           state.flash.fwSize = Number(f[4] || 0)
           state.flash.fwChecksum = f[5] || null
+          /* ★ 取消「连上就被覆盖」：FileInfo 报的是 Downloader 自己 config 里记的
+             dcf，切换过工作目录后那个值还是旧工程的。一连接就把它当成当前固件，
+             用户看到的就是「切了目录，固件文件又变回去」。
+             规则：只有落在当前工作目录内才采纳，跨目录一律忽略。 */
+          const acceptDcf = isUnderScanRoot(newDcf, state.scanRoot)
+          if (acceptDcf) {
+            state.flash.dcfPath = newDcf
+        /* 默认开启：Downloader 一连上就报它准备烧的 dcf，这是最常见的
+           「开始监听」时机（用户可能只是打开 DSH 就编译）。 */
+        if (state.watch.on === true && state.watch.timer === null && fs.existsSync(newDcf)) {
+          setWatch(true, newDcf)
+        }
+          } else {
+            pushLog('S', '已忽略 Downloader 报的 dcf（不在当前工作目录下）：' + newDcf
+              + (state.flash.dcfPath ? '；继续使用：' + state.flash.dcfPath : '；当前无可用 dcf'))
+          }
           // ★ 用户在 Downloader 里换了 dcf 时，正在监听的路径必须跟着换。
           //   否则自动烧录会一直盯着旧文件 —— 新 dcf 变了也不触发（实测踩过）。
-          if (state.watch.on && newDcf && state.watch.path !== newDcf) {
+          if (state.watch.on && acceptDcf && newDcf && state.watch.path !== newDcf) {
             const oldPath = state.watch.path
             let st2 = null
             try { st2 = fs.statSync(newDcf) } catch { }
@@ -1996,7 +2145,107 @@ async function handleHttp(req, res, state, api) {
       return json(res, r.ok ? 200 : 400, r)
     }
 
-    // ★ 让用户（或前端）主动告知「我现在选的是哪个 dcf」。
+    // ---- 工具路径（Downloader.exe）----
+  if (p === '/tool') {
+    if (req.method === 'GET') {
+      const configured = readToolConfig().exe
+      const dir = resolveDlDir()
+      const exeGuess = configured !== ''
+        ? configured
+        : path.join(DEFAULT_DL_DIR, 'Downloader.exe')
+      return json(res, 200, {
+        exe: configured,
+        exeGuess,
+        dir,
+        configFile: path.join(dir, 'Downloader.config'),
+        configExists: fs.existsSync(path.join(dir, 'Downloader.config')),
+      })
+    }
+    if (req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const next = typeof body.exe === 'string' ? body.exe.trim() : ''
+      if (next !== '' && !fs.existsSync(next)) {
+        return json(res, 400, { error: '找不到这个文件', exe: next })
+      }
+      const saved = writeToolConfig(next)
+      if (saved.ok !== true) return json(res, 500, { error: saved.error })
+      const dir = resolveDlDir()
+      pushLog('S', next === ''
+        ? '已恢复默认的 Downloader 路径'
+        : 'Downloader 路径已设为：' + next)
+      return json(res, 200, {
+        ok: true,
+        exe: next,
+        dir,
+        configExists: fs.existsSync(path.join(dir, 'Downloader.config')),
+      })
+    }
+  }
+  // ★ 工作台「源码管理」页告知当前工作目录。
+  //   为什么需要：dcf 扫描原来只认 Downloader 工具自己的目录，
+  //   用户在大仓里换成另一个工程后，扫描结果仍然是旧工程 —— 烧错文件。
+  //   现在工作台把选中的目录告诉宿主，扫描和自动烧录都跟着它走。
+  if (p === '/workspace') {
+    if (req.method === 'GET') {
+      return json(res, 200, {
+        root: state.scanRoot,
+        effective: state.scanRoot !== '' ? state.scanRoot : null,
+        watch: state.watch.on === true ? state.watch.path : null,
+      })
+    }
+    if (req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const next = typeof body.root === 'string' && body.root.trim() !== ''
+        ? path.resolve(body.root.trim())
+        : ''
+      if (next !== '' && !fs.existsSync(next)) {
+        return json(res, 400, { error: 'root not found', root: next })
+      }
+      const changed = next !== state.scanRoot
+      /* 同一个目录被重复告知是正常的（面板重挂、轮询、StrictMode 双调用）。
+         重复上报不该刷日志，也不该重算 dcf —— 否则日志里全是同一行。 */
+      if (!changed) {
+        return json(res, 200, { ok: true, unchanged: true, root: state.scanRoot, watch: state.watch.path })
+      }
+      state.scanRoot = next
+      /* 扫描目录变了之后只打一行摘要，把「找到哪个 dcf / 写没写进配置」并进去。 */
+      let summary = '扫描目录已切换：' + (next === '' ? '(工具默认)' : next)
+      const pick = freshestDcf()
+      if (pick === null) {
+        state.flash.dcfPath = null
+        summary += '（新目录下还没有 dcf，等编译产物）'
+      } else {
+        state.flash.dcfPath = pick
+        const wrote = writeDownFile(pick)
+        summary += ' → 固件 ' + path.basename(pick)
+        summary += wrote.ok === true
+          ? '（已写入 Downloader 配置，下次启动生效）'
+          : '（写入 Downloader 配置失败：' + String(wrote.error) + '）'
+      }
+      broadcast({ ev: 'flash', state: state.flash })
+      pushLog('S', summary)
+      /* 自动烧录正在监听时，监听目标也必须跟着换，否则还盯着旧工程的 dcf。 */
+      let watchPath = state.watch.path
+      if (state.watch.on === true && pick !== null && pick !== state.watch.path) {
+        const st = fs.statSync(pick)
+        state.watch.path = pick
+        state.watch.lastMtime = st.mtimeMs
+        state.watch.lastSize = st.size
+        state.watch.armedAt = Date.now()
+        if (state.watch.pendingTimer) { clearTimeout(state.watch.pendingTimer); state.watch.pendingTimer = null }
+        watchPath = pick
+        broadcast({ ev: 'watch', watch: { on: true, path: pick } })
+        pushLog('S', '自动烧录监听改为：' + path.basename(pick))
+      }
+      /* 默认开启时 on 一开始就是 true，但还没有监听目标，定时器从未启动。
+         选定 dcf 的这一刻才是真正开始监听的时机。 */
+      if (state.watch.on === true && state.watch.timer === null && pick !== null) {
+        setWatch(true, pick)
+      }
+      return json(res, 200, { ok: true, root: state.scanRoot, watch: watchPath })
+  }
+    }
+  // ★ 让用户（或前端）主动告知「我现在选的是哪个 dcf」。
     //   为什么需要这个：实测确认 Downloader 在界面里切 dcf 时
     //   **不推 FileInfo、也不写 config**，运行中那个选择只在它内存里。
     //   所以无法偷听，只能由调用方告知。
@@ -2088,3 +2337,27 @@ function findForeignDownloader() {
     return []
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

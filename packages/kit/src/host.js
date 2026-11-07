@@ -183,6 +183,43 @@ export function createJsonApiHandler(options) {
       sendJson(res, 405, { ok: false, error: { code: 'method-error', message: 'POST required' } })
       return
     }
+    /**
+     * Require a JSON content type.
+     *
+     * The trust fence above is not enough on its own. A cross-site HTML form can
+     * POST to this origin without any CORS preflight — a simple request only
+     * needs an ordinary content type (`text/plain`, `application/x-www-form-urlencoded`,
+     * `multipart/form-data`). The browser sends it, the loopback peer check passes
+     * (the request DOES come from this machine), and the route acts on it.
+     *
+     * `application/json` is not a "simple" content type, so requiring it forces a
+     * preflight that this server never answers: a page that is not ours cannot
+     * reach these methods. This is the standard defence for a JSON RPC surface
+     * and it costs one header check.
+     *
+     * `text/plain` is still accepted for the empty-bodied convenience probes used
+     * by tests, but only with an EMPTY body — a form can send a body, and that is
+     * exactly the case being rejected.
+     */
+    const contentType = String(headerOf(req, 'content-type') ?? '').trim().toLowerCase()
+    const contentLengthHeader = headerOf(req, 'content-length')
+    const hasBody = contentLengthHeader !== undefined
+      ? Number(contentLengthHeader) > 0
+      : headerOf(req, 'transfer-encoding') !== undefined
+    const isJson = contentType.startsWith('application/json') === true
+    /* The one tolerated exception: an EMPTY `text/plain` probe. It cannot carry a
+       payload, so it cannot drive a method's arguments, and it makes a
+       dependency/liveness check possible without hand-building a JSON body. A
+       form submission always has a body, which is why the exemption is keyed on
+       emptiness rather than on the type alone. */
+    const isEmptyProbe = contentType.startsWith('text/plain') === true && hasBody === false
+    if (isJson === false && isEmptyProbe === false) {
+      sendJson(res, 415, {
+        ok: false,
+        error: { code: 'unsupported-media-type', message: 'content-type must be application/json' },
+      })
+      return
+    }
     const pathname = new URL(req.url === undefined ? '/' : req.url, 'http://dsh.internal').pathname
     const method = pathname.startsWith(prefix + '/') ? pathname.slice(prefix.length + 1) : ''
     const handler = Object.prototype.hasOwnProperty.call(methods, method) ? methods[method] : undefined

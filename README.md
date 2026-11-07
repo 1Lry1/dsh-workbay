@@ -13,14 +13,20 @@ DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固
 
 ```
 packages/
-├─ dock/        dsh-workbay-dock      壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
-├─ files/       dsh-workbay-files     页面：文件树 + VSCode 级内容搜索 + 查看器 + CodeMirror 编辑器（chunk 懒加载）
-├─ terminal/    dsh-workbay-terminal  页面：真终端（ConPTY）+ 多 tab（xterm.js，切页保持会话）
-├─ gitcraft/    dsh-gitcraft          页面：SourceTree 级 Git 面板（58 个 RPC）
-├─ downloader/  dsh-downloader        页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
-├─ kit/         @dsh-workbay/kit      共享 host 工具：同源围栏 / JSON 体 / RPC 信封
-└─ suite/       dsh-workbay-suite     单插件形态：vendor 五个 bundle + 合并 client，插件列表只显示一个
+├─ dock/            dsh-workbay-dock            壳：左侧栏入口 + 右侧停靠浮层 + 页面注册表
+├─ files/           dsh-workbay-files           页面：文件树 + VSCode 级内容搜索 + 查看器 + CodeMirror 编辑器（chunk 懒加载）
+├─ source-control/  dsh-workbay-source-control  页面：一棵带 Git 状态的树 + 源码/diff 双面板 + 提交框（组合页）
+├─ terminal/        dsh-workbay-terminal        页面：真终端（ConPTY）+ 多 tab（xterm.js，切页保持会话）
+├─ gitcraft/        dsh-gitcraft                页面：SourceTree 级 Git 面板（62 个 RPC）
+├─ downloader/      dsh-downloader              页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
+├─ kit/             @dsh-workbay/kit            共享 host 工具：同源围栏 / JSON 体 / RPC 信封
+└─ suite/           dsh-workbay-suite           单插件形态：vendor 六个 bundle + 合并 client，插件列表只显示一个
 ```
+
+**源码管理页是组合页**：它自己不做文件系统也不做 git，而是把 `files` 的编辑器面板和
+`gitcraft` 的 diff 面板挂进自己的布局（见 [docs/panes-contract.md](docs/panes-contract.md)），
+树由它自己渲染（因为树要同时显示 Git 状态，两个来源 join 在一处）。
+两个原页面**默认保留**，出问题可以随时切回，也是新页的行为基线。
 
 ```
 左侧栏 [工作台] ──点击──▶ 右侧停靠面板

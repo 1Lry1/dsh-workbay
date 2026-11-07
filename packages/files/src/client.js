@@ -32,6 +32,47 @@ window.__ModuleLoader__.load({
     const useCallback = React.useCallback
 
     const PAGE_ID = 'files'
+
+    /* ============================== perf marks ==============================
+     *
+     * `docs/performance.md` has specified a `workbay:` mark vocabulary since M0,
+     * but nothing ever implemented it — so every "p95 < N ms" budget in that
+     * document was unmeasurable. These helpers are the minimum needed to fix
+     * that, and they cost NOTHING when the flag is off: `mark()` returns before
+     * touching `performance`, because `performance.mark` itself allocates an
+     * entry and shows up in a profile.
+     *
+     * Enable with:  localStorage['dsh-workbay.perf'] = '1'  (then reload)
+     *
+     * Naming: `workbay:<area>:<event>`. Keep the vocabulary identical across
+     * bundles so one CDP script can read them all.
+     */
+    const PERF_ON = (() => {
+      try { return window.localStorage.getItem('dsh-workbay.perf') === '1' } catch (error) { void error; return false }
+    })()
+
+    /** Stamp a named instant. No-op unless the perf flag is on. */
+    function perfMark(name) {
+      if (PERF_ON !== true) return
+      try { performance.mark('workbay:' + name) } catch (error) { void error }
+    }
+
+    /**
+     * Stamp the end of a span and record the duration as a measure, so a gate
+     * script can read `performance.getEntriesByType('measure')` without having to
+     * pair marks itself. Returns the duration in ms (or null when disabled).
+     */
+    function perfMeasure(name, fromMark) {
+      if (PERF_ON !== true) return null
+      try {
+        const from = 'workbay:' + fromMark
+        const to = 'workbay:end:' + name
+        performance.mark(to)
+        performance.measure('workbay:' + name, from, to)
+        const entries = performance.getEntriesByName('workbay:' + name, 'measure')
+        return entries.length === 0 ? null : entries[entries.length - 1].duration
+      } catch (error) { void error; return null }
+    }
     const API_PREFIX = '/dsh-workbay-files/api/'
     const MEDIA_ROUTE = '/dsh-workbay-files/media'
     const CHUNK_ROUTE = '/dsh-workbay-files/chunk/editor.js'
@@ -64,6 +105,15 @@ function writeSidebarWidth(width) {
     const SEARCH_MODES = ['content', 'name']
     const QUICK_OPEN_RECENT_LIMIT = 8
     const STAT_INTERVAL_MS = 4000
+    /* Test seam: the modified-on-disk poll is the only timing-dependent timer in
+       this page, and proving "no request while hidden / requests resume when
+       visible" means waiting out two real intervals (9 s+). A harness may lower
+       it; production never sets this. */
+    const statIntervalMs = () => {
+      const override = typeof globalThis === 'object' && globalThis !== null
+        ? Number(globalThis.__DSH_WORKBAY_STAT_MS__) : Number.NaN
+      return Number.isFinite(override) && override > 0 ? override : STAT_INTERVAL_MS
+    }
 
     /* ============================== i18n ============================== */
 
@@ -510,14 +560,33 @@ function writeSidebarWidth(width) {
       return kind === 'text' || kind === 'unknown' || kind === 'markdown' || kind === 'json'
     }
 
+    /* ONE collator for the page's lifetime. Passing an options object to
+       `localeCompare` rebuilds an ICU collator on every single comparison —
+       measured ~11.3 us/call, so flattening 10k rows spent ~0.8 s just
+       constructing collators. A shared Intl.Collator is ~10x faster and holds
+       no per-call state. `numeric` stays on: natural order is what the tree
+       wants ("file2" before "file10"). */
+    const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
     function compareNames(left, right) {
-      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' })
+      return NAME_COLLATOR.compare(String(left), String(right))
     }
 
     /** Directories first, then natural, case-insensitive name order. */
+    /* `flattenTree` re-sorted every expanded directory on every expand/collapse,
+       because `sortEntries` copies and sorts unconditionally. The input array is
+       the exact one the host handed back for that directory, so its IDENTITY is
+       a perfect cache key: a fresh listing is a fresh array, and a stale one can
+       never be re-sorted into the cache. WeakMap so dropped listings are
+       collectable — no manual invalidation, no leak. */
+    const sortedCache = new WeakMap()
+
     function sortEntries(entries) {
-      const list = Array.isArray(entries) ? entries.slice() : []
-      return list.sort((left, right) => {
+      if (!Array.isArray(entries)) return []
+      const cached = sortedCache.get(entries)
+      if (cached !== undefined) return cached
+      const list = entries.slice()
+      list.sort((left, right) => {
         const leftDir = left !== null && left !== undefined && left.type === 'dir'
         const rightDir = right !== null && right !== undefined && right.type === 'dir'
         if (leftDir !== rightDir) return leftDir ? -1 : 1
@@ -525,6 +594,8 @@ function writeSidebarWidth(width) {
         if (byName !== 0) return byName
         return compareNames(left === undefined || left === null ? '' : left.rel, right === undefined || right === null ? '' : right.rel)
       })
+      sortedCache.set(entries, list)
+      return list
     }
 
     /**
@@ -2827,8 +2898,16 @@ function writeSidebarWidth(width) {
           },
         }))
         try {
+          /* Measure "click the chevron -> rows are in state". The mark lands
+             right before the setState that makes the rows renderable, which is
+             the boundary docs/performance.md budgets in. One mark pair per
+             directory load; the dir rel is the label so a slow directory is
+             identifiable from the trace alone. */
+          const markName = 'tree:' + (dirRel === '' ? '<root>' : dirRel)
+          perfMark('tree-start')
           const data = await call('tree', { root: currentRoot, dir: dirRel, showHidden: currentShowHidden })
           if (rootRef.current !== currentRoot || showHiddenRef.current !== currentShowHidden || dirReqRef.current.get(dirRel) !== token) return
+          perfMeasure(markName, 'tree-start')
           const entries = data !== null && data !== undefined && Array.isArray(data.entries) ? data.entries : []
           setTree((previous) => Object.assign({}, previous, {
             [dirRel]: { status: 'ready', entries, truncated: data !== null && data !== undefined && data.truncated === true, error: null },
@@ -2967,8 +3046,14 @@ function writeSidebarWidth(width) {
         contentSeqRef.current += 1
         const seq = contentSeqRef.current
         updateSearch({ type: 'content', action: { type: 'request', seq }, query: state.query })
+        /* Budget: content search, from request to results renderable. The
+           "first page" concern in the perf spec is not measurable yet because
+           the host still answers with one POST; when it becomes a stream, this
+           mark should move to the first batch. */
+        perfMark('search-content-start')
         call('search', request, controller === null ? undefined : controller.signal).then((data) => {
           if (seq !== contentSeqRef.current) return
+          perfMeasure('search:content', 'search-content-start')
           updateSearch({
             type: 'content',
             action: { type: 'response', seq, data: normalizeSearchResponse(data, 'content', state.query) },
@@ -3102,10 +3187,16 @@ function writeSidebarWidth(width) {
       const hydrateTab = useCallback(async (tab, entry) => {
         const currentRoot = rootRef.current
         if (currentRoot === null || currentRoot === '') return
+        /* Budget: "click a file -> editor is interactive" (p95 < 350 ms for
+           100 KiB). Labelled by extension so the trace separates .ts from .png
+           without needing the filename. */
+        const extension = extensionOf(tab.rel) === '' ? 'none' : extensionOf(tab.rel)
+        perfMark('file-open-start')
         try {
           if (isReadableKind(tab.kind)) {
             const data = await call('read', { root: currentRoot, rel: tab.rel })
             if (rootRef.current !== currentRoot) return
+            perfMeasure('file-open:' + extension, 'file-open-start')
             if (data !== null && data !== undefined && data.encoding === 'binary') {
               patchTab(tab.rel, {
                 type: 'loaded',
@@ -3239,11 +3330,14 @@ function writeSidebarWidth(width) {
         const currentRoot = rootRef.current
         const content = tab.content
         patchTab(rel, { type: 'saving', value: true })
+        /* Budget: "Ctrl+S -> saved toast" (p95 < 500 ms). */
+        perfMark('save-start')
         const task = (async () => {
           try {
             const payload = { root: currentRoot, rel: tab.rel, content }
             if (opts.force !== true && tab.mtimeMs > 0) payload.baseMtimeMs = tab.mtimeMs
             const data = await call('write', payload)
+            perfMeasure('save', 'save-start')
             patchTab(rel, {
               type: 'saved',
               savedContent: content,
@@ -3429,6 +3523,13 @@ function writeSidebarWidth(width) {
         if (root === null || activeRel === null || activeMtime <= 0) return undefined
         let cancelled = false
         const check = () => {
+          /* A hidden window (minimised, or the user switched app) cannot show a
+             badge, so polling it is pure waste — and this poll survives for as
+             long as a file is open. Skip the RPC while hidden; the interval keeps
+             ticking (cheap) so the badge is fresh within one interval of the
+             window coming back, instead of needing a visibility listener plus a
+             restart dance. */
+          if (typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden') return
           call('stat', { root, rel: activeRel }).then((data) => {
             if (cancelled) return
             const entry = data !== null && data !== undefined ? data.entry : null
@@ -3436,7 +3537,7 @@ function writeSidebarWidth(width) {
             if (typeof mtimeMs === 'number' && mtimeMs !== activeMtime) patchTab(activeRel, { type: 'external', mtimeMs })
           }).catch(() => {})
         }
-        const timer = setInterval(check, STAT_INTERVAL_MS)
+        const timer = setInterval(check, statIntervalMs())
         return () => {
           cancelled = true
           clearInterval(timer)
@@ -3454,6 +3555,30 @@ function writeSidebarWidth(width) {
           if (key !== 's') return
           const rel = latestRef.current.activeRel
           if (rel === null) return
+          /* Ctrl+S must only mean "save the file" when the FILE is what has
+             focus. Stealing it unconditionally is wrong twice over:
+               - this listener is on `window`, so it fires while the caret is in
+                 any other field (a commit message, a search box, a rename
+                 dialog) and would save/overwrite the open file instead of
+                 letting the browser/field handle the key;
+               - once this page shares a screen with a Git pane, the commit box
+                 is a sibling, not a child, so "inside my own page" is not a
+                 reliable test either.
+             The rule: fire only when the active element is the editor surface
+             or nothing focusable at all (the document body), which is the state
+             the page is in right after clicking the file. */
+          const active = typeof document !== 'undefined' && document !== null ? document.activeElement : null
+          if (active !== null && active !== undefined && active !== document.body) {
+            const tag = typeof active.tagName === 'string' ? active.tagName.toUpperCase() : ''
+            const isTextEntry = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+              || active.isContentEditable === true
+            const insideEditor = typeof active.closest === 'function' && active.closest('.cm-editor') !== null
+            /* Inside CodeMirror, let the editor's own Ctrl+S binding do the work
+               (it is deduped by saveTab). Inside any other text field, do not
+               save at all — the user is typing something else. */
+            if (insideEditor === true) return
+            if (isTextEntry === true) return
+          }
           event.preventDefault()
           void latestRef.current.saveTab(rel)
         }
@@ -3622,6 +3747,358 @@ function writeSidebarWidth(width) {
         reloadDialog,
         toast === null ? null : E('div', { className: 'wbf-toast is-' + toast.kind }, toast.message))
     }
+
+/**
+ * SourcePane: a self-contained editor surface that a HOST page can mount.
+ *
+ * This is the piece the source-control page composes instead of duplicating the
+ * file page's UI. It is deliberately not the file page: no tree, no search, no
+ * root picker — just "show this file, let the user edit and save it". The tree
+ * belongs to the host, because the host is the only thing that also knows git
+ * status, and one tree with status beats two trees that disagree.
+ *
+ * It owns its own state, so it is a real failure domain: if this crashes, the
+ * host's tree and commit box are still on screen.
+ *
+ * Contract (see docs/panes-contract.md):
+ *   mountSourcePane(container, api, ctx, t) -> dispose
+ *     api.activeRel   workspace-relative path the host wants shown (may be null)
+ *     api.visible     false when the host has it hidden; pause work when false
+ */
+
+/**
+ * Mount the editor surface into a container the CALLER owns.
+ *
+ * Returns a dispose function. The caller must not re-use the container after
+ * disposing without mounting again.
+ */
+function mountSourcePane(container, api, ctx, t) {
+  /* The contract returns `{ dispose, handle }`: the HOST needs to unmount it on
+     teardown, and the page's own `commands` need the handle to steer it. Returning
+     a bare dispose function would have forced the page to keep a module-level ref
+     just to answer `hasDirty` — one pane, one owner. */
+  const noop = { dispose: () => {}, handle: { openFile() {}, hasDirty() { return false }, reload() {} } }
+  if (container === null || container === undefined) return noop
+  /* Try BOTH module names, exactly like the dock does: the seed table has
+     offered `react-dom/client` since React 18, and some builds only expose the
+     legacy entry. Getting this wrong means a silently blank editor. */
+  const client = (() => {
+    for (const specifier of ['react-dom/client', 'react-dom']) {
+      let mod = null
+      try { mod = require(specifier) } catch (error) { void error; continue }
+      if (mod !== null && mod !== undefined && typeof mod.createRoot === 'function') return mod
+      if (mod !== null && mod !== undefined && mod.default !== undefined && typeof mod.default.createRoot === 'function') return mod.default
+    }
+    return null
+  })()
+  if (client === null || typeof client.createRoot !== 'function') {
+    /* No react-dom: degrade to a message rather than throwing inside the host's
+       effect, which would take out the whole page. */
+    container.textContent = t('file.editorUnavailable', { message: 'react-dom' })
+    return { dispose: () => { container.textContent = '' }, handle: noop.handle }
+  }
+
+  const root = client.createRoot(container)
+  const runtime = { openFile: null, hasDirty: null, reload: null, jump: null, pendingOpen: null, pendingJump: null }
+  /**
+   * A call that arrives before this pane's React tree has installed the
+   * imperative surface must NOT be dropped.
+   *
+   * The host's first click both selects a file and mounts this pane; the install
+   * effect runs a frame later. Dropping the call left the editor on its "pick a
+   * file" empty state with no error — the user saw it as "clicking does nothing".
+   * Buffer the latest request (latest wins) and replay it on install.
+   */
+  const handle = {
+    openFile: (rel) => {
+      if (runtime.openFile !== null) { runtime.openFile(rel); return }
+      runtime.pendingOpen = rel
+    },
+    hasDirty: (rel) => (runtime.hasDirty === null ? false : runtime.hasDirty(rel) === true),
+    reload: (rel) => { if (runtime.reload !== null) runtime.reload(rel) },
+    /* 打开并定位到某一行：搜索结果直接跳到对应位置，而不是从头看起。 */
+    jump: (rel, line) => {
+      if (runtime.jump !== null) { runtime.jump(rel, line); return }
+      runtime.pendingJump = { rel, line }
+    },
+  }
+
+  function PaneHost() {
+    const [state, setState] = useState(() => ({
+      rel: null,
+      tab: null,
+      editing: false,
+      error: null,
+      status: 'idle',
+    }))
+    const rootRef = useRef(null)
+    const tabsRef = useRef([])
+
+    /* ---- the imperative surface the host calls ---- */
+    useEffect(() => {
+      runtime.openFile = (rel) => {
+        const target = normalizeRel(rel)
+        if (target === '') return
+        setState((previous) => (previous.rel === target ? previous : Object.assign({}, previous, { rel: target, status: 'loading', error: null })))
+      }
+      runtime.reload = (rel) => {
+        setState((previous) => (previous.rel === normalizeRel(rel) ? Object.assign({}, previous, { status: 'loading', error: null }) : previous))
+      }
+      /* 定位到某一行：同一文件就地把行号推给编辑器（lineToken 变化触发重新滚动），
+         不同文件则先打开，行号记在 pendingLine 里等加载完成后再应用。 */
+      runtime.jump = (rel, line) => {
+        const target = normalizeRel(rel)
+        const n = Number(line) || 0
+        setState((previous) => {
+          if (previous.rel !== target) {
+            return Object.assign({}, previous, { rel: target, status: 'loading', error: null, pendingLine: n })
+          }
+          if (previous.tab === null) return Object.assign({}, previous, { pendingLine: n })
+          return Object.assign({}, previous, {
+            tab: Object.assign({}, previous.tab, { line: n, lineToken: (previous.tab.lineToken || 0) + 1 }),
+          })
+        })
+      }
+      runtime.hasDirty = (rel) => {
+        const target = normalizeRel(rel)
+        const found = tabsRef.current.find((entry) => entry.rel === target)
+        return found !== undefined && found.dirty === true
+      }
+      /* Replay whatever the host asked for before we were ready. */
+      if (runtime.pendingOpen !== null) {
+        const buffered = runtime.pendingOpen
+        runtime.pendingOpen = null
+        runtime.openFile(buffered)
+      }
+      return () => {
+        runtime.openFile = null
+        runtime.reload = null
+        runtime.hasDirty = null
+      }
+    }, [])
+
+    /* The host may push a file before this pane even mounts. */
+    useEffect(() => {
+      const suggested = api !== null && api !== undefined && typeof api.activeRel === 'string' ? normalizeRel(api.activeRel) : ''
+      if (suggested !== '') runtime.openFile(suggested)
+      /* eslint-disable-next-line react-hooks/exhaustive-deps */
+    }, [])
+
+    /* Host pushes a new file whenever the user picks one in the tree. */
+    useEffect(() => {
+      const rel = api !== null && api !== undefined && typeof api.activeRel === 'string' ? normalizeRel(api.activeRel) : ''
+      if (rel !== '') runtime.openFile(rel)
+    }, [api === null || api === undefined ? null : api.activeRel])
+
+    /* ---- load the file ---- */
+    /* Read the workspace root the same way the page does. `readStoredRoot` is
+       this bundle's own helper (the shell has a different one); reaching for the
+       shell's would be a ReferenceError at runtime, which is exactly what the
+       first end-to-end run caught. */
+    const workspaceRoot = useMemo(() => {
+      const stored = readStoredRoot()
+      return stored === null || stored === undefined ? '' : stored
+    }, [])
+
+    useEffect(() => {
+      const rel = state.rel
+      if (rel === null || workspaceRoot === '') return undefined
+      if (state.status !== 'loading') return undefined
+      let cancelled = false
+      const kind = classifyFile(rel)
+      const run = async () => {
+        try {
+          if (isReadableKind(kind)) {
+            const data = await call('read', { root: workspaceRoot, rel })
+            if (cancelled) return
+            const content = typeof data.content === 'string' ? data.content : ''
+            setState((previous) => Object.assign({}, previous, {
+              status: 'ready',
+              error: null,
+              tab: {
+                rel,
+                name: baseNameOfRel(rel),
+                kind: data.encoding === 'binary' ? 'binary' : kind,
+                language: languageOf(rel),
+                content,
+                savedContent: content,
+                dirty: false,
+                saving: false,
+                editing: false,
+                conflict: false,
+                status: 'ready',
+                error: null,
+                mtimeMs: data.mtimeMs,
+                size: data.size,
+                truncated: data.truncated === true,
+                encoding: data.encoding,
+                /* 从搜索结果跳进来时，加载完成后要落在那一行，而不是从头 */
+                line: Number(previous.pendingLine) || 0,
+                lineToken: previous.pendingLine ? 1 : 0,
+                /* 用掉就清掉，免得下一个文件莫名跳到旧行号 */
+                clearedLineJump: true, pendingLine: 0,
+                externalMtimeMs: null,
+              },
+            }))
+            return
+          }
+          /* Non-text: the media route renders it directly. */
+          setState((previous) => Object.assign({}, previous, {
+            status: 'ready',
+            error: null,
+            tab: Object.assign({}, previous.tab === null ? {} : previous.tab, {
+              rel,
+              name: baseNameOfRel(rel),
+              kind,
+              language: languageOf(rel),
+              content: '',
+              savedContent: '',
+              dirty: false,
+              status: 'ready',
+              error: null,
+              mediaTick: Date.now(),
+              line: 0,
+              lineToken: 0,
+            }),
+          }))
+        } catch (error) {
+          if (cancelled) return
+          const message = error !== null && error !== undefined && typeof error.message === 'string'
+            ? error.message
+            : t('error.unknown')
+          setState((previous) => Object.assign({}, previous, { status: 'error', error: message, tab: null }))
+        }
+      }
+      void run()
+      return () => { cancelled = true }
+    }, [state.rel, state.status, workspaceRoot, t])
+
+    /* ---- save ---- */
+    const save = useCallback(async () => {
+      const tab = state.tab
+      if (tab === null || tab === undefined || tab.dirty !== true) return false
+      setState((previous) => (previous.tab === null ? previous : Object.assign({}, previous, {
+        tab: Object.assign({}, previous.tab, { saving: true }),
+      })))
+      try {
+        const data = await call('write', {
+          root: workspaceRoot,
+          rel: tab.rel,
+          content: tab.content,
+          baseMtimeMs: tab.mtimeMs,
+        })
+        setState((previous) => (previous.tab === null ? previous : Object.assign({}, previous, {
+          tab: Object.assign({}, previous.tab, {
+            savedContent: previous.tab.content,
+            dirty: false,
+            saving: false,
+            mtimeMs: data !== null && data !== undefined ? data.mtimeMs : previous.tab.mtimeMs,
+            size: data !== null && data !== undefined ? data.size : previous.tab.size,
+          }),
+        })))
+        return true
+      } catch (error) {
+        const conflict = error !== null && error !== undefined && error.code === 'conflict'
+        setState((previous) => (previous.tab === null ? previous : Object.assign({}, previous, {
+          tab: Object.assign({}, previous.tab, { saving: false, conflict }),
+          error: conflict ? t('toast.conflict', { name: '' }) : (error !== null && error !== undefined ? error.message : t('error.unknown')),
+        })))
+        return false
+      }
+    }, [state.tab, workspaceRoot, t])
+
+    /* Ctrl+S while the editor has focus. Scoped to this pane only: the host may
+       have its own shortcut, and stealing it would be the old bug again. */
+    useEffect(() => {
+      const node = rootRef.current
+      if (node === null || node === undefined) return undefined
+      const onKey = (event) => {
+        if (!(event.ctrlKey === true || event.metaKey === true)) return
+        if (String(event.key).toLowerCase() !== 's') return
+        if (state.tab === null || state.tab.dirty !== true) return
+        event.preventDefault()
+        event.stopPropagation()
+        void save()
+      }
+      node.addEventListener('keydown', onKey)
+      return () => node.removeEventListener('keydown', onKey)
+    }, [state.tab, save])
+
+    const tab = state.tab
+    const mediaSrc = tab === null || workspaceRoot === '' ? '' : mediaUrl(workspaceRoot, tab.rel, tab.mediaTick)
+
+    const body = (() => {
+      if (state.rel === null) {
+        return E('div', { className: 'wbf-emptyView' },
+          E('div', { className: 'wbf-emptyHint' }, t('tabs.emptyHint')))
+      }
+      if (state.status === 'loading') {
+        return E('div', { className: 'wbf-emptyView' }, E('div', { className: 'wbf-spinner' }), E('div', { className: 'wbf-emptyHint' }, t('file.loading')))
+      }
+      if (state.status === 'error') {
+        return E('div', { className: 'wbf-emptyView' },
+          E('div', { className: 'wbf-emptyTitle' }, t('file.readError')),
+          E('div', { className: 'wbf-emptyHint' }, state.error))
+      }
+      if (tab === null) return null
+      return E(Viewer, {
+        tab,
+        t,
+        editing: state.editing === true,
+        src: mediaSrc,
+        onChange: (text) => setState((previous) => {
+          if (previous.tab === null) return previous
+          return Object.assign({}, previous, {
+            tab: Object.assign({}, previous.tab, { content: text, dirty: text !== previous.tab.savedContent }),
+          })
+        }),
+        onSave: () => { void save() },
+      })
+    })()
+
+    /* The EMBEDDED pane deliberately has no tab strip, but it still needs the one
+       action that matters: switching between preview and edit. Without it a page
+       that mounts `panes.source` (the source-control page does) can only look.
+       Read-only kinds and truncated files get no toggle — there is nothing to do. */
+    const canEdit = tab !== null && tab !== undefined
+      && isEditableKind(tab.kind) && tab.status === 'ready' && tab.truncated !== true
+    const head = canEdit === true
+      ? E('div', { className: 'wbf-fileHead', style: { flex: 'none' } },
+        E('div', { className: 'wbf-fileIdentity' },
+          E('span', { className: 'wbf-filePath', title: tab.rel }, tab.rel),
+          tab.dirty === true ? E('span', { className: 'wbf-badge is-warn' }, t('file.dirty')) : null),
+        E('div', { className: 'wbf-headActions' },
+          E(TextButton, {
+            onClick: () => setState((previous) => (previous.tab === null
+              ? previous
+              : Object.assign({}, previous, { editing: previous.editing !== true }))),
+          }, state.editing === true ? t('file.preview') : t('file.edit')),
+          state.editing === true && tab.dirty === true
+            ? E(TextButton, { onClick: () => { void save() } }, t('file.save'))
+            : null))
+      : null
+
+    return E('div', {
+      className: 'wbf-pane',
+      ref: rootRef,
+      tabIndex: -1,
+      style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: '0', height: '100%' },
+    }, head, body)
+  }
+
+  root.render(React.createElement(PaneHost))
+
+  return {
+    handle,
+    dispose: () => {
+      runtime.openFile = null
+      runtime.hasDirty = null
+      runtime.reload = null
+      try { root.unmount() } catch (error) { void error }
+    },
+  }
+}
+
 
     /* ============================== registration ============================== */
 
@@ -3810,6 +4287,12 @@ function writeSidebarWidth(width) {
 @media (max-width:520px){.wbf-sidebar{width:42%;min-width:150px}.wbf-filePath{display:none}}
 `
 
+    /* The live editor pane, when some OTHER page has composed it. Kept at module
+       scope because `commands` are called from outside React (the host page asks
+       "is this file dirty?" on a click) and there is exactly one such pane per
+       page instance. */
+    const sourcePaneRef = { current: null }
+
     function apply(ctx) {
       const doc = typeof document !== 'undefined' && document !== null ? document : null
       if (doc !== null && doc.head !== undefined && doc.head !== null) {
@@ -3839,8 +4322,47 @@ function writeSidebarWidth(width) {
             id: PAGE_ID,
             title: t('page.files'),
             order: 10,
+            hidden: true,
             icon: (size) => E(Icon, { name: 'files', size: size === undefined ? 16 : size }),
             component: () => E(LocaleLive, { ctx, t }),
+            /* ── Embedding surface (optional; see docs/panes-contract.md) ──
+             *
+             * The source-control page composes this page's EDITOR into its own
+             * layout instead of showing a duplicate file list. The pane mounts
+             * into a container the shell owns, using its own React root, so the
+             * two remain separate failure domains.
+             *
+             * `paneHost` is a tiny imperative bridge: the shell calls
+             * `mount(container)` once, then steers it with the commands below.
+             * Everything the pane needs to render (`openFile`, `hasDirty`) also
+             * exists as a command, because the shell asks about files it has
+             * not opened yet.
+             */
+            panes: {
+              /* The pane returns { dispose, handle }; the host (dock or another
+                 page) decides when to unmount, and this page keeps the handle so
+                 its own `commands` can answer questions about the pane. */
+              source: (container, api) => {
+                const mounted = mountSourcePane(container, api, ctx, t)
+                if (mounted !== null && mounted !== undefined && mounted.handle !== undefined) {
+                  sourcePaneRef.current = mounted.handle
+                }
+                return () => {
+                  sourcePaneRef.current = null
+                  if (mounted !== null && mounted !== undefined && typeof mounted.dispose === 'function') mounted.dispose()
+                }
+              },
+            },
+            commands: {
+              /** Open a workspace-relative file in the editor surface. */
+              openFile: (rel) => { if (sourcePaneRef.current !== null) sourcePaneRef.current.openFile(rel) },
+              /** True when that file has unsaved edits in the editor. */
+              hasDirty: (rel) => (sourcePaneRef.current !== null ? sourcePaneRef.current.hasDirty(rel) === true : false),
+              /** Re-read the file from disk (used after a git write touched it). */
+              reload: (rel) => { if (sourcePaneRef.current !== null) sourcePaneRef.current.reload(rel) },
+              /** 打开文件并定位到某一行（搜索结果点击）。 */
+              jump: (rel, line) => { if (sourcePaneRef.current !== null && typeof sourcePaneRef.current.jump === 'function') sourcePaneRef.current.jump(rel, line) },
+            },
           })
           ctx.effect(() => (typeof off === 'function' ? off : () => {}), 'dsh-workbay-files: workbench page')
           return true
@@ -3955,3 +4477,8 @@ function writeSidebarWidth(width) {
     return { apply, name: 'dsh-workbay-files', __test: TEST_API }
   },
 })
+
+
+
+
+

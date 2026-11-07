@@ -1,0 +1,12 @@
+# dsh-workbay-source-control — bundle patch
+#
+# This page owns NO routes of its own. It is a pure CLIENT page: the tree data
+# comes from /dsh-workbay-files/api (tree) and the git status comes from
+# /dsh-gitcraft/api (snapshot), both already mounted by their own bundles.
+#
+# The host half exists only because DSH needs a Node entry to load a bundle
+# (and because the shell advertises what it depends on, so a broken dependency
+# shows up as a clear startup message instead of a blank page). See src/index.js.
+- insert:
+    - id: workbay-source-control
+      name: 'dsh-workbay-source-control'

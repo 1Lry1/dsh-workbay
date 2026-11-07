@@ -45,6 +45,7 @@ window.__ModuleLoader__.load({
       'title': 'GitCraft',
       'description': 'SourceTree 级 GitCraft：分支树 / 提交图 / hunk 级暂存 / 合并与冲突',
       'nav.changes': '变更',
+      'nav.files': '文件',
       'nav.history': '历史',
       'nav.branches': '分支',
       'nav.stash': '贮藏',
@@ -91,6 +92,7 @@ window.__ModuleLoader__.load({
       'picker.recent': '最近使用',
       'toolbar.refresh': '刷新',
       'toolbar.fetch': '抓取',
+      'toolbar.fetchPartial': '已从其它远程抓取，但这些远程不可用：{names}',
       'toolbar.pull': '拉取',
       'toolbar.push': '推送',
       'toolbar.settings': '设置',
@@ -108,12 +110,23 @@ window.__ModuleLoader__.load({
       'changes.untracked': '未跟踪 ({n})',
       'changes.conflicted': '冲突 ({n})',
       'changes.empty': '没有未提交的变更',
+      'changes.emptyHint': '工作区是干净的。改完文件后这里会自动刷新。',
+      'error.timeout': '读取超时：这次改动可能太大，或请求被中断。重新点一次文件即可重试。',
+      'hunk.label': '按块暂存',
+      'hunk.stagedLabel': '已暂存的块',
+      'hunk.stage': '暂存此块',
+      'hunk.unstage': '取消暂存',
+      'hunk.discard': '丢弃此块',
+      'changes.emptyHintSync': '工作区是干净的，但这个分支和远程还没同步。',
+      'toast.dismiss': '点击关闭',
       'changes.stage': '暂存',
       'changes.unstage': '取消暂存',
       'changes.discard': '放弃更改',
       'changes.stageAll': '全部暂存',
       'changes.unstageAll': '全部取消暂存',
-      'changes.discardAll': '全部放弃',
+      'changes.discardAll': '全部撤销',
+      'changes.confirmDiscardAll': '撤销全部未提交的更改？已暂存和未暂存的修改都会被丢弃，未跟踪的文件会被删除（.gitignore 里忽略的构建产物会保留）。此操作无法撤销。',
+      'changes.discardedAll': '已撤销全部更改',
       'changes.stageHunk': '暂存此块',
       'changes.unstageHunk': '取消暂存此块',
       'changes.discardHunk': '放弃此块',
@@ -187,6 +200,24 @@ window.__ModuleLoader__.load({
       'blame.pick': '在上方「变更」列表中选中一个文件后查看逐行追溯',
       'blame.loading': '正在计算…',
       'blame.empty': '没有可追溯的内容',
+      'files.search': '搜索文件',
+      'files.placeholderName': '按文件名搜索，例如 index 或 src/ui',
+      'files.placeholderContent': '按文件内容搜索',
+      'files.clear': '清空',
+      'files.mode.name': '文件名',
+      'files.mode.content': '内容',
+      'files.searching': '正在搜索…',
+      'files.noResults': '没有匹配的文件',
+      'files.truncated': '结果过多，只显示前一批。请把关键字写得更具体。',
+      'files.hintTitle': '搜索这个仓库里的文件',
+      'files.hint': '输入关键字后，点某个文件即可查看它的修改历史；被重命名过的文件也会顺着旧名字一起追溯。',
+      'files.pickFile': '从左边选一个文件，这里会列出它的每一次提交。',
+      'files.openHistory': '查看文件历史',
+      'files.noHistory': '这个文件还没有提交记录',
+      'files.commitCount': '共 {n} 次提交',
+      'files.diffInCommit': '这次提交对该文件的修改',
+      'files.alsoChanged': '同一提交还改了 {n} 个文件',
+      'files.binary': '二进制',
       'conflict.title': '存在未完成的 {op}',
       'conflict.files': '冲突文件 ({n})',
       'conflict.ours': '采用本地',
@@ -208,8 +239,21 @@ window.__ModuleLoader__.load({
       'dialog.deleteTitle': '删除分支 {name}',
       'dialog.forceDelete': '强制删除（未合并也删除）',
       'dialog.protectedWarn': '{name} 是受保护分支，删除需要额外确认。',
+      'tag.revoke': '撤销标签',
+      'tag.publish': '发布到远程',
+      'tag.unpublished': '未发布',
+      'tag.missingN': '缺 {n} 个远程',
+      'tag.missingOn': '尚未推送到：{names}',
+      'tag.published': '已推送标签 {name}',
+      'tag.revokeTitle': '撤销标签 {name}',
+      'tag.revokeRemote': '同时删除远程标签（已推送过的必须勾选）',
+      'tag.revokeWarnBoth': '本地与远程的该标签都会被删除。提交本身不受影响，需要时可以重新打标签。',
+      'tag.revokeWarnLocal': '只删除本地标签；远程已发布的保持不动，下次抓取可能又被拉回来。',
+      'tag.revoked': '已撤销标签 {name}',
       'error.not-a-repo': '不是 Git 仓库',
       'error.git-missing': '找不到 git 命令',
+      'error.argv-too-long': '文件太多，一条命令行放不下（Windows 上限约 32767 字符）。请改用「全部暂存 / 全部撤销」这类批量操作，或分批处理。',
+      'error.git-spawn-failed': '无法启动 git：{message}',
       'error.git-timeout': 'git 命令超时',
       'error.local-changes-block': '有未提交的更改，请先提交或贮藏',
       'error.not-merged': '分支尚未合并，请使用强制删除',
@@ -219,6 +263,9 @@ window.__ModuleLoader__.load({
       'error.no-upstream': '当前分支没有上游，请先发布',
       'error.auth-failed': '认证失败',
       'error.not-fast-forward': '无法快进合并：本地与远程已分叉',
+      'error.tag-not-found': '没有名为 {message} 的标签',
+      'error.tag-ls-remote-failed': '无法读取远程标签：{message}',
+      'error.tag-remote-delete-failed': '{message}',
       'error.patch-failed': '补丁应用失败，文件可能已变化，请刷新',
       'error.nested-repo': '该条目本身是一个 Git 仓库，请从终端处理',
       'error.outside-workspace': '该目录不在工作区内',
@@ -230,6 +277,7 @@ window.__ModuleLoader__.load({
       'title': 'Git Workbench',
       'description': 'SourceTree-grade GitCraft: branch tree / commit graph / hunk staging / merge & conflicts',
       'nav.changes': 'Changes',
+      'nav.files': 'Files',
       'nav.history': 'History',
       'nav.branches': 'Branches',
       'nav.stash': 'Stash',
@@ -276,6 +324,7 @@ window.__ModuleLoader__.load({
       'picker.recent': 'Recent',
       'toolbar.refresh': 'Refresh',
       'toolbar.fetch': 'Fetch',
+      'toolbar.fetchPartial': 'Fetched, but these remotes were unreachable: {names}',
       'toolbar.pull': 'Pull',
       'toolbar.push': 'Push',
       'toolbar.settings': 'Settings',
@@ -293,12 +342,23 @@ window.__ModuleLoader__.load({
       'changes.untracked': 'Untracked ({n})',
       'changes.conflicted': 'Conflicts ({n})',
       'changes.empty': 'No uncommitted changes',
+      'changes.emptyHint': 'The working tree is clean. This list refreshes by itself when files change.',
+      'error.timeout': 'Timed out reading the diff. The change may be very large, or the request was interrupted. Click the file again to retry.',
+      'hunk.label': 'Stage by hunk',
+      'hunk.stagedLabel': 'Staged hunks',
+      'hunk.stage': 'Stage hunk',
+      'hunk.unstage': 'Unstage',
+      'hunk.discard': 'Discard hunk',
+      'changes.emptyHintSync': 'The tree is clean, but this branch is not in sync with its remote.',
+      'toast.dismiss': 'Click to dismiss',
       'changes.stage': 'Stage',
       'changes.unstage': 'Unstage',
       'changes.discard': 'Discard',
       'changes.stageAll': 'Stage all',
       'changes.unstageAll': 'Unstage all',
       'changes.discardAll': 'Discard all',
+      'changes.confirmDiscardAll': 'Discard every uncommitted change? Staged and unstaged edits are both thrown away and untracked files are deleted (build output matched by .gitignore is kept). This cannot be undone.',
+      'changes.discardedAll': 'Discarded all changes',
       'changes.stageHunk': 'Stage hunk',
       'changes.unstageHunk': 'Unstage hunk',
       'changes.discardHunk': 'Discard hunk',
@@ -372,6 +432,24 @@ window.__ModuleLoader__.load({
       'blame.pick': 'Select a file in Changes to see its line-by-line history',
       'blame.loading': 'Computing…',
       'blame.empty': 'Nothing to blame',
+      'files.search': 'Search files',
+      'files.placeholderName': 'Search by file name, e.g. index or src/ui',
+      'files.placeholderContent': 'Search inside file contents',
+      'files.clear': 'Clear',
+      'files.mode.name': 'Name',
+      'files.mode.content': 'Content',
+      'files.searching': 'Searching…',
+      'files.noResults': 'No matching files',
+      'files.truncated': 'Too many results — only the first batch is shown. Narrow the query.',
+      'files.hintTitle': 'Find a file in this repository',
+      'files.hint': 'Type to search, then pick a file to see every commit that touched it. Renames are followed back to the old name.',
+      'files.pickFile': 'Pick a file on the left to list its commits here.',
+      'files.openHistory': 'File history',
+      'files.noHistory': 'This file has no commits yet',
+      'files.commitCount': '{n} commits',
+      'files.diffInCommit': 'What this commit changed in this file',
+      'files.alsoChanged': '{n} other file(s) changed in the same commit',
+      'files.binary': 'binary',
       'conflict.title': 'Unfinished {op} in progress',
       'conflict.files': 'Conflicted files ({n})',
       'conflict.ours': 'Take ours',
@@ -392,8 +470,21 @@ window.__ModuleLoader__.load({
       'dialog.deleteTitle': 'Delete branch {name}',
       'dialog.forceDelete': 'Force delete (even when unmerged)',
       'dialog.protectedWarn': '{name} is a protected branch; deleting it needs an extra confirmation.',
+      'tag.revoke': 'Revoke tag',
+      'tag.publish': 'Publish to remote',
+      'tag.unpublished': 'not published',
+      'tag.missingN': 'missing on {n} remote(s)',
+      'tag.missingOn': 'Not pushed to: {names}',
+      'tag.published': 'Published tag {name}',
+      'tag.revokeTitle': 'Revoke tag {name}',
+      'tag.revokeRemote': 'Also delete it on the remote (required if it was pushed)',
+      'tag.revokeWarnBoth': 'The tag is removed locally and on the remote. Commits are untouched — you can tag again any time.',
+      'tag.revokeWarnLocal': 'Only the local tag is removed; a published one stays, so the next fetch can bring it back.',
+      'tag.revoked': 'Revoked tag {name}',
       'error.not-a-repo': 'Not a Git repository',
       'error.git-missing': 'git executable not found',
+      'error.argv-too-long': 'Too many files for one command line (Windows caps it at ~32767 characters). Use a bulk action such as "Stage all" / "Discard all", or work in smaller batches.',
+      'error.git-spawn-failed': 'Cannot start git: {message}',
       'error.git-timeout': 'git command timed out',
       'error.local-changes-block': 'Uncommitted changes — commit or stash first',
       'error.not-merged': 'Branch is not merged; use force delete',
@@ -403,6 +494,9 @@ window.__ModuleLoader__.load({
       'error.no-upstream': 'No upstream for this branch — publish it first',
       'error.auth-failed': 'Authentication failed',
       'error.not-fast-forward': 'Cannot fast-forward: local and remote diverged',
+      'error.tag-not-found': 'There is no tag named {message}',
+      'error.tag-ls-remote-failed': 'Cannot read the remote tags: {message}',
+      'error.tag-remote-delete-failed': '{message}',
       'error.patch-failed': 'Patch did not apply — refresh and retry',
       'error.nested-repo': 'That entry is itself a Git repository — handle it in a terminal',
       'error.outside-workspace': 'That folder is outside the workspace',
@@ -530,6 +624,7 @@ window.__ModuleLoader__.load({
       warning: ['M8 2.5l6 11H2l6-11z', 'M8 6.5v3.5', 'M8 11.5h.01'],
       merge: ['M5 3.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z', 'M5 9.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z', 'M5 6.5v3', 'M11 4.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z', 'M11 7.5v1a2 2 0 0 1-2 2H7'],
       filter: ['M2.5 4h11', 'M4.5 8h7', 'M6.5 12h3'],
+      search: ['M7.2 12.4a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z', 'M11 11l3 3'],
       repo: ['M2 5.5A1.5 1.5 0 0 0 3.5 4h1.5l1 1.5H14V12H2z', 'M2 5.5h12'],
       folder: ['M2 4.5a1 1 0 0 0 1-1h3l1.5 1.5H14a1 1 0 0 0-1 1v5.5a1 1 0 0 0 1 1h-11a1 1 0 0 0-1-1z'],
       up: ['M8 12.5V3.5', 'M4.5 7L8 3.5l3.5 3.5'],
@@ -609,17 +704,34 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Parse a unified diff into renderable rows: file headers are dropped (the
-     * caller already knows the path) and each hunk keeps its body rows so the
-     * hunk's own stage/discard buttons can address it by index + row offset.
+     * Parse a unified diff into renderable rows.
+     *
+     * File headers used to be dropped outright, on the assumption that "the caller
+     * already knows the path". That holds for a one-file diff and breaks for a
+     * whole-commit diff spanning many files: the reader saw a column of hunks with no
+     * way to tell which file each belonged to. The name is now carried on every hunk
+     * (and rendered as a section header when the diff spans more than one file).
      */
     function parsePatch(patchText) {
       const hunks = []
       let current = null
+      let currentFile = ''
       let oldNo = 0
       let newNo = 0
       const lines = String(patchText).split('\n')
       for (const line of lines) {
+        if (line.startsWith('diff --git ')) {
+          const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line)
+          currentFile = match === null ? '' : match[2]
+          current = null
+          continue
+        }
+        if (line.startsWith('+++ ')) {
+          const plus = line.slice(4).trim()
+          if (plus !== '' && plus !== '/dev/null') currentFile = plus.replace(/^b\//, '')
+          continue
+        }
+        if (line.startsWith('--- ')) continue
         if (line.startsWith('@@')) {
           const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
           current = {
@@ -628,6 +740,7 @@ window.__ModuleLoader__.load({
             oldStart: match === null ? 0 : Number(match[1]),
             newStart: match === null ? 0 : Number(match[2]),
             index: hunks.length,
+            file: currentFile,
           }
           hunks.push(current)
           oldNo = current.oldStart
@@ -720,7 +833,19 @@ window.__ModuleLoader__.load({
       if (error !== undefined && error !== null) return E('div', { className: 'gwc-empty is-error' }, error)
       if (binary === true) return E('div', { className: 'gwc-empty' }, t('diff.binary'))
       if (hunks.length === 0) return E('div', { className: 'gwc-empty' }, t('diff.empty'))
-      return E('div', { className: 'gwc-diff' }, hunks.map((hunk) => E(DiffHunk, {
+  /* Section headers only when the diff really spans several files: a one-file diff
+     already names the file in the pane header, and repeating it there is noise. */
+  const filesInDiff = {}
+  for (const hunk of hunks) filesInDiff[String(hunk.file === undefined || hunk.file === null ? '' : hunk.file)] = true
+  const spansFiles = Object.keys(filesInDiff).length > 1
+  return E('div', { className: 'gwc-diff' }, hunks.map((hunk, position) => {
+    const previous = position === 0 ? null : hunks[position - 1]
+    const showFile = spansFiles && (previous === null || previous.file !== hunk.file)
+    return [
+      showFile
+        ? E('div', { key: 'file-' + hunk.index, className: 'gwc-fileHead', title: hunk.file }, hunk.file)
+        : null,
+      E(DiffHunk, {
         key: hunk.index,
         hunk,
         mode: mode === 'split' ? 'split' : 'unified',
@@ -728,8 +853,318 @@ window.__ModuleLoader__.load({
         actions: hunkActions,
         selection,
         onToggle,
-      })))
+      }),
+    ]
+  }))
     }
+
+    /* ============================== embeddable diff pane ============================== */
+
+    /**
+     * A diff surface another page can mount.
+     *
+     * Same contract as the files page's `panes.source`: the caller owns the
+     * container, this page owns the React root inside it, and the caller steers
+     * it through `commands.showDiff`. Nothing is imported across bundles — that
+     * is what keeps this page installable on its own and keeps a crash here from
+     * blanking the host.
+     *
+     * It reuses `DiffView` (the same renderer the in-page modal uses), so a diff
+     * looks identical whether it is shown here or in the GitCraft tab. The only
+     * thing this pane does not do is hunk-level staging: the host's tree already
+     * offers stage/discard per file, and two different staging surfaces in one
+     * screen is exactly the "second copy of the list" problem this design avoids.
+     */
+    function mountDiffPane(container, api, ctx, t, scope) {
+      const noop = { dispose: () => {}, handle: { showDiff() {} } }
+      if (container === null || container === undefined) return noop
+      /* Both entry points, like the dock: `react-dom/client` is the React 18
+         name, the legacy one is still offered on some builds. */
+      const client = (() => {
+        for (const specifier of ['react-dom/client', 'react-dom']) {
+          let mod = null
+          try { mod = require(specifier) } catch (error) { void error; continue }
+          if (mod !== null && mod !== undefined && typeof mod.createRoot === 'function') return mod
+          if (mod !== null && mod !== undefined && mod.default !== undefined && typeof mod.default.createRoot === 'function') return mod.default
+        }
+        return null
+      })()
+      if (client === null || typeof client.createRoot !== 'function') {
+        container.textContent = t('status.loading')
+        return { dispose: () => { container.textContent = '' }, handle: noop.handle }
+      }
+
+      const root = client.createRoot(container)
+      const initialMode = api !== null && api !== undefined && api.diffMode === 'split' ? 'split' : 'unified'
+      const runtime = { showDiff: null, pending: null, setMode: null, pendingMode: null }
+      /**
+       * A call that arrives before this pane's React tree has installed
+       * `runtime.showDiff` must NOT be dropped.
+       *
+       * That is exactly what happens on the first click in a host page: the click
+       * both selects the file and mounts this pane, and the install effect runs a
+       * frame later. Dropping the call left the pane showing its empty state with
+       * no error anywhere — reported by the user as "clicking a change does
+       * nothing". Buffer the latest request (latest wins, not a queue: only the
+       * most recent selection is worth showing) and replay it on install.
+       */
+      const handle = {
+        /**
+         * `showDiff(path, options)`.
+         *
+         * `options.base` picks what the patch is against — `'worktree'` (the
+         * default), `'staged'`, or `'commit'` with `options.rev`.
+         *
+         * `options.whole === true` means "everything this commit touched": the
+         * request carries no path filter at all. A host that shows a commit's
+         * patch needs that — narrowing to one file first makes the reader click
+         * before seeing anything.
+         *
+         * `setMode('unified' | 'split')` switches the layout; the reader decides,
+         * not the pane.
+         */
+        showDiff: (path, options) => {
+          if (runtime.showDiff !== null) { runtime.showDiff(path, options); return }
+          runtime.pending = { path, options }
+        },
+        setMode: (mode) => {
+          if (runtime.setMode !== null) { runtime.setMode(mode); return }
+          runtime.pendingMode = mode
+        },
+      }
+
+      function PaneHost() {
+        /* Bumped by showDiff(force) so the fetch effect re-runs for the SAME target. */
+        const [reloadNonce, setReloadNonce] = useState(0)
+        const [state, setState] = useState({ path: null, base: 'worktree', rev: null, whole: false, mode: initialMode, patch: '', hunks: [], loading: false, error: null, binary: false })
+
+        useEffect(() => {
+          runtime.setMode = (mode) => {
+            const next = mode === 'split' ? 'split' : 'unified'
+            setState((previous) => (previous.mode === next ? previous : Object.assign({}, previous, { mode: next })))
+          }
+          if (runtime.pendingMode !== null) {
+            const buffered = runtime.pendingMode
+            runtime.pendingMode = null
+            runtime.setMode(buffered)
+          }
+          return () => { runtime.setMode = null }
+        }, [])
+
+        useEffect(() => {
+          runtime.showDiff = (path, options) => {
+            const target = typeof path === 'string' ? path.replace(/\\/g, '/').replace(/^\/+/, '') : ''
+            const base = options !== null && options !== undefined
+              && (options.base === 'staged' || options.base === 'commit' || options.base === 'untracked') ? options.base : 'worktree'
+            const rev = options !== null && options !== undefined && typeof options.rev === 'string' && options.rev !== ''
+              ? options.rev
+              : null
+            /* Only a commit can be shown whole: `git show <rev>` with no pathspec
+               is a meaningful request, while "the whole worktree" is not. */
+            const whole = base === 'commit' && options !== null && options !== undefined && options.whole === true
+            if (target === '' && whole !== true) {
+              setState((previous) => ({ path: null, base: 'worktree', rev: null, whole: false, mode: previous.mode, patch: '', hunks: [], loading: false, error: null, binary: false }))
+              return
+            }
+            /* IDEMPOTENT: showing the same target again must not reset the state.
+               The host legitimately calls this more than once (buffered on mount,
+               then re-pushed), and a blind reset threw away an already-fetched
+               patch and put the pane back on "正在读取差异…". `base`, `rev` and
+               `whole` are part of the identity: the same file against the index
+               instead of the worktree IS a different patch. */
+            /* A WRITE invalidates the patch even though the target did not change:
+               after staging or discarding a hunk the same file/base still answers, but
+               the content is different; force is how the host says so. */
+            const force = options !== null && options !== undefined && options.force === true
+            setState((previous) => {
+              if (force !== true
+                && previous.path === target && previous.base === base && previous.rev === rev && previous.whole === whole) return previous
+              return {
+                path: target, base, rev, whole, mode: previous.mode,
+                patch: force === true ? previous.patch : '',
+                hunks: force === true ? previous.hunks : [],
+                loading: force === true ? previous.loading : true,
+                error: null,
+                binary: false,
+              }
+            })
+            /* The fetch effect keys on target/base/rev/whole, so forcing the SAME target
+               would not re-run it. The nonce is what makes it run. */
+            if (force === true) setReloadNonce((value) => value + 1)
+          }
+          /* Replay whatever the host asked for before we were ready. */
+          if (runtime.pending !== null) {
+            const buffered = runtime.pending
+            runtime.pending = null
+            runtime.showDiff(buffered.path, buffered.options)
+          }
+          return () => { runtime.showDiff = null }
+        }, [])
+
+        /* No `activeRel` seeding: the pane contract is "mount with context, steer
+           with commands". A path captured at mount time is whatever the user had
+           selected THEN, which is usually nothing. The shell calls showDiff as
+           soon as a file is picked. */
+
+        /* Fetch the patch for the current path. `base` matters: a staged change
+           must be diffed against the index, an unstaged one against the
+           worktree, or the user sees the wrong side of their own edit. */
+        const repoRoot = scope !== null && scope !== undefined && typeof scope.repoRoot === 'string'
+          ? scope.repoRoot
+          : ''
+        /* The request effect reads the path from STATE, not from a captured const:
+           `showDiff` may be replayed (buffered on mount, retried by the host), and
+           a captured path would be the stale one, causing every response to be
+           thrown away by the "still the same path?" guard below — the pane then
+           sits on "正在读取差异…" forever even though the patch arrived. */
+        const pathForRequest = state.path
+        const baseForRequest = state.base
+        const revForRequest = state.rev
+        useEffect(() => {
+          if (pathForRequest === null) return undefined
+          let cancelled = false
+          /* whole sends no pathspec at all: that is what makes it the whole commit. */
+          const payload = { base: baseForRequest }
+          if (pathForRequest !== '') payload.path = pathForRequest
+          if (baseForRequest === 'commit' && revForRequest !== null) payload.rev = revForRequest
+          /* The git host refuses a request with no root at all ("cwd, repoRoot,
+             dir or sessionId is required"), and that refusal is what an empty
+             pane shows instead of a patch. Only add the key when it is real. */
+          if (repoRoot !== '') payload.repoRoot = repoRoot
+          /* An untracked file has no diff against HEAD - git diff prints nothing.
+             The host has a dedicated method that renders it as an all-added patch. */
+          call(baseForRequest === 'untracked' ? 'untrackedDiff' : 'diff', payload).then((data) => {
+            if (cancelled) return
+            setState((previous) => (previous.path !== pathForRequest
+              || previous.base !== baseForRequest
+              || previous.rev !== revForRequest ? previous : {
+              path: pathForRequest,
+              base: baseForRequest,
+              rev: revForRequest,
+              patch: data !== null && data !== undefined && typeof data.patch === 'string' ? data.patch : '',
+              hunks: data !== null && data !== undefined && Array.isArray(data.hunks) ? data.hunks : [],
+              loading: false,
+              error: null,
+              binary: data !== null && data !== undefined && data.binary === true,
+            }))
+          }).catch((error) => {
+            if (cancelled) return
+            setState((previous) => (previous.path !== pathForRequest
+              || previous.base !== baseForRequest
+              || previous.rev !== revForRequest ? previous : {
+              path: pathForRequest,
+              base: baseForRequest,
+              rev: revForRequest,
+              patch: '',
+              hunks: [],
+              loading: false,
+              error: error !== null && error !== undefined && typeof error.message === 'string' ? error.message : t('error.unknown'),
+              binary: false,
+            }))
+          })
+          return () => { cancelled = true }
+        }, [pathForRequest, baseForRequest, revForRequest, t, repoRoot, reloadNonce])
+        /**
+         * A request that never settles must not spin forever.
+         *
+         * The host can be slow on a huge patch, and a request can be dropped when a
+         * pane is rebuilt mid-flight. Either way the reader sees "正在读取差异…"
+         * with no way out. After this budget the pane says so and stops pretending
+         * to be busy; the retry is one click away (re-select the file).
+         */
+        useEffect(() => {
+          if (state.loading !== true) return undefined
+          const timer = setTimeout(() => {
+            setState((previous) => (previous.loading === true
+              ? Object.assign({}, previous, { loading: false, error: t('error.timeout') })
+              : previous))
+          }, 25000)
+          return () => { clearTimeout(timer) }
+        }, [state.loading, state.path, state.base, state.rev, t])
+
+        /**
+         * Per-hunk actions, rendered INLINE on each hunk header.
+         *
+         * They used to be a chip row pinned above the patch, which meant deciding
+         * "stage this hunk?" while looking at a list of hunk HEADERS instead of the
+         * hunk itself — you had to scroll down, read, scroll back up, and hope you
+         * remembered which chip belonged to what. On the hunk header the buttons sit
+         * exactly next to the lines they act on.
+         *
+         * The pane does not know whether writing is allowed (a read-only install must
+         * not show a stage button) and must not decide which RPC to call — that is the
+         * host's job. It reports `onHunkAction(ref)` and lets the host do the write.
+         */
+        const hunkBar = null
+
+        /**
+         * Per-hunk buttons for a HOST that drives this pane through
+         * `api.onHunkAction` — the workbench page does exactly that.
+         *
+         * They render ON the hunk header, next to the lines they act on. The pane still
+         * does not decide which RPC runs: it reports `onHunkAction(ref)` and the host
+         * performs the write. A read-only install passes no callback and the buttons
+         * never appear.
+         */
+        const apiHunkActions = (hunk) => {
+          const onHunkAction = api === null || api === undefined ? undefined : api.onHunkAction
+          if (typeof onHunkAction !== 'function') return null
+          /* A commit's patch is history: it cannot be staged or discarded. */
+          if (state.base === 'commit' || state.base === 'untracked') return null
+          if (state.path === null) return null
+          const staged = state.base === 'staged'
+          return E(Fragment, null,
+            E('button', {
+              type: 'button',
+              className: 'gwc-hunkBtn',
+              onClick: () => onHunkAction({ path: state.path, hunkIndex: hunk.index, action: staged ? 'unstageHunk' : 'stageHunk' }),
+            }, staged ? t('hunk.unstage') : t('hunk.stage')),
+            /* Discarding a STAGED hunk is not offered: unstage then discard is the same
+               result with one explicit step in between, and a one-click path to
+               destroying work is what this design avoids. */
+            staged
+              ? null
+              : E('button', {
+                type: 'button',
+                className: 'gwc-hunkBtn is-danger',
+                onClick: () => onHunkAction({ path: state.path, hunkIndex: hunk.index, action: 'discardHunk' }),
+              }, t('hunk.discard')))
+        }
+
+        return E('div', {
+          className: 'gwc-diffPane',
+          /* Observability: which side of the change this pane is showing, and how
+             many hunks it parsed. Three bugs so far were "the pane shows the wrong
+             patch / no hunk buttons" with nothing to distinguish the causes. */
+          'data-base': state.base,
+          'data-mode': state.mode,
+          'data-hunks': String(Array.isArray(state.hunks) ? state.hunks.length : 0),
+          'data-can-hunk': typeof (api === null || api === undefined ? undefined : api.onHunkAction) === 'function' ? '1' : '0',
+          style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: '0', height: '100%', overflow: 'auto' },
+        }, hunkBar, state.path === null
+          ? E('div', { className: 'gwc-empty' }, t('changes.emptyHint'))
+          : E(DiffView, {
+            patch: state.patch,
+            mode: state.mode,
+            t,
+            loading: state.loading,
+            error: state.error,
+            binary: state.binary,
+            hunkActions: apiHunkActions,
+          }))
+      }
+
+      root.render(React.createElement(PaneHost))
+
+      return {
+        handle,
+        dispose: () => {
+          runtime.showDiff = null
+          try { root.unmount() } catch (error) { void error }
+        },
+      }
+    }
+
 
     /* ============================== graph ============================== */
 
@@ -794,14 +1229,22 @@ window.__ModuleLoader__.load({
 
     function IconButton(props) {
       const { name, label, onClick, active, disabled, danger, size } = props
+      /* `dot` is a passive notification: a red dot in the top-right corner, no
+         number. It marks "there is something to do here" (remote has commits we
+         do not / we have commits the remote does not). It must NOT change the
+         button's 24px box — an inline badge would grow the header row the way a
+         wider entry once shifted the whole sidebar (see packages/dock README §4),
+         so it is absolutely positioned inside the existing box instead. */
+      const dot = props.dot === true
       return E('button', {
         type: 'button',
-        className: cx('gwc-iconBtn', active === true ? 'is-active' : '', danger === true ? 'is-danger' : ''),
+        className: cx('gwc-iconBtn', active === true ? 'is-active' : '', danger === true ? 'is-danger' : '', dot ? 'has-dot' : ''),
         title: label,
-        'aria-label': label,
+        'aria-label': dot ? label + ' •' : label,
         disabled: disabled === true,
         onClick,
-      }, E(Icon, { name, size: size === undefined ? 14 : size }))
+      }, E(Icon, { name, size: size === undefined ? 14 : size }),
+      dot ? E('span', { className: 'gwc-dot', 'aria-hidden': 'true' }) : null)
     }
 
     function TextButton(props) {
@@ -1418,7 +1861,28 @@ window.__ModuleLoader__.load({
       const [diffState, setDiffState] = useState({ path: null, patch: '', loading: false, binary: false })
       const [history, setHistory] = useState({ commits: [], loading: false, hasMore: false, search: '', ref: null, details: null })
       const [branches, setBranches] = useState([])
+      /* Which tags are already published. `published: null` = unknown yet. */
+      const [tagState, setTagState] = useState({ loading: false, published: null, remotes: [], error: null })
       const [stash, setStash] = useState([])
+      /* ---- 文件页：搜索 + 单文件历史 ---- */
+      const [fileQuery, setFileQuery] = useState('')
+      const [fileSearchMode, setFileSearchMode] = useState('name')
+      const [searchResult, setSearchResult] = useState({ loading: false, files: [], matches: [], truncated: false, searchMode: 'name', error: null, query: '' })
+      /** The file whose history is open (null = no file chosen yet). */
+      const [historyFor, setHistoryFor] = useState(null)
+      const [fileLog, setFileLog] = useState({ loading: false, commits: [], hasMore: false, error: null })
+      /**
+       * The commit opened as a POPUP from the Files page.
+       *
+       * Clicking a row in the Files page used to call `setNav('history')`, which
+       * threw the user into a different tab and lost the file they were looking
+       * at. A popup keeps the file list, the search and the chosen file exactly
+       * where they were — reading "what did this commit change about this file"
+       * is a detail, not a navigation.
+       */
+      const [fileCommit, setFileCommit] = useState(null)
+      /* The single file's diff for that commit, shown inside the popup. */
+      const [fileCommitDiff, setFileCommitDiff] = useState({ path: null, loading: false, patch: '', error: null, binary: false })
       const [blame, setBlame] = useState({ path: null, lines: [], loading: false })
       const [selected, setSelected] = useState(null)
       const [diffMode, setDiffMode] = useState('unified')
@@ -1563,6 +2027,16 @@ window.__ModuleLoader__.load({
         const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const loop = async () => {
           while (cancelled === false) {
+            /* A hidden window cannot show a snapshot, and each `changed` result
+               costs a full snapshot (3 git spawns, ~400 ms on a cold profile).
+               Park the loop while hidden instead of watching for changes nobody
+               can see: the `pause` is cheap and re-arms the moment the window is
+               visible again. Without this, minimising DSH left the reporter
+               re-running git for a panel no one was looking at. */
+            if (typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden') {
+              await pause(1000)
+              continue
+            }
             controller = typeof AbortController === 'function' ? new AbortController() : null
             try {
               const result = await call(
@@ -1704,6 +2178,71 @@ window.__ModuleLoader__.load({
         }
       }, [withScope, notify, describeError])
 
+      /**
+       * Which tags are already on the remote.
+       *
+       * Tags have no remote-tracking ref (unlike branches), so `branches` cannot
+       * answer this — only `ls-remote` can, which the host does in ONE call for
+       * all tags. Loaded when the Branches tab opens, never on a poll.
+       *
+       * `published: null` means "not known yet" and must NOT be rendered as
+       * "unpublished", or every tag would flash a publish button on first paint.
+       */
+      const loadTagState = useCallback(async () => {
+        setTagState((previous) => ({ ...previous, loading: true, error: null }))
+        try {
+          const data = await call('tagRemoteState', withScope({}))
+          if (data.error === 'no-remote') {
+            setTagState({ loading: false, published: {}, remotes: [], error: 'no-remote' })
+            return
+          }
+          const failed = Array.isArray(data.failures) && data.failures.length > 0
+          setTagState({
+            loading: false,
+            published: data.published ?? {},
+            remotes: data.remotes ?? [],
+            error: failed ? 'partial' : null,
+          })
+        } catch (error) {
+          /* Not fatal: the tag list still works, it just cannot say which tags
+             are published. Say so rather than claiming they are all unpublished. */
+          setTagState({ loading: false, published: null, remotes: [], error: describeError(error) })
+        }
+      }, [withScope, describeError])
+
+      /**
+       * Open one commit of the current file in a POPUP.
+       *
+       * Loads two things in parallel:
+       *   - `commitDetail` for the message, author, time and the file list;
+       *   - this file's own diff AT that commit, which is what makes the popup
+       *     answer "what changed about MY file here" instead of dumping the
+       *     whole commit.
+       *
+       * Both are optional: if the diff fails (a binary file, a rename), the
+       * popup still shows the commit metadata and says why the diff is missing.
+       */
+      const openFileCommit = useCallback((commit) => {
+        setFileCommit({ loading: true, detail: null, hash: commit.hash, error: null })
+        setFileCommitDiff({ path: historyFor, loading: commit.binary !== true, patch: '', error: null, binary: commit.binary === true })
+        call('commitDetail', withScope({ rev: commit.hash }))
+          .then((detail) => setFileCommit((previous) => (previous === null || previous.hash !== commit.hash
+            ? previous
+            : { loading: false, detail, hash: commit.hash, error: null })))
+          .catch((error) => setFileCommit((previous) => (previous === null || previous.hash !== commit.hash
+            ? previous
+            : { loading: false, detail: null, hash: commit.hash, error: describeError(error) })))
+        if (commit.binary === true) return
+        call('diff', withScope({ path: historyFor, base: 'commit', rev: commit.hash }))
+          .then((data) => setFileCommitDiff((previous) => (previous.path !== historyFor
+            ? previous
+            : { path: historyFor, loading: false, patch: data.patch ?? '', error: null, binary: data.binary === true })))
+          .catch((error) => setFileCommitDiff((previous) => (previous.path !== historyFor
+            ? previous
+            : { path: historyFor, loading: false, patch: '', error: describeError(error), binary: false })))
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [withScope, describeError, historyFor])
+
       const loadStash = useCallback(async () => {
         try {
           const data = await call('stashList', withScope({}))
@@ -1712,6 +2251,44 @@ window.__ModuleLoader__.load({
           notify('error', describeError(error))
         }
       }, [withScope, notify, describeError])
+
+      /**
+       * Search files by name or content.
+       *
+       * Debounced by the caller; the request itself is not cancelled on every
+       * keystroke because the host caps the work (limited rows) and a stale
+       * response is dropped by comparing `query`.
+       */
+      const runSearch = useCallback(async (query, searchMode) => {
+        const text = query.trim()
+        if (text === '') {
+          setSearchResult({ loading: false, files: [], matches: [], truncated: false, searchMode: searchMode, error: null, query: '' })
+          return
+        }
+        setSearchResult((previous) => ({ ...previous, loading: true, error: null, searchMode: searchMode, query: text }))
+        try {
+          const data = await call('search', withScope({ query: text, mode: searchMode }))
+          /* Drop a response that no longer matches what is typed. */
+          setSearchResult((previous) => (previous.query !== text
+            ? previous
+            : { loading: false, files: data.files ?? [], matches: data.matches ?? [], truncated: data.truncated === true, searchMode: data.mode, error: null, query: text }))
+        } catch (error) {
+          setSearchResult((previous) => ({ ...previous, loading: false, error: error instanceof ApiError ? error : new ApiError('unknown', String(error)) }))
+        }
+      }, [withScope])
+
+      /** Load the commit history of ONE file (with per-commit line counts). */
+      const loadFileHistory = useCallback(async (filePath) => {
+        if (filePath === null || filePath === undefined || filePath === '') return
+        setHistoryFor(filePath)
+        setFileLog({ loading: true, commits: [], hasMore: false, error: null })
+        try {
+          const data = await call('fileHistory', withScope({ path: filePath, limit: 80 }))
+          setFileLog({ loading: false, commits: data.commits ?? [], hasMore: data.hasMore === true, error: null })
+        } catch (error) {
+          setFileLog({ loading: false, commits: [], hasMore: false, error: error instanceof ApiError ? error : new ApiError('unknown', String(error)) })
+        }
+      }, [withScope])
 
       const loadDiff = useCallback(async (filePath, base, rev) => {
         if (filePath === null || filePath === undefined) {
@@ -1800,6 +2377,16 @@ window.__ModuleLoader__.load({
         void loadBranches()
       }, [refsRevision, nav, visible, branchesLoading, loadBranches])
 
+      /* Which tags are published can only be answered by the network, so it is
+         loaded when the Branches tab opens — NOT on every snapshot poll, which
+         would hammer `ls-remote` and stall the panel on a slow remote. */
+      useEffect(() => {
+        if (nav !== 'branches') return
+        if (snapshot === null) return
+        void loadTagState()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [nav, snapshot === null ? null : snapshot.root])
+
       /* Stash is not keyed on refs: its own buttons reload it, and a repo switch
          must reload it for the new repository. */
       useEffect(() => {
@@ -1807,6 +2394,29 @@ window.__ModuleLoader__.load({
         if (nav === 'stash') void loadStash()
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [nav, snapshot === null ? null : snapshot.root])
+
+      /* File search, debounced: typing must not spawn a git grep per keystroke.
+         220 ms is short enough to feel live and long enough to swallow a word. */
+      useEffect(() => {
+        if (nav !== 'files') return undefined
+        const text = fileQuery.trim()
+        if (text === '') {
+          setSearchResult({ loading: false, files: [], matches: [], truncated: false, searchMode: fileSearchMode, error: null, query: '' })
+          return undefined
+        }
+        const timer = setTimeout(() => { void runSearch(text, fileSearchMode) }, 220)
+        return () => clearTimeout(timer)
+      }, [fileQuery, fileSearchMode, nav, runSearch])
+
+      /* Leaving the Files page keeps the chosen file, but a repository switch
+         must not show the PREVIOUS repository's history. */
+      useEffect(() => {
+        setHistoryFor(null)
+        setFileLog({ loading: false, commits: [], hasMore: false, error: null })
+        setSearchResult({ loading: false, files: [], matches: [], truncated: false, searchMode: 'name', error: null, query: '' })
+        setFileQuery('')
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [snapshot === null ? null : snapshot.root])
 
       useEffect(() => {
         if (selected === null) return
@@ -1823,12 +2433,23 @@ window.__ModuleLoader__.load({
       /* ---- operations ---- */
 
 
+      /* Bulk stage / unstage send `all: true` instead of expanding the list into
+         thousands of paths. The old expansion blew the Win32 command-line limit
+         and surfaced as "找不到 git 命令" — see the host's spawnFailure(). */
       const doStage = useCallback((paths) => run('stage', async () => {
         store.apply(await call('stage', withScope({ paths })))
       }), [run, store, withScope])
 
+      const doStageAll = useCallback(() => run('stage', async () => {
+        store.apply(await call('stage', withScope({ all: true })))
+      }), [run, store, withScope])
+
       const doUnstage = useCallback((paths) => run('unstage', async () => {
         store.apply(await call('unstage', withScope({ paths })))
+      }), [run, store, withScope])
+
+      const doUnstageAll = useCallback(() => run('unstage', async () => {
+        store.apply(await call('unstage', withScope({ all: true })))
       }), [run, store, withScope])
 
       const doDiscard = useCallback((paths) => {
@@ -1843,6 +2464,23 @@ window.__ModuleLoader__.load({
           },
         })
       }, [run, store, withScope, t])
+
+      /* 「全部撤销」: irreversible, so it goes through a confirmation that spells
+         out exactly what is lost (every uncommitted change, tracked and
+         untracked). Ignored build output is deliberately kept host-side. */
+      const doDiscardAll = useCallback(() => {
+        setDialog({
+          kind: 'confirm',
+          title: t('changes.discardAll'),
+          body: t('changes.confirmDiscardAll'),
+          onConfirm: () => {
+            void run('discardAll', async () => {
+              store.apply(await call('discard', withScope({ all: true, confirm: true })))
+              notify('ok', t('changes.discardedAll'))
+            })
+          },
+        })
+      }, [run, store, withScope, t, notify])
 
       const doStageHunk = useCallback((filePath, hunkIndex, lines) => run('stageHunk', async () => {
         store.apply(await call('stageHunk', withScope({
@@ -1892,12 +2530,21 @@ window.__ModuleLoader__.load({
       }, [commitMessage, amend, run, withScope, store, notify, t])
 
       const doFetch = useCallback(() => run('fetch', async () => {
-        const data = await call('fetch', withScope({ all: true }))
+        const data = await call('fetch', withScope({}))
         store.apply(data.snapshot)
         /* fetch can move remote refs / tags without changing head or the
            ahead/behind counters, so the snapshot alone cannot prove it. */
         invalidateRefs()
-        notify('ok', t('toolbar.fetch'))
+        /* A repo often has a second remote that is offline or stale. The host
+           fetches each one separately and reports the partial result here, so a
+           successful fetch from origin is not shown as a hard failure just
+           because an unrelated mirror could not be reached. */
+        if (data.partial === true) {
+          const names = (data.failedRemotes ?? []).map((entry) => entry.remote).join(', ')
+          notify('warn', t('toolbar.fetchPartial', { names }))
+        } else {
+          notify('ok', t('toolbar.fetch'))
+        }
       }), [run, withScope, store, invalidateRefs, notify, t])
 
       const doPull = useCallback(() => run('pull', async () => {
@@ -1959,6 +2606,15 @@ window.__ModuleLoader__.load({
 
       /* ---- render: header ---- */
 
+      /* The dot means "there is work waiting in this direction", so it follows
+         the SAME preconditions as the button's own `disabled` rule: a dot on a
+         button that cannot act would be a lie.
+           Pull: needs an upstream, and `behind > 0` (remote has commits we lack).
+           Push: needs an attached HEAD, and `ahead > 0` (we have unpushed ones).
+         A detached HEAD has nothing to compare, so it never advertises a push. */
+      const pullPending = snapshot !== null && snapshot.upstream !== null && snapshot.behind > 0
+      const pushPending = snapshot !== null && snapshot.detached !== true && snapshot.ahead > 0
+
       const headerRight = E('div', { className: 'gwc-headerActions' },
         E(IconButton, { name: 'repo', label: t('repo.switch'), onClick: () => setPickerOpen(true), disabled: busy !== null }),
         /* The manual refresh means "re-read everything": the snapshot alone
@@ -1970,8 +2626,26 @@ window.__ModuleLoader__.load({
           disabled: busy !== null,
         }),
         E(IconButton, { name: 'fetch', label: t('toolbar.fetch'), onClick: doFetch, disabled: busy !== null || snapshot === null }),
-        E(IconButton, { name: 'pull', label: t('toolbar.pull'), onClick: doPull, disabled: busy !== null || snapshot === null || snapshot.upstream === null }),
-        E(IconButton, { name: 'push', label: t('toolbar.push'), onClick: doPush, disabled: busy !== null || snapshot === null || snapshot.detached === true }))
+        /* Red dot on Pull: the remote has commits this branch does not. */
+        E(IconButton, {
+          name: 'pull',
+          label: pullPending
+            ? t('toolbar.pull') + ' · ' + t('status.behind', { n: snapshot.behind })
+            : t('toolbar.pull'),
+          dot: pullPending,
+          onClick: doPull,
+          disabled: busy !== null || snapshot === null || snapshot.upstream === null,
+        }),
+        /* Red dot on Push: this branch has commits the remote does not. */
+        E(IconButton, {
+          name: 'push',
+          label: pushPending
+            ? t('toolbar.push') + ' · ' + t('status.ahead', { n: snapshot.ahead })
+            : t('toolbar.push'),
+          dot: pushPending,
+          onClick: doPush,
+          disabled: busy !== null || snapshot === null || snapshot.detached === true,
+        }))
 
       const branchLabel = snapshot === null
         ? ''
@@ -2015,6 +2689,7 @@ window.__ModuleLoader__.load({
       const navBar = E('div', { className: 'gwc-nav', role: 'tablist' },
         [
           ['changes', 'changes', snapshot === null ? 0 : snapshot.changes.length],
+          ['files', 'search', 0],
           ['history', 'history', 0],
           ['branches', 'branches', 0],
           ['stash', 'stash', 0],
@@ -2074,11 +2749,18 @@ window.__ModuleLoader__.load({
       const renderGroup = (id, title, entries) => entries.length === 0 ? null : E('div', { className: 'gwc-group' },
         E('div', { className: 'gwc-groupHead' },
           E('span', { className: 'gwc-groupTitle' }, title),
-          id === 'staged'
-            ? E(TextButton, { onClick: () => { void doUnstage(changeGroups.staged.map((entry) => entry.path)) } }, t('changes.unstageAll'))
-            : id === 'unstaged'
-              ? E(TextButton, { onClick: () => { void doStage(changeGroups.unstaged.concat(changeGroups.untracked).map((entry) => entry.path)) } }, t('changes.stageAll'))
-              : null),
+          /* Each group gets the bulk action that matches its own meaning, plus
+             the destructive one. `全部撤销` appears on BOTH groups, because
+             discarding is about the worktree, not about which column a file
+             currently sits in — a user with everything staged still needs a way
+             to throw it away. */
+          E('span', { className: 'gwc-groupActions' },
+            id === 'staged'
+              ? E(TextButton, { onClick: doUnstageAll }, t('changes.unstageAll'))
+              : id === 'unstaged'
+                ? E(TextButton, { onClick: doStageAll }, t('changes.stageAll'))
+                : null,
+            E(TextButton, { danger: true, onClick: doDiscardAll, title: t('changes.confirmDiscardAll') }, t('changes.discardAll')))),
         entries.map((entry) => renderChangeRow(entry, id)))
 
       const diffHunkActions = useCallback((hunk) => {
@@ -2112,7 +2794,24 @@ window.__ModuleLoader__.load({
 
       const changesView = snapshot === null ? null : E('div', { className: 'gwc-changes' },
         snapshot.changes.length === 0
-          ? E('div', { className: 'gwc-empty' }, t('changes.empty'))
+          /* A bare "no changes" line is a dead end. Say what state the tree is
+             in and offer the one action that is useful from here (refresh), so
+             the panel still responds when there is nothing to do. */
+          ? E('div', { className: 'gwc-emptyState' },
+            E('div', { className: 'gwc-emptyIcon' }, E(Icon, { name: 'check', size: 22 })),
+            E('div', { className: 'gwc-emptyTitle' }, t('changes.empty')),
+            E('div', { className: 'gwc-emptyHint' },
+              snapshot.ahead > 0 || snapshot.behind > 0
+                ? t('changes.emptyHintSync')
+                : t('changes.emptyHint')),
+            E('div', { className: 'gwc-emptyActions' },
+              E(TextButton, { onClick: () => { store.refresh(); invalidateRefs() } }, t('toolbar.refresh')),
+              snapshot.behind > 0
+                ? E(TextButton, { primary: true, disabled: busy !== null, onClick: doPull }, t('toolbar.pull'))
+                : null,
+              snapshot.ahead > 0 && snapshot.detached !== true
+                ? E(TextButton, { primary: true, disabled: busy !== null, onClick: doPush }, t('toolbar.push'))
+                : null))
           : E(Fragment, null,
             renderGroup('conflicted', t('changes.conflicted', { n: changeGroups.conflicted.length }), changeGroups.conflicted),
             renderGroup('staged', t('changes.staged', { n: changeGroups.staged.length }), changeGroups.staged),
@@ -2277,38 +2976,83 @@ window.__ModuleLoader__.load({
         tags: branches.filter((entry) => entry.kind === 'tag'),
       }), [branches])
 
-      const renderBranchRow = (entry) => E('div', {
-        key: entry.refName,
-        className: cx('gwc-branchRow', entry.head ? 'is-head' : ''),
-        title: entry.subject,
-      },
-      E('span', { className: 'gwc-branchRowName' }, entry.name),
-      entry.head ? E('span', { className: 'gwc-refPill is-local' }, 'HEAD') : null,
-      entry.ahead > 0 ? E('span', { className: 'gwc-syncMini' }, '↑' + entry.ahead) : null,
-      entry.behind > 0 ? E('span', { className: 'gwc-syncMini' }, '↓' + entry.behind) : null,
-      E('span', { className: 'gwc-branchRowActions' },
-        entry.head ? null : E(TextButton, { onClick: () => { void run('checkout', async () => { store.apply(await call('checkout', withScope({ name: entry.name }))) }) } }, t('branches.checkout')),
-        entry.head || entry.kind === 'local' ? null : E(TextButton, { onClick: () => doMerge(entry.name) }, t('branches.merge')),
-        entry.head || entry.kind === 'local' ? null : E(TextButton, {
-          onClick: () => setDialog({
-            kind: 'confirm',
-            title: t('branches.rebase'),
-            body: entry.name,
-            onConfirm: () => {
-              void run('rebase', async () => {
-                const data = await call('rebase', withScope({ onto: entry.name }))
-                store.apply(data.snapshot)
-                if (data.conflicted === true) notify('error', data.message)
-                else notify('ok', t('branches.rebase'))
-              })
-            },
-          }),
-        }, t('branches.rebase')),
-        entry.kind === 'local'
-          ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => setDialog({ kind: 'deleteBranch', name: entry.name }) })
-          : entry.kind === 'tag'
-            ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => { void run('tagDelete', async () => { store.apply(await call('tagDelete', withScope({ name: entry.name }))); invalidateRefs() }) } })
+      /* Publish ONE tag. `git push --tags` is deliberately not offered as a bulk
+         action: it sends every local tag, including the throwaway ones a build
+         leaves behind. */
+      const publishTag = useCallback((name) => {
+        void run('tagPush', async () => {
+          const data = await call('tagPush', withScope({ name }))
+          store.apply(data)
+          invalidateRefs()
+          void loadTagState()
+          notify('ok', t('tag.published', { name }))
+        })
+      }, [run, withScope, store, invalidateRefs, loadTagState, notify, t])
+
+      const renderBranchRow = (entry) => {
+        /* For a tag: is it on every configured remote, on some, or nowhere? */
+        const publishedOn = entry.kind !== 'tag' || tagState.published === null
+          ? null
+          : (tagState.published[entry.name] ?? [])
+        const missingFrom = publishedOn === null || tagState.remotes.length === 0
+          ? []
+          : tagState.remotes.filter((remote) => !publishedOn.includes(remote))
+        return E('div', {
+          key: entry.refName,
+          className: cx('gwc-branchRow', entry.head ? 'is-head' : ''),
+          title: entry.subject,
+        },
+        E('span', { className: 'gwc-branchRowName' }, entry.name),
+        entry.head ? E('span', { className: 'gwc-refPill is-local' }, 'HEAD') : null,
+        /* "未发布" / "缺 1 个远程": the whole point of the button next to it. */
+        entry.kind === 'tag' && missingFrom.length > 0
+          ? E('span', {
+            className: 'gwc-syncMini is-unpublished',
+            title: t('tag.missingOn', { names: missingFrom.join(', ') }),
+          }, publishedOn.length === 0 ? t('tag.unpublished') : t('tag.missingN', { n: missingFrom.length }))
+          : null,
+        entry.ahead > 0 ? E('span', { className: 'gwc-syncMini' }, '↑' + entry.ahead) : null,
+        entry.behind > 0 ? E('span', { className: 'gwc-syncMini' }, '↓' + entry.behind) : null,
+        E('span', { className: 'gwc-branchRowActions' },
+          entry.head ? null : E(TextButton, { onClick: () => { void run('checkout', async () => { store.apply(await call('checkout', withScope({ name: entry.name }))) }) } }, t('branches.checkout')),
+          entry.head || entry.kind === 'local' ? null : E(TextButton, { onClick: () => doMerge(entry.name) }, t('branches.merge')),
+          entry.head || entry.kind === 'local' ? null : E(TextButton, {
+            onClick: () => setDialog({
+              kind: 'confirm',
+              title: t('branches.rebase'),
+              body: entry.name,
+              onConfirm: () => {
+                void run('rebase', async () => {
+                  const data = await call('rebase', withScope({ onto: entry.name }))
+                  store.apply(data.snapshot)
+                  if (data.conflicted === true) notify('error', data.message)
+                  else notify('ok', t('branches.rebase'))
+                })
+              },
+            }),
+          }, t('branches.rebase')),
+          /* Publish this ONE tag — the missing piece that made "标签怎么推送" a
+             command-line-only answer. */
+          entry.kind === 'tag' && missingFrom.length > 0
+            ? E(TextButton, {
+              primary: true,
+              disabled: busy !== null || tagState.loading,
+              onClick: () => publishTag(entry.name),
+            }, t('tag.publish'))
+            : null,
+          entry.kind === 'local'
+            ? E(IconButton, { name: 'trash', label: t('branches.delete'), danger: true, onClick: () => setDialog({ kind: 'deleteBranch', name: entry.name }) })
+            : entry.kind === 'tag'
+              ? E(IconButton, {
+              name: 'undo',
+              label: t('tag.revoke'),
+              danger: true,
+              /* One dialog decides BOTH halves (local only / local + remote);
+                 the tag name is the whole payload, so nothing else can be hit. */
+              onClick: () => setDialog({ kind: 'tagRevoke', name: entry.name }),
+            })
             : null))
+      }
 
       const branchesView = E('div', { className: 'gwc-branches' },
         E('div', { className: 'gwc-branchBar' },
@@ -2340,6 +3084,189 @@ window.__ModuleLoader__.load({
               E(TextButton, { onClick: () => { void run('stashApply', async () => { const data = await call('stashApply', withScope({ index })); store.apply(data.snapshot) }) } }, t('stash.apply')),
               E(IconButton, { name: 'trash', label: t('stash.drop'), danger: true, onClick: () => { void run('stashDrop', async () => { store.apply(await call('stashDrop', withScope({ index }))); void loadStash() }) } })))))
 
+      /* ---- render: files (search + single-file history) ---- */
+
+      /** One row of the file-history list: subject, author/time and ±counts. */
+      const renderFileHistoryRow = (commit) => E('div', {
+        key: commit.hash,
+        className: 'gwc-fileLogRow',
+        role: 'button',
+        tabIndex: 0,
+        title: commit.subject,
+        onClick: () => openFileCommit(commit),
+        onKeyDown: (event) => { if (event.key === 'Enter') openFileCommit(commit) },
+      },
+      E('span', { className: 'gwc-fileLogHash' }, commit.short),
+      E('span', { className: 'gwc-fileLogSubject' }, commit.subject),
+      E('span', { className: 'gwc-fileLogMeta' },
+        E('span', { className: 'gwc-fileLogAuthor' }, commit.authorName),
+        E('span', { className: 'gwc-fileLogTime' }, formatDate(commit.authorTime)),
+        commit.binary
+          ? E('span', { className: 'gwc-fileLogBin' }, t('files.binary'))
+          : E('span', { className: 'gwc-fileLogStat' },
+            commit.added > 0 ? E('span', { className: 'gwc-add' }, '+' + commit.added) : null,
+            commit.deleted > 0 ? E('span', { className: 'gwc-del' }, '−' + commit.deleted) : null)))
+
+      const searchRows = searchResult.searchMode === 'content' && searchResult.matches.length > 0
+        ? searchResult.matches.map((match, index) => E('div', {
+          key: match.path + ':' + match.line + ':' + index,
+          className: cx('gwc-fileRow', historyFor === match.path ? 'is-selected' : ''),
+          role: 'button',
+          tabIndex: 0,
+          title: match.path + ':' + match.line,
+          onClick: () => { void loadFileHistory(match.path) },
+          onKeyDown: (event) => { if (event.key === 'Enter') void loadFileHistory(match.path) },
+        },
+        E('span', { className: 'gwc-fileRowName' }, baseName(match.path)),
+        E('span', { className: 'gwc-fileRowDir' }, dirName(match.path)),
+        E('span', { className: 'gwc-fileRowLine' }, String(match.line)),
+        E('span', { className: 'gwc-fileRowText' }, match.text.trim())))
+        : searchResult.files.map((file) => E('div', {
+          key: file.path,
+          className: cx('gwc-fileRow', historyFor === file.path ? 'is-selected' : ''),
+          role: 'button',
+          tabIndex: 0,
+          title: file.path,
+          onClick: () => { void loadFileHistory(file.path) },
+          onKeyDown: (event) => { if (event.key === 'Enter') void loadFileHistory(file.path) },
+        },
+        E('span', { className: 'gwc-fileRowName' }, baseName(file.path)),
+        E('span', { className: 'gwc-fileRowDir' }, dirName(file.path)),
+        E(IconButton, {
+          name: 'history',
+          label: t('files.openHistory'),
+          size: 12,
+          onClick: (event) => { event.stopPropagation(); void loadFileHistory(file.path) },
+        })))
+
+      const filesView = E('div', { className: 'gwc-files' },
+        E('div', { className: 'gwc-fileBar' },
+          E('div', { className: 'gwc-fileSearch' },
+            E(Icon, { name: 'search', size: 13 }),
+            E('input', {
+              className: 'gwc-input gwc-fileInput',
+              type: 'search',
+              value: fileQuery,
+              placeholder: fileSearchMode === 'content' ? t('files.placeholderContent') : t('files.placeholderName'),
+              'aria-label': t('files.search'),
+              onChange: (event) => setFileQuery(event.target.value),
+              /* Esc clears instead of doing nothing: the field is the only way
+                 back to the full list. */
+              onKeyDown: (event) => { if (event.key === 'Escape') { setFileQuery('') } },
+            }),
+            fileQuery === '' ? null : E('button', {
+              type: 'button',
+              className: 'gwc-fileClear',
+              title: t('files.clear'),
+              'aria-label': t('files.clear'),
+              onClick: () => setFileQuery(''),
+            }, E(Icon, { name: 'close', size: 11 }))),
+          E('div', { className: 'gwc-fileModes', role: 'tablist' },
+            ['name', 'content'].map((searchMode) => E('button', {
+              key: searchMode,
+              type: 'button',
+              role: 'tab',
+              'aria-selected': fileSearchMode === searchMode,
+              className: cx('gwc-fileMode', fileSearchMode === searchMode ? 'is-active' : ''),
+              onClick: () => setFileSearchMode(searchMode),
+            }, t('files.mode.' + searchMode))))),
+        E('div', { className: 'gwc-filesMain' },
+          E('div', { className: 'gwc-fileResults' },
+            searchResult.loading
+              ? E('div', { className: 'gwc-empty' }, t('files.searching'))
+              : searchResult.error !== null
+                ? E('div', { className: 'gwc-empty is-error' }, describeError(searchResult.error))
+                : fileQuery.trim() === ''
+                  ? E('div', { className: 'gwc-empty' }, E('div', { className: 'gwc-emptyTitle' }, t('files.hintTitle')),
+                    E('div', { className: 'gwc-emptyHint' }, t('files.hint')))
+                  : searchRows.length === 0
+                    ? E('div', { className: 'gwc-empty' }, t('files.noResults'))
+                    : E(Fragment, null,
+                      searchRows,
+                      searchResult.truncated ? E('div', { className: 'gwc-empty' }, t('files.truncated')) : null)),
+          E('div', { className: 'gwc-fileHistory' },
+            historyFor === null
+              ? E('div', { className: 'gwc-empty' }, t('files.pickFile'))
+              : E(Fragment, null,
+                E('div', { className: 'gwc-fileHistoryHead' },
+                  E('span', { className: 'gwc-fileHistoryPath', title: historyFor }, historyFor),
+                  E(IconButton, {
+                    name: 'refresh',
+                    label: t('toolbar.refresh'),
+                    size: 12,
+                    onClick: () => { void loadFileHistory(historyFor) },
+                  })),
+                fileLog.loading
+                  ? E('div', { className: 'gwc-empty' }, t('status.loading'))
+                  : fileLog.error !== null
+                    ? E('div', { className: 'gwc-empty is-error' }, describeError(fileLog.error))
+                    : fileLog.commits.length === 0
+                      ? E('div', { className: 'gwc-empty' }, t('files.noHistory'))
+                      : E('div', { className: 'gwc-fileLog' },
+                        /* `--follow` walks renames, so say so: a history that
+                           starts earlier than the file's current name is
+                           correct, not a bug. */
+                        E('div', { className: 'gwc-fileLogCount' }, t('files.commitCount', { n: fileLog.commits.length })),
+                        fileLog.commits.map(renderFileHistoryRow)))))) 
+
+      /* ---- render: one commit of the current file, as a POPUP ---- */
+
+      /**
+       * A commit's effect on the file being inspected, without leaving the page.
+       *
+       * Two blocks: the commit metadata (subject / full body / author / time /
+       * the files it touched) and this file's own diff AT that commit. The diff
+       * is the point — "what did this commit do to MY file" — so it gets the
+       * space, and the metadata stays compact above it.
+       */
+      const fileCommitModal = fileCommit === null ? null : E(Modal, {
+        t,
+        title: fileCommit.detail === null
+          ? (fileCommit.hash === null ? '' : fileCommit.hash.slice(0, 7)) + ' · ' + (historyFor ?? '')
+          : fileCommit.detail.short + ' · ' + fileCommit.detail.subject,
+        wide: true,
+        onClose: () => { setFileCommit(null); setFileCommitDiff({ path: null, loading: false, patch: '', error: null, binary: false }) },
+      },
+      E('div', { className: 'gwc-commitPopup' },
+        fileCommit.loading
+          ? E('div', { className: 'gwc-empty' }, t('status.loading'))
+          : fileCommit.error !== null
+            ? E('div', { className: 'gwc-empty is-error' }, fileCommit.error)
+            : E(Fragment, null,
+              E('div', { className: 'gwc-commitPopupMeta' },
+                E('span', { className: 'gwc-commitPopupHash' }, fileCommit.detail.hash),
+                E('span', null, fileCommit.detail.authorName),
+                E('span', null, formatDate(fileCommit.detail.authorTime)),
+                E('span', { className: 'gwc-commitPopupFile', title: historyFor }, historyFor)),
+              /* The body repeats the subject; only show it when there is more. */
+              (fileCommit.detail.body.trim() === '' || fileCommit.detail.body.trim() === fileCommit.detail.subject.trim())
+                ? null
+                : E('pre', { className: 'gwc-commitPopupBody' }, fileCommit.detail.body.trim()),
+              /* Everything else this commit touched, so the popup is not blind
+                 to a change whose real cause is elsewhere in the commit. */
+              fileCommit.detail.files.length <= 1 ? null : E('div', { className: 'gwc-commitPopupOthers' },
+                E('span', { className: 'gwc-commitPopupOthersTitle' }, t('files.alsoChanged', { n: fileCommit.detail.files.length - 1 })),
+                fileCommit.detail.files
+                  .filter((file) => file.path !== historyFor)
+                  .slice(0, 12)
+                  .map((file) => E('span', { key: file.path, className: 'gwc-commitPopupOther', title: file.path }, baseName(file.path))),
+                fileCommit.detail.files.length - 1 > 12 ? E('span', { className: 'gwc-commitPopupOther' }, '…') : null)),
+        E('div', { className: 'gwc-commitPopupDiffBar' },
+          E('span', { className: 'gwc-commitPopupDiffTitle' }, t('files.diffInCommit'))),
+        E('div', { className: 'gwc-commitPopupDiff' },
+          E(DiffView, {
+            patch: fileCommitDiff.patch,
+            mode: 'unified',
+            t,
+            loading: fileCommitDiff.loading,
+            error: fileCommitDiff.error,
+            binary: fileCommitDiff.binary,
+            /* No staging controls: this is a committed diff, not the index. */
+            hunkActions: undefined,
+            selection: null,
+            onToggle: undefined,
+          }))))
+
       /* ---- render: conflict banner ---- */
 
       const conflictBanner = snapshot === null || snapshot.operation === null
@@ -2370,12 +3297,17 @@ window.__ModuleLoader__.load({
             E(TextButton, { primary: true, onClick: () => setPickerOpen(true) }, t('repo.pick')))
         }
         if (snapshot === null) {
-          return E('div', { className: 'gwc-empty' },
-            t('status.loading'),
-            store.slow
-              ? E('div', { className: 'gwc-emptyHint', style: { fontSize: 11, marginTop: 6, color: 'var(--dsw-fg-3,#888)' } },
-                t('status.loadingSlow'))
-              : null)
+          /* A skeleton, not a stranded line of text: the panel keeps its shape
+             while the first snapshot is on its way, so the seat does not jump
+             when the real content lands. */
+          return E('div', { className: 'gwc-skeleton', 'aria-busy': 'true', 'aria-live': 'polite' },
+            E('div', { className: 'gwc-skelTitle' }, t('status.loading')),
+            [0, 1, 2, 3, 4, 5].map((index) => E('div', {
+              key: index,
+              className: 'gwc-skelRow',
+              style: { width: [72, 54, 63, 48, 68, 57][index] + '%', animationDelay: index * 90 + 'ms' },
+            })),
+            store.slow ? E('div', { className: 'gwc-emptyHint', style: { marginTop: 12 } }, t('status.loadingSlow')) : null)
         }
         if (nav === 'changes') {
           /* List and diff scroll INDEPENDENTLY. The diff used to sit after the
@@ -2386,6 +3318,7 @@ window.__ModuleLoader__.load({
             E('div', { className: 'gwc-changeListPane is-solo' }, changesView),
             commitBox)
         }
+        if (nav === 'files') return filesView
         if (nav === 'history') return historyView
         if (nav === 'branches') return branchesView
         if (nav === 'stash') return stashView
@@ -2435,7 +3368,21 @@ window.__ModuleLoader__.load({
                     invalidateRefs()
                   })
                 } })
-                : dialog.kind === 'stash'
+                : dialog.kind === 'tagRevoke'
+                  ? E(TagRevokeDialog, {
+                    t,
+                    name: dialog.name,
+                    onCancel: () => setDialog(null),
+                    onSubmit: (payload) => {
+                      setDialog(null)
+                      void run('tagReset', async () => {
+                        store.apply(await call('tagReset', withScope(payload)))
+                        invalidateRefs()
+                        notify('ok', t('tag.revoked', { name: dialog.name }))
+                      })
+                    },
+                  })
+                  : dialog.kind === 'stash'
                   ? E(StashDialog, { t, onCancel: () => setDialog(null), onSubmit: (payload) => {
                     setDialog(null)
                     void run('stashPush', async () => {
@@ -2467,10 +3414,24 @@ window.__ModuleLoader__.load({
       return E('div', { className: 'gwc-root gwc-mode-' + mode, ref: containerRef },
         header,
         navBar,
+        /* The banner is a LAYOUT row, not an overlay. As an absolutely
+           positioned toast it covered either the toolbar (top) or the commit
+           button (bottom) depending on where it was pinned — a message must not
+           hide the control the user needs next. In flow it pushes content down
+           for as long as it is visible and never covers anything. */
+        toast === null ? null : E('div', {
+          className: cx('gwc-toast', toast.kind === 'error' ? 'is-error' : toast.kind === 'warn' ? 'is-warn' : 'is-ok'),
+          role: toast.kind === 'error' ? 'alert' : 'status',
+          'aria-live': toast.kind === 'error' ? 'assertive' : 'polite',
+          title: t('toast.dismiss'),
+          onClick: () => setToast(null),
+        },
+        E('span', { className: 'gwc-toastText' }, toast.message),
+        E('span', { className: 'gwc-toastClose', 'aria-hidden': 'true' }, E(Icon, { name: 'close', size: 11 }))),
         E('div', { className: 'gwc-body' }, bodyFor()),
-        toast === null ? null : E('div', { className: cx('gwc-toast', toast.kind === 'error' ? 'is-error' : 'is-ok') }, toast.message),
         busy === null ? null : E('div', { className: 'gwc-busy', 'aria-live': 'polite' }, busy),
         diffModal,
+        fileCommitModal,
         dialogNode,
         pickerNode)
     }
@@ -2559,6 +3520,35 @@ window.__ModuleLoader__.load({
       E(Field, { label: t('dialog.tagMessage'), value: message, onChange: setMessage, multiline: true }))
     }
 
+    /**
+     * Undo a tag. A tag is only a ref, so "撤销" never rewrites commits — it
+     * either drops the local ref (recreatable from the commit) or also removes
+     * the published one, which is the case that actually matters: a tag left on
+     * the remote comes back on the next `fetch --tags`.
+     *
+     * "Also the remote" is ticked by DEFAULT, because that is the undo the user
+     * usually means when a tag was already pushed by mistake. Untick it to keep
+     * the release tag published and only drop the local copy.
+     */
+    function TagRevokeDialog(props) {
+      const { t, name, onCancel, onSubmit } = props
+      const [remoteToo, setRemoteToo] = useState(true)
+      return E(Modal, {
+        t,
+        title: t('tag.revokeTitle', { name }),
+        onClose: onCancel,
+        footer: E(Fragment, null,
+          E(TextButton, { onClick: onCancel }, t('dialog.cancel')),
+          E(TextButton, {
+            primary: true,
+            danger: true,
+            onClick: () => onSubmit({ name, remoteToo }),
+          }, t('tag.revoke'))),
+      },
+      E(Checkbox, { label: t('tag.revokeRemote'), checked: remoteToo, onChange: setRemoteToo }),
+      E('div', { className: 'gwc-warn' }, remoteToo ? t('tag.revokeWarnBoth') : t('tag.revokeWarnLocal')))
+    }
+
     function ResetDialog(props) {
       const { t, onCancel, onSubmit } = props
       const [mode, setMode] = useState('mixed')
@@ -2627,7 +3617,7 @@ window.__ModuleLoader__.load({
     /* ============================== styles ============================== */
 
     const CSS = `
-.gwc-root{display:flex;flex-direction:column;height:100%;min-height:0;font-family:var(--dsw-font-family,system-ui);font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-base,transparent)}
+.gwc-root{display:flex;flex-direction:column;height:100%;min-height:0;position:relative;font-family:var(--dsw-font-family,system-ui);font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-base,transparent)}
 .gwc-icon{flex:none;display:block}
 .gwc-header{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));min-height:34px}
 .gwc-headerMain{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
@@ -2635,9 +3625,16 @@ window.__ModuleLoader__.load({
 .gwc-branchName{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%}
 .gwc-sync{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98);white-space:nowrap}
 .gwc-headerActions{display:flex;gap:2px;flex:none}
-.gwc-iconBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
+/* position:relative so the dot can anchor to the corner; the 24px box itself is
+   unchanged, which is what keeps the header row from growing. */
+.gwc-iconBtn{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .gwc-iconBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
 .gwc-iconBtn:disabled{opacity:.35;cursor:default}
+/* Notification dot: OUT of the layout flow, so it cannot widen the button or
+   push its neighbours. 6px + a 1px ring in the header background colour, which
+   keeps it legible over both the icon and a hover fill. */
+.gwc-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary,#ff6b6b);box-shadow:0 0 0 1.5px var(--dsw-alias-bg-layer-1,#1b1e24);pointer-events:none}
+.gwc-iconBtn:disabled .gwc-dot{opacity:.45}
 .gwc-iconBtn.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));color:var(--dsw-alias-brand-primary,#7c93ff)}
 .gwc-iconBtn.is-danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .gwc-nav{display:flex;gap:2px;padding:4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
@@ -2663,11 +3660,18 @@ window.__ModuleLoader__.load({
 .gwc-diffScroll .gwc-diffHead{position:sticky;top:0;z-index:2;background:var(--dsw-alias-bg-layer-1,#1b1e24)}
 .gwc-changes{display:flex;flex-direction:column;min-height:0}
 .gwc-group{padding:2px 0}
-.gwc-groupHead{display:flex;align-items:center;justify-content:space-between;padding:4px 10px;position:sticky;top:0;background:var(--dsw-alias-bg-base,transparent);z-index:1}
+.gwc-groupHead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 10px;position:sticky;top:0;background:var(--dsw-alias-bg-base,#1a1d23);z-index:1;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+/* First group has no divider above it: the nav bar already separates it. */
+.gwc-group:first-child > .gwc-groupHead{border-top:none}
+/* The bulk actions of one group sit together on the right of its title, so
+   "全部暂存" and "全部撤销" never wrap onto separate lines in a narrow dock. */
+.gwc-groupActions{display:flex;align-items:center;gap:2px;flex:none;margin-left:auto}
 .gwc-groupTitle{font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8a8f98);font-weight:600}
-.gwc-changeRow{display:flex;align-items:center;gap:6px;padding:3px 10px;cursor:pointer;min-height:24px}
+.gwc-changeRow{display:flex;align-items:center;gap:7px;padding:4px 10px;cursor:pointer;min-height:26px;border-left:2px solid transparent}
 .gwc-changeRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
-.gwc-changeRow.is-selected{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.16))}
+/* Selected: a left accent bar reads as "this is the file in the diff" without
+   repainting the whole row, which used to make a 3-line list look like a block. */
+.gwc-changeRow.is-selected{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.14));border-left-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .gwc-statusBadge{width:15px;flex:none;text-align:center;font-size:11px;font-weight:700;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);color:var(--dsw-alias-state-warn-primary,#e2a03f)}
 .gwc-statusBadge.kind-added,.gwc-statusBadge.kind-untracked{color:var(--dsw-alias-state-success-primary,#3fb950)}
 .gwc-statusBadge.kind-deleted{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
@@ -2679,14 +3683,29 @@ window.__ModuleLoader__.load({
 .gwc-del{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .gwc-changeActions{display:none;gap:1px}
 .gwc-changeRow:hover .gwc-changeActions,.gwc-changeRow.is-selected .gwc-changeActions{display:flex}
+/* per-hunk action chips (only rendered when the host passes onHunkAction) */
+.gwc-hunkBar{display:flex;align-items:center;gap:4px;flex:none;flex-wrap:wrap;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.02))}
+.gwc-hunkBarLabel{flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.gwc-hunkChip{display:inline-flex;align-items:center;gap:4px;padding:1px 4px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;font-size:10px}
+/* File name for each section of a multi-file diff. Sticky so it stays visible while
+   scrolling through that file's hunks — the whole point is to know which file you
+   are looking at. */
+.gwc-fileHead{flex:none;position:sticky;top:0;z-index:2;padding:3px 10px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1);background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.09));border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gwc-hunkBtn{border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:3px;background:transparent;color:var(--dsw-alias-brand-primary,#4d6bfe);font:inherit;font-size:10px;padding:0 5px;line-height:15px 4px;cursor:pointer}
+.gwc-hunkBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1))}
+.gwc-hunkBtn.is-danger{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .gwc-diffPane{border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));flex:0 0 auto;min-height:0;display:flex;flex-direction:column}
 .gwc-diffHead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 10px;background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.03))}
 .gwc-diffTitle{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gwc-diff{overflow:visible;flex:0 0 auto;min-height:0;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:12px;line-height:1.5}
 .gwc-hunk{border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+/* File name for each section of a multi-file diff. Sticky so it stays visible while
+   scrolling through that file's hunks — the whole point is to know which file you
+   are looking at. */
+.gwc-fileHead{flex:none;position:sticky;top:0;z-index:2;padding:3px 10px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1);background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.09));border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gwc-hunkHead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04));color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:11px}
 .gwc-hunkTitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.gwc-hunkActions{display:flex;gap:4px;flex:none}
+.gwc-hunkActions{display:flex;gap:4px;flex:none;font-family:var(--dsw-font-family,ui-sans-serif,system-ui);font-weight:400}
 .gwc-lines{display:flex;flex-direction:column}
 .gwc-split{display:grid;grid-template-columns:1fr 1fr}
 .gwc-splitCol{min-width:0;overflow:hidden}
@@ -2702,8 +3721,68 @@ window.__ModuleLoader__.load({
 .gwc-text{flex:1;min-width:0}
 .gwc-empty{padding:18px 14px;color:var(--dsw-alias-label-tertiary,#8a8f98);text-align:center;font-size:12px}
 .gwc-empty.is-error{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
+/* A real empty state, not a stranded line of grey text: icon, title, hint and
+   the actions that are actually useful from here. */
+.gwc-emptyState{padding:34px 20px;display:flex;flex-direction:column;align-items:center;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.gwc-emptyIcon{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:10px;background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 16%,transparent);color:var(--dsw-alias-state-success-primary,#3fb950)}
+.gwc-emptyState .gwc-emptyTitle{font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);margin-bottom:5px}
+.gwc-emptyState .gwc-emptyHint{font-size:11px;line-height:1.6;max-width:34em;margin-bottom:14px}
+.gwc-emptyActions{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .gwc-emptyTitle{font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);margin-bottom:4px}
 .gwc-emptyHint{font-size:11px;margin-bottom:10px;line-height:1.5}
+/* ---- Files page: search on the left, that file's history on the right ---- */
+.gwc-files{display:flex;flex-direction:column;min-height:0;flex:1}
+.gwc-fileBar{display:flex;align-items:center;gap:6px;padding:6px 8px;flex:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+.gwc-fileSearch{position:relative;display:flex;align-items:center;gap:6px;flex:1;min-width:0;padding:0 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#14161a)}
+.gwc-fileSearch:focus-within{border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.gwc-fileInput{flex:1;min-width:0;border:none;background:transparent;padding:5px 0;font-size:12px;color:inherit}
+.gwc-fileInput:focus{outline:none}
+.gwc-fileInput::-webkit-search-cancel-button{display:none}
+.gwc-fileClear{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);cursor:pointer;flex:none}
+.gwc-fileClear:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
+.gwc-fileModes{display:flex;gap:2px;flex:none}
+.gwc-fileMode{border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;white-space:nowrap}
+.gwc-fileMode:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.gwc-fileMode.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.16));color:var(--dsw-alias-label-primary,#fff)}
+.gwc-filesMain{display:flex;min-height:0;flex:1}
+/* Split panes: results left, file history right. Stack in a narrow dock. */
+.gwc-fileResults{flex:0 0 42%;min-width:0;overflow:auto;min-height:0;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+.gwc-fileHistory{flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0}
+.gwc-mode-compact .gwc-filesMain,.gwc-mode-stack .gwc-filesMain{flex-direction:column}
+.gwc-mode-compact .gwc-fileResults,.gwc-mode-stack .gwc-fileResults{flex:0 0 auto;max-height:45%;border-right:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+.gwc-fileRow{display:flex;align-items:center;gap:7px;padding:4px 10px;min-height:26px;cursor:pointer;border-left:2px solid transparent}
+.gwc-fileRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
+.gwc-fileRow.is-selected{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.14));border-left-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.gwc-fileRowName{flex:none;max-width:46%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.gwc-fileRowDir{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left;font-size:11px;color:var(--dsw-alias-label-tertiary,#7d838c)}
+.gwc-fileRowLine{flex:none;font-size:11px;color:var(--dsw-alias-brand-primary,#7c93ff);font-family:var(--dsw-font-markdown-code-block,monospace)}
+/* Content hits wrap: the matched text is the reason the row exists. */
+.gwc-fileRowText{flex:1 1 100%;min-width:0;font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1);font-family:var(--dsw-font-markdown-code-block,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;order:9}
+.gwc-fileHistoryHead{display:flex;align-items:center;gap:6px;padding:6px 8px;flex:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.02))}
+.gwc-fileHistoryPath{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+.gwc-fileLog{overflow:auto;flex:1 1 auto;min-height:0}
+.gwc-fileLogCount{padding:5px 10px;font-size:10px;letter-spacing:.03em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8a8f98);position:sticky;top:0;background:var(--dsw-alias-bg-base,#1a1d23);z-index:1}
+.gwc-fileLogRow{display:flex;align-items:baseline;gap:7px;padding:4px 10px;min-height:26px;cursor:pointer;border-left:2px solid transparent}
+.gwc-fileLogRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05));border-left-color:var(--dsw-alias-border-l3,rgba(255,255,255,.2))}
+.gwc-fileLogHash{flex:none;font-size:11px;font-family:var(--dsw-font-markdown-code-block,monospace);color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.gwc-fileLogSubject{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gwc-fileLogMeta{display:flex;align-items:baseline;gap:6px;flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);white-space:nowrap}
+.gwc-fileLogStat{display:flex;gap:4px;font-family:var(--dsw-font-markdown-code-block,monospace)}
+.gwc-fileLogBin{font-style:italic}
+/* The commit popup: compact metadata on top, the file's diff taking the rest.
+   The diff is the reason the popup exists, so it gets the flexible height. */
+.gwc-commitPopup{display:flex;flex-direction:column;min-height:0;height:min(72vh,760px)}
+.gwc-commitPopupMeta{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98);flex:none;padding-bottom:5px}
+.gwc-commitPopupHash{font-family:var(--dsw-font-markdown-code-block,monospace);color:var(--dsw-alias-brand-primary,#7c93ff)}
+.gwc-commitPopupFile{flex:1;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl}
+.gwc-commitPopupBody{flex:none;max-height:120px;overflow:auto;margin:0 0 6px;padding:6px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.03));font-size:12px;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.gwc-commitPopupOthers{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px;flex:none;margin-bottom:8px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.gwc-commitPopupOthersTitle{font-style:italic}
+.gwc-commitPopupOther{border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));border-radius:8px;padding:0 6px;line-height:16px;max-width:12em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gwc-commitPopupDiffBar{display:flex;align-items:center;gap:6px;flex:none;padding:4px 0;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.gwc-commitPopupDiffTitle{font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.gwc-commitPopupDiff{flex:1 1 auto;min-height:0;overflow:auto;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+.gwc-mode-compact .gwc-fileLogAuthor,.gwc-mode-compact .gwc-fileLogTime{display:none}
 .gwc-commitBox{flex:none;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));padding:6px 8px;display:flex;flex-direction:column;gap:5px;background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.02))}
 .gwc-commitInput{width:100%;resize:vertical;min-height:38px;max-height:140px;padding:5px 7px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;box-sizing:border-box}
 .gwc-commitInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
@@ -2762,8 +3841,15 @@ window.__ModuleLoader__.load({
 .gwc-branchRow.is-head{font-weight:600}
 .gwc-branchRowName{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gwc-syncMini{font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+/* A tag that is not on the remote yet: this is the state that needs an action,
+   so it is the one thing in a ref row that gets a coloured badge. */
+.gwc-syncMini.is-unpublished{color:var(--dsw-alias-state-warn-primary,#e2a03f);border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 45%,transparent);border-radius:8px;padding:0 5px;line-height:14px}
 .gwc-branchRowActions{display:none;gap:3px;flex:none}
 .gwc-branchRow:hover .gwc-branchRowActions{display:flex}
+/* A tag that still needs publishing keeps its button VISIBLE: hiding the only
+   way to push a tag behind a hover is why the command line felt like the only
+   option. Other rows still reveal their actions on hover to stay quiet. */
+.gwc-branchRow:has(.is-unpublished) .gwc-branchRowActions{display:flex}
 .gwc-stashRow{display:flex;align-items:center;gap:8px;padding:4px 10px;min-height:26px}
 .gwc-stashRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
 .gwc-stashRef{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-family:var(--dsw-font-markdown-code-block,monospace);flex:none}
@@ -2773,9 +3859,26 @@ window.__ModuleLoader__.load({
 .gwc-conflictTitle{font-weight:600}
 .gwc-conflictCount{flex:1;min-width:0;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .gwc-conflictActions{display:flex;gap:4px;flex:none}
-.gwc-toast{position:absolute;left:10px;right:10px;bottom:10px;padding:6px 10px;border-radius:8px;font-size:12px;z-index:20;box-shadow:var(--dsw-elevation-prominent,0 6px 22px rgba(0,0,0,.4));word-break:break-word}
-.gwc-toast.is-ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 22%,var(--dsw-alias-bg-layer-2,#22262c));color:var(--dsw-alias-label-primary,#e6e6e6)}
-.gwc-toast.is-error{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 22%,var(--dsw-alias-bg-layer-2,#22262c));color:var(--dsw-alias-label-primary,#e6e6e6)}
+/* Message banner: a normal flex row between the nav and the body.
+   It used to be an absolutely positioned toast, which covered the toolbar when
+   pinned top and the commit button when pinned bottom — a status message must
+   never hide the control the user needs next. */
+.gwc-toast{flex:none;display:flex;align-items:flex-start;gap:8px;margin:6px 8px 0;padding:6px 9px;border-radius:8px;font-size:12px;cursor:pointer;border:1px solid transparent}
+.gwc-toastText{flex:1;min-width:0;line-height:1.45;word-break:break-word}
+.gwc-toastClose{flex:none;display:flex;opacity:.6;margin-top:1px}
+.gwc-toast:hover .gwc-toastClose{opacity:1}
+.gwc-toast.is-ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 18%,var(--dsw-alias-bg-layer-2,#22262c));color:var(--dsw-alias-label-primary,#e6e6e6);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3fb950) 40%,transparent)}
+/* "Some remotes failed but the fetch worked": a warning, not an error — calling
+   it an error is what made a successful fetch look broken. */
+.gwc-toast.is-warn{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 18%,var(--dsw-alias-bg-layer-2,#22262c));color:var(--dsw-alias-label-primary,#e6e6e6);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#e2a03f) 42%,transparent)}
+.gwc-toast.is-error{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 18%,var(--dsw-alias-bg-layer-2,#22262c));color:var(--dsw-alias-label-primary,#e6e6e6);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 42%,transparent)}
+/* Skeleton for the first snapshot: the panel keeps its shape instead of showing
+   one line of grey text and then jumping when content arrives. */
+.gwc-skeleton{padding:14px 10px}
+.gwc-skelTitle{font-size:12px;color:var(--dsw-alias-label-tertiary,#8a8f98);margin-bottom:12px}
+.gwc-skelRow{height:13px;border-radius:4px;margin-bottom:11px;background:linear-gradient(90deg,var(--dsw-alias-bg-layer-3,rgba(255,255,255,.06)) 25%,var(--dsw-alias-bg-layer-2,rgba(255,255,255,.12)) 37%,var(--dsw-alias-bg-layer-3,rgba(255,255,255,.06)) 63%);background-size:400% 100%;animation:gwc-shimmer 1.4s ease-in-out infinite}
+@keyframes gwc-shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media (prefers-reduced-motion:reduce){.gwc-skelRow{animation:none}}
 .gwc-busy{position:absolute;top:6px;right:10px;font-size:10px;padding:2px 7px;border-radius:8px;background:var(--dsw-alias-bg-layer-3,rgba(255,255,255,.1));color:var(--dsw-alias-label-tertiary,#8a8f98);z-index:20}
 .gwc-root{position:relative}
 .gwc-modalBackdrop{position:fixed;inset:0;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.5));display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px}
@@ -2853,6 +3956,11 @@ window.__ModuleLoader__.load({
 
     /* ============================== registration ============================== */
 
+    /* The live diff pane, when some OTHER page has composed it. Module scope
+       because `commands.showDiff` is invoked from outside React (the host page
+       reacts to a click in ITS tree), and there is one composed pane per page. */
+    const diffPaneRef = { current: null }
+
     function apply(ctx) {
       const style = document.createElement('style')
       style.setAttribute('data-dsh-gitcraft', '')
@@ -2883,6 +3991,10 @@ window.__ModuleLoader__.load({
             id: 'gitcraft',
             title: t('title'),
             order: 20,
+            hidden: true,
+            /* Hidden from the tab strip, still registered: the source-control page
+               composes this page's `panes.diff` and calls its RPC. Flip back to false
+               to restore the standalone page. */
             icon: (size) => E(Icon, { name: 'commit', size: size === undefined ? 16 : size }),
             component: (pageProps) => E(LocaleLive, {
               ctx,
@@ -2895,6 +4007,54 @@ window.__ModuleLoader__.load({
               visible: true,
               docked: true,
             }),
+            /* ── Embedding surface (optional; see docs/panes-contract.md) ──
+             *
+             * The source-control page composes this diff renderer into its own
+             * content area, next to ITS tree, so the user sees a file and its
+             * patch without leaving the page. It reuses the same `DiffView` the
+             * in-page modal uses, so a diff never looks different depending on
+             * where it was opened from.
+             */
+            panes: {
+              diff: (container, paneApi) => {
+                const repoRoot = paneApi !== null && paneApi !== undefined && typeof paneApi.repoRoot === 'string'
+                  ? paneApi.repoRoot
+                  : ''
+                const mounted = mountDiffPane(container, paneApi, ctx, t, { repoRoot })
+                /**
+                 * Only the PRIMARY pane registers its handle for `commands`.
+                 *
+                 * A host may mount this pane more than once — the workbench page
+                 * does, to show a commit's patch beside the working-tree diff. With
+                 * a single module-level ref the second mount overwrote the first,
+                 * so `commands.showDiff` (the working-tree path) started steering the
+                 * COMMIT pane and the real diff stopped updating. That is the
+                 * "clicking a change shows nothing" report.
+                 *
+                 * `primary` defaults to true so an existing caller is unaffected.
+                 */
+                const isPrimary = paneApi === null || paneApi === undefined || paneApi.primary !== false
+                if (isPrimary && mounted !== null && mounted !== undefined && mounted.handle !== undefined) {
+                  diffPaneRef.current = mounted.handle
+                }
+                /* Return the full contract: the host needs BOTH halves. Returning a
+                   bare dispose function left the host without a handle, so anything
+                   it pushed into this pane was silently dropped. */
+                return {
+                  handle: mounted !== null && mounted !== undefined ? mounted.handle : { showDiff() {} },
+                  dispose: () => {
+                    if (isPrimary) diffPaneRef.current = null
+                    if (mounted !== null && mounted !== undefined && typeof mounted.dispose === 'function') mounted.dispose()
+                  },
+                }
+              },
+            },
+            commands: {
+              /** Show the working-tree diff for a REPOSITORY-relative path. */
+              showDiff: (path, options) => {
+                if (diffPaneRef.current !== null) diffPaneRef.current.showDiff(path, options)
+              },
+            },
           })
           ctx.effect(() => off, 'dsh-gitcraft: workbench page')
           return true
@@ -2942,3 +4102,20 @@ window.__ModuleLoader__.load({
     return { apply, name: 'dsh-gitcraft' }
   },
 })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
