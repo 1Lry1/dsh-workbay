@@ -1648,7 +1648,10 @@ const NARROW_PANE_W = 225
 .scw-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .scw-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1))}
 .scw-btn.is-primary{border-color:transparent;background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
-.scw-btn.is-primary:hover:not(:disabled){filter:brightness(1.08)}
+/* 主按钮:hover 必须把背景再写一遍：.scw-btn:hover:not(:disabled) 的选择器优先级
+   （多一个 :not 伪类）比 .is-primary 高，会把背景换成浅色通用 hover 底，
+   而文字仍是反白色 —— 于是悬停时白字白底，看起来像文字消失了。 */
+.scw-btn.is-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary,#4d6bfe);filter:brightness(1.08)}
 .scw-btn:disabled{opacity:.4;cursor:default}
 .scw-amend{display:flex;align-items:center;gap:3px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px;cursor:pointer;user-select:none}
 
@@ -5188,6 +5191,7 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
 
 
 
