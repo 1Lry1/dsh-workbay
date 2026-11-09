@@ -336,8 +336,11 @@ function appendLogs(current, items, max) {
          each time — that sent the same root three times in one second and filled
          the host log with identical lines. */
       if (root === '' || root === lastSentRoot) return
-      lastSentRoot = root
-      await api.post('/workspace', { root })
+      const posted = await api.post('/workspace', { root })
+      /* Record it only AFTER the host accepted it. Recording first meant a request
+         that failed (host still booting after a DSH restart) was remembered as done
+         and never retried — that is the 'switch the folder twice before it takes' bug. */
+      if (posted !== null && posted !== undefined && posted.ok === true) lastSentRoot = root
     }
     void sync()
     const timer = setInterval(() => { void sync() }, 2000)
@@ -400,7 +403,16 @@ function appendLogs(current, items, max) {
       /* 搜索：直接查本地 JSONL（全量历史），结果替换日志流显示。 */
       React.useEffect(() => {
         const query = search.query.trim()
-        if (query === '') return undefined
+  /* 清空搜索 = 回到实时日志。这里必须把两个列表的滚动位置归零：
+     之前停在搜索结果的第 N 行，切回日志后虚拟窗口仍按那个偏移算，
+     算出来是空的——用户看到「日志不见了」，滚一下才恢复。 */
+  if (query === '') {
+    setScrollTop(0)
+    if (logRef.current) logRef.current.scrollTop = 0
+    setResultScrollTop(0)
+    if (resultRef.current) resultRef.current.scrollTop = 0
+    return undefined
+  }
         setTarget(null)
         let cancelled = false
         const timer = setTimeout(async () => {
