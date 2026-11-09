@@ -3178,28 +3178,6 @@ function Page(props) {
 
       changeRootRef.current = changeRoot
 
-      const openRootPicker = useCallback(() => {
-        call(FILES_PREFIX, 'roots', {}).then((data) => {
-          const hostRecent = data !== null && data !== undefined && Array.isArray(data.recent) ? data.recent : []
-          /* 合并两边：我们自己记的（切过的都在）+ 宿主给的，去重后新的在前。 */
-          const merged = []
-          for (const entry of readRecentRoots().concat(hostRecent)) {
-            if (typeof entry !== 'string' || entry === '') continue
-            if (merged.indexOf(entry) >= 0) continue
-            merged.push(entry)
-          }
-          const items = merged
-            .map((entry) => menuItem(entry, () => changeRoot(entry), { disabled: entry === workspaceRoot }))
-          if (items.length === 0) {
-            items.push(menuItem(t('root.none'), () => {}, { disabled: true }))
-          }
-          items.push(menuItem(t('root.browse'), () => { openBrowse() }))
-          openMenu(t('root.title'), workspaceRoot, items)
-        }).catch((error) => {
-          setBar({ kind: 'error', message: error !== null && error !== undefined && typeof error.message === 'string' ? error.message : t('error.unknown') })
-        })
-      }, [call, openMenu, openPrompt, openBrowse, workspaceRoot, changeRoot, t])
-
       const doInit = useCallback(() => {
         if (workspaceRoot === '') return
         openConfirm(t('repo.initTitle'), t('repo.initBody'), () => {
@@ -3736,7 +3714,8 @@ function Page(props) {
           type: 'button',
           className: 'scw-repoChip',
           title: t('root.title') + ' — ' + (repoRoot === '' ? workspaceRoot : repoRoot),
-          onClick: () => openRootPicker(),
+          /* 合并成一个入口：对话框里既有「最近打开」，也能浏览其它目录。 */
+  onClick: () => openBrowse(),
         },
         E(Icon, { name: 'folder', size: 13 }),
         E('span', { className: 'scw-repoName' }, repoLabel === '' ? t('empty.noRoot') : repoLabel),
@@ -4947,6 +4926,30 @@ function Page(props) {
             E(Icon, { name: 'folder', size: 12 }),
             E('span', { className: 'scw-browseCurrentName' }, repoLabel === '' ? t('empty.noRoot') : repoLabel),
             E('span', { className: 'scw-browseCurrentPath' }, repoRoot === '' ? workspaceRoot : repoRoot)),
+          /* 最近打开：和「浏览」合到同一个对话框里。分成菜单 + 对话框两个入口时，
+             想切回上周用的目录要点开菜单，想挑个新目录又要再点进对话框。 */
+          (() => {
+            const merged = []
+            const source = readRecentRoots().concat(Array.isArray(browse.recent) ? browse.recent : [])
+            for (const entry of source) {
+              if (typeof entry !== 'string' || entry === '') continue
+              if (merged.indexOf(entry) >= 0) continue
+              merged.push(entry)
+            }
+            if (merged.length === 0) return null
+            return E('div', null,
+              E('div', { className: 'scw-browseSection' }, t('root.recent')),
+              merged.slice(0, 6).map((entry) => E('button', {
+                key: 'recent:' + entry,
+                type: 'button',
+                className: 'scw-browseItem' + (entry === workspaceRoot ? ' is-current' : ''),
+                title: entry,
+                onClick: () => { setDialog(null); changeRoot(entry) },
+              },
+              E(Icon, { name: 'folder', size: 12 }),
+              E('span', { className: 'scw-browseItemName' }, entry.split(/[\\/]/).filter(Boolean).pop() || entry),
+              E('span', { className: 'scw-browseItemPath' }, entry))))
+          })(),
           browse.drives.length === 0
             ? null
             : E('div', null,
@@ -5203,6 +5206,7 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
 
 
 

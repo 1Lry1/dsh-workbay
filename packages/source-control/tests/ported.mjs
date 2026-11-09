@@ -597,20 +597,17 @@ try {
      A chip that does nothing leaves the page stuck on the first root forever. */
   await mustClick('.scw-repoChip')
   await sleep(900)
-  const rootMenu = JSON.parse(await ev(`JSON.stringify({
-    open: document.querySelector('.scw-menu') !== null,
-    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+  /* 入口合并了：不再是弹出菜单，而是直接开「切换工作区目录」对话框——
+     里面既有最近打开，也能浏览其它目录。 */
+  const rootPicker = JSON.parse(await ev(`JSON.stringify({
+    dialog: document.querySelector('.scw-dialog') !== null,
+    hasBrowse: document.querySelector('.scw-browseInput') !== null,
+    hasRecent: [].slice.call(document.querySelectorAll('.scw-browseSection')).some(function (n) { return n.textContent.indexOf('最近') >= 0 }),
   })`))
-  check('the root chip opens a folder picker', rootMenu.open === true && rootMenu.items.length > 0, rootMenu)
-  /* Typing an absolute path is gone on purpose: the picker can reach any drive, so
-     nobody should have to hand-type a path. */
-  check('the picker no longer asks people to type a path',
-    rootMenu.items.every(function (x) { return x.indexOf('手动输入') < 0 }), rootMenu.items)
-  await ev(`(function () {
-    var el = [].slice.call(document.querySelectorAll('.scw-menuItem')).filter(function (n) { return n.textContent.indexOf('浏览文件夹') >= 0 })[0]
-    if (el) el.click()
-  })()`)
-  await sleep(2200)
+  check('the root chip opens the folder picker dialog',
+    rootPicker.dialog === true && rootPicker.hasBrowse === true, rootPicker)
+  check('the picker offers recently opened roots in the same dialog',
+    rootPicker.hasRecent === true, rootPicker)
   /* Navigate to the repository by walking up to the drive root and back down. */
   for (var step = 0; step < 6; step += 1) {
     const at = await ev(`document.querySelector('.scw-browsePath') ? document.querySelector('.scw-browsePath').textContent : ''`)
@@ -637,8 +634,8 @@ try {
   /* (a) The dialog's OK button must be labelled — and must never say "仍然丢弃".
      That label leaked from the discard confirm into every prompt, and in the browse
      dialog the button rendered with no text at all. */
-  await mustClick('.scw-repoChip'); await sleep(900)
-  await clickMenu('浏览文件夹'); await sleep(2000)
+  /* 入口合并后，点 chip 直接进对话框，不需要再点「浏览文件夹」。 */
+  await mustClick('.scw-repoChip'); await sleep(2000)
   const browseDom = JSON.parse(await ev(`JSON.stringify({
     open: document.querySelector('.scw-browse') !== null,
     items: document.querySelectorAll('.scw-browseItem').length,
@@ -1163,8 +1160,7 @@ try {
      changeRoot path, otherwise the test would not exercise the bug at all. */
   await clickMode('历史'); await sleep(1200)
   const beforeSwitch = JSON.parse(await ev(`JSON.stringify([].slice.call(document.querySelectorAll('.scw-commitSubject')).map(function (n) { return n.textContent }))`))
-  await mustClick('.scw-repoChip'); await sleep(900)
-  await clickMenu('浏览文件夹'); await sleep(1800)
+  await mustClick('.scw-repoChip'); await sleep(1800)
   for (let step = 0; step < 8; step += 1) {
     const at = await ev(`document.querySelector('.scw-browsePath') ? document.querySelector('.scw-browsePath').textContent : ''`)
     if (String(at).toLowerCase().replace(/\\/g, '/') === String(repo2).toLowerCase().replace(/\\/g, '/')) break
@@ -1242,6 +1238,8 @@ try {
 console.log('')
 console.log(failures === 0 ? 'PORTED PASS' : ('FAILURES: ' + failures))
 process.exit(failures === 0 ? 0 : 1)
+
+
 
 
 
