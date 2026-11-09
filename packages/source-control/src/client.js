@@ -1322,7 +1322,7 @@ const NARROW_PANE_W = 225
     /* ============================== styles ============================== */
 
     const CSS = `
-.scw-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-base,#14161a);font:inherit;font-size:13px}
+.scw-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;color:var(--dsw-alias-label-primary,#e6e6e6);/* 主题底色在工作台里是半透明的（亚克力效果），整页会透出后面的对话文字；最后这一行把底色补成不透明，内容才不会从缝里透出来 */background:var(--dsw-alias-bg-base,#14161a);background-color:#14161a;font:inherit;font-size:13px}
 .scw-icon{flex:none;display:block}
 /* position:relative is the anchor for the badge; the badge sits OUTSIDE the button box
    so it never pushes the icon off centre or widens the header. */
@@ -1568,7 +1568,7 @@ const NARROW_PANE_W = 225
 .scw-commitPatch{display:flex;flex-direction:column;width:100%;height:100%;min-height:0}
 
 /* ---- mode toolbar ---- */
-.scw-toolbar{display:flex;flex:none;gap:3px;padding:3px 5px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));overflow-x:auto;scrollbar-width:none}
+.scw-toolbar{display:flex;flex:none;gap:3px;padding:3px 5px;background-color:#14161a;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));overflow-x:auto;scrollbar-width:none}
 .scw-toolbar::-webkit-scrollbar{display:none}
 .scw-toolIcon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:22px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .scw-toolIcon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#fff)}
@@ -5254,6 +5254,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
