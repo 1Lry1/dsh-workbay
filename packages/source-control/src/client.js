@@ -1260,10 +1260,10 @@ const NARROW_PANE_W = 225
 /* position:relative is the anchor for the badge; the badge sits OUTSIDE the button box
    so it never pushes the icon off centre or widens the header. */
 .scw-iconBtn{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
-.scw-badge{position:absolute;top:-1px;right:-1px;min-width:13px;height:13px;padding:0 3px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;font-size:9px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;color:#fff;background:var(--dsw-alias-brand-primary,#4d6bfe);border:1px solid var(--dsw-alias-bg-base,#14161a)}
+.scw-badge{position:absolute;top:-2px;right:-2px;z-index:5;min-width:14px;height:14px;padding:0 4px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;font-size:9px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;color:#fff;background:#4d6bfe;box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#14161a);pointer-events:none}
 /* 待拉取 = 你落后于远端；待推送 = 你有远端没有的提交。两种不同的动作意图，两种颜色。 */
-.scw-badge.is-behind{background:var(--dsw-alias-state-warning-primary,#e0a458);color:#14161a}
-.scw-badge.is-ahead{background:var(--dsw-alias-brand-primary,#4d6bfe)}
+.scw-badge.is-behind{background:#e0a458;color:#14161a}
+.scw-badge.is-ahead{background:#4d6bfe;color:#fff}
 .scw-iconBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#e6e6e6)}
 .scw-iconBtn.is-active{color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-iconBtn:disabled{opacity:.35;cursor:default}
@@ -5034,6 +5034,8 @@ const NARROW_PANE_W = 225
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
