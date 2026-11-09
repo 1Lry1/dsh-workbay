@@ -1665,8 +1665,58 @@ const NARROW_PANE_W = 225
 
     /* ============================== page ============================== */
 
-    function Page(props) {
-      const { t, ctx, dock } = props
+    /**
+ * 把一段文本插进对话输入框（服务不可用时的退路）。
+ *
+ * 找到 composer 的可编辑元素，聚焦后走 `insertText`：这样浏览器当成一次真实的
+ * 输入，React 受控组件、@引用解析、撤销栈都能正常工作。直接改 value 不行——
+ * 受控组件会立刻把值覆盖回去。
+ */
+function insertIntoComposer(text) {
+  if (typeof document === 'undefined' || document === null) return false
+  const candidates = [
+    '[data-testid="composer"] [contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    'textarea[placeholder]',
+  ]
+  let node = null
+  for (const selector of candidates) {
+    const found = document.querySelector(selector)
+    if (found !== null && found !== undefined) { node = found; break }
+  }
+  if (node === null) {
+    /* 最后退一步：任何可见的 contenteditable，取文档里最后一个（composer 通常在底部）。 */
+    const all = document.querySelectorAll('[contenteditable="true"]')
+    if (all.length > 0) node = all[all.length - 1]
+  }
+  if (node === null) return false
+  try {
+    node.focus()
+    if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') {
+      const start = typeof node.selectionStart === 'number' ? node.selectionStart : node.value.length
+      const before = node.value.slice(0, start)
+      const after = node.value.slice(start)
+      node.value = before + text + after
+      node.setSelectionRange(before.length + text.length, before.length + text.length)
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    }
+    const selection = window.getSelection()
+    if (selection === null) return false
+    if (selection.rangeCount === 0 || node.contains(selection.anchorNode) === false) {
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+    return document.execCommand('insertText', false, text) === true
+  } catch (error) {
+    return false
+  }
+}
+function Page(props) {
+      const { t, ctx, dock, chatRef } = props
       const call = useMemo(() => makeCaller(), [])
       const visible = useDocumentVisible()
       const rootRef = useRef(null)
@@ -3284,22 +3334,24 @@ const NARROW_PANE_W = 225
       const addToChat = useCallback((rel) => {
         const path = typeof rel === 'string' ? rel.trim() : ''
         if (path === '') return
-        const conversation = ctx !== null && ctx !== undefined && typeof ctx.get === 'function'
-          ? ctx.get('conversation')
-          : null
+        /* 服务可能挂在插件根 ctx 上，也可能要先 inject 才拿得到会话作用域的那一个，
+           所以两条路都试：先用 apply 里注入好的引用，其次现场 ctx.get。 */
+        const conversation = (chatRef !== null && chatRef !== undefined ? chatRef.current : null)
+          || (ctx !== null && ctx !== undefined && typeof ctx.get === 'function' ? ctx.get('conversation') : null)
         const input = conversation !== null && conversation !== undefined ? conversation.input : null
-        if (input === null || input === undefined || typeof input.requestDraftInitialization !== 'function') {
-          setBar({ kind: 'error', message: t('chat.unavailable') })
-          return
+        const hasService = input !== null && input !== undefined && typeof input.requestDraftInitialization === 'function'
+        if (hasService === true) {
+          try {
+            /* append：输入框里已经有字时接在后面，而不是把用户写了一半的话冲掉。 */
+            input.requestDraftInitialization({ prompt: '@' + path + ' ', whenDraftExists: 'append' })
+            return
+          } catch (error) { void error }
         }
-        try {
-          /* append：输入框里已经有字时接在后面，而不是把用户写了一半的话冲掉。 */
-          input.requestDraftInitialization({ prompt: '@' + path + ' ', whenDraftExists: 'append' })
-        } catch (error) {
-          setBar({ kind: 'error', message: t('chat.unavailable') })
-        }
-      }, [ctx, t])
-
+        /* 服务拿不到时退回 DOM：找到对话输入框，把 @路径 插进去。
+           这比弹一句「没有可写入的输入框」有用——用户要的是把文件带进对话。 */
+        if (insertIntoComposer('@' + path + ' ') === true) return
+        setBar({ kind: 'error', message: t('chat.unavailable') })
+      }, [ctx, t, chatRef])
       const stageRow = useCallback((row) => {
         if (row === null || row === undefined) return
         const path = toRepoPath(row.rel, repoRootRel)
@@ -5000,13 +5052,24 @@ const NARROW_PANE_W = 225
          The locale is still picked up live: `translatorOf` reads the active locale
          on every call, and `LocaleLive` re-renders on the locale event. */
       const t = useMemo(() => translatorOf(ctx), [ctx])
-      return E(Page, { t, ctx, dock: props.dock })
+      return E(Page, { t, ctx, dock: props.dock, chatRef: props.chatRef })
     }
 
     /* ============================== apply ============================== */
 
     function apply(ctx) {
-      const locale = ctx.get('locale')
+      /* 会话输入框由 DSH 的 conversation 服务提供。它可能只对「声明了依赖」的作用域
+       可见，所以在这里 inject 一次并存下引用——点击时才拿不到就太晚了。 */
+    const chatRef = { current: null }
+    try {
+      /* inject 不一定存在（测试里的假 ctx 就没有），拿不到也不该让整页注册失败。 */
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['conversation'], (scoped) => {
+          chatRef.current = scoped.conversation !== undefined ? scoped.conversation : scoped.get('conversation')
+        })
+      }
+    } catch (error) { void error }
+    const locale = ctx.get('locale')
       if (locale !== undefined && typeof locale.register === 'function') {
         ctx.effect(() => locale.register(LOCALE_NS, { zh: ZH, en: EN }), 'dsh-workbay-source-control: locale')
       }
@@ -5042,6 +5105,7 @@ const NARROW_PANE_W = 225
               ctx,
               t,
               dock: pageProps === undefined ? undefined : pageProps.dock,
+          chatRef,
             }),
           })
           ctx.effect(() => off, 'dsh-workbay-source-control: page')
@@ -5092,6 +5156,12 @@ const NARROW_PANE_W = 225
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
+
+
+
+
 
 
 
