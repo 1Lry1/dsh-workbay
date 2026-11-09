@@ -1376,7 +1376,7 @@ const NARROW_PANE_W = 225
    so a long line in the content pane squeezes the tree to a sliver and dragging
    the grip looks like it does nothing (the flex layout shrinks it straight back).
    The width comes from the inline style, driven by the drag. */
-.scw-treePane{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;overflow:hidden;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-treePane{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;overflow:hidden;contain:paint;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 /* A 5px hit target is a hair too thin for a mouse; the visual stays thin but the
 /* The grip must occupy its OWN column. It used to be margin-left:-4px with z-index:2,
    so it sat ON TOP of the tree pane's scrollbar and every hover painted a tint over
@@ -1394,7 +1394,7 @@ const NARROW_PANE_W = 225
 .scw-content{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0}
 
 /* ---- tree ---- */
-.scw-tree{flex:1 1 auto;min-height:0;overflow:auto;padding:2px 0 8px;overscroll-behavior:contain}
+.scw-tree{flex:1 1 auto;min-height:0;overflow:auto;padding:2px 0 8px;overscroll-behavior:contain;/* contain:paint 保证列表里的行绝不可能画到自己盒子外面——虚拟滚动的行是绝对定位的，布局一挤就会溢出到工具栏那一行 */contain:paint;position:relative;isolation:isolate;background:inherit}
 .scw-treeViewport{position:relative}
 .scw-row{display:flex;align-items:center;gap:4px;height:${TREE_ROW_HEIGHT}px;padding-right:6px;border-radius:4px;cursor:pointer;white-space:nowrap;outline:none;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .scw-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
@@ -5254,6 +5254,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
