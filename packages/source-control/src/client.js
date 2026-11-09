@@ -875,7 +875,19 @@ const NARROW_PANE_W = 225
         if (node < 0) node = before.length
         lanes = before.slice()
         while (lanes.length <= node) lanes.push(null)
-        lanes[node] = parents.length > 0 ? parents[0] : null
+        /* 第一个父节点如果已经出现在别的泳道上，说明这个分支在这里汇合 —— 本泳道
+       到此结束（置 null），而不是把父节点再写一遍。重复会让同一条线被画两次，
+       然后一路延伸下去：屏幕上就是一条永远没有节点的幽灵竖线。 */
+    const firstParent = parents.length > 0 ? parents[0] : null
+    lanes[node] = firstParent
+    /* 父节点若已存在于别的泳道，说明两条线在这一行汇合：保留本泳道的延续，
+       把「另一条」置 null —— 反过来做（结束本泳道）会把这条线整根掐断，
+       屏幕上就是「上面的线还在、下面突然没了」。 */
+    if (firstParent !== null) {
+      for (let index = 0; index < lanes.length; index += 1) {
+        if (index !== node && lanes[index] === firstParent) lanes[index] = null
+      }
+    }
         for (let index = 1; index < parents.length; index += 1) {
           if (lanes.indexOf(parents[index]) < 0) lanes.push(parents[index])
         }
@@ -5191,6 +5203,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
