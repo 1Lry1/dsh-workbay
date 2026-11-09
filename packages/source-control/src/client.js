@@ -106,6 +106,30 @@ function writePageCache(patch) {
   PAGE_CACHE.at = Date.now()
   for (const key of Object.keys(patch)) PAGE_CACHE[key] = patch[key]
 }
+const RECENT_ROOTS_KEY = 'dsh-workbay.sc.recent-roots.v1'
+const RECENT_ROOTS_MAX = 8
+
+/** 最近打开过的工作目录（新的在前）。宿主只记得当前一个，历史由这里负责。 */
+function readRecentRoots() {
+  try {
+    const raw = window.localStorage.getItem(RECENT_ROOTS_KEY)
+    if (raw === null || raw === undefined) return []
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed) === false) return []
+    return parsed.filter((entry) => typeof entry === 'string' && entry !== '').slice(0, RECENT_ROOTS_MAX)
+  } catch (error) {
+    return []
+  }
+}
+
+function rememberRoot(path) {
+  const value = typeof path === 'string' ? path.trim() : ''
+  if (value === '') return
+  try {
+    const next = [value].concat(readRecentRoots().filter((entry) => entry !== value)).slice(0, RECENT_ROOTS_MAX)
+    window.localStorage.setItem(RECENT_ROOTS_KEY, JSON.stringify(next))
+  } catch (error) { void error }
+}
 const ROOT_KEY = 'dsh-workbay.sc.root.v1'
     const REPO_KEY = 'dsh-workbay.sc.repo.v1'
     const LAYOUT_KEY = 'dsh-workbay.sc.layout.v1'
@@ -3109,6 +3133,9 @@ function Page(props) {
       const changeRoot = useCallback((next) => {
         const value = typeof next === 'string' ? next.trim() : ''
         if (value === '') return
+        /* 记进「最近打开」：宿主的 recent 只回当前这一个，切过的目录全丢了，
+           用户每次都得重新找——记忆这件事本来就该由我们这边负责。 */
+        rememberRoot(value)
         /* Drop the resolved repo: it belongs to the OLD root and would be used to
            map paths in the new one. It is re-resolved from the next snapshot. */
         setRepoRoot('')
@@ -3138,10 +3165,15 @@ function Page(props) {
 
       const openRootPicker = useCallback(() => {
         call(FILES_PREFIX, 'roots', {}).then((data) => {
-          const recent = data !== null && data !== undefined && Array.isArray(data.recent) ? data.recent : []
-          const drives = data !== null && data !== undefined && Array.isArray(data.drives) ? data.drives : []
-          const items = recent
-            .filter((entry) => typeof entry === 'string' && entry !== '')
+          const hostRecent = data !== null && data !== undefined && Array.isArray(data.recent) ? data.recent : []
+          /* 合并两边：我们自己记的（切过的都在）+ 宿主给的，去重后新的在前。 */
+          const merged = []
+          for (const entry of readRecentRoots().concat(hostRecent)) {
+            if (typeof entry !== 'string' || entry === '') continue
+            if (merged.indexOf(entry) >= 0) continue
+            merged.push(entry)
+          }
+          const items = merged
             .map((entry) => menuItem(entry, () => changeRoot(entry), { disabled: entry === workspaceRoot }))
           if (items.length === 0) {
             items.push(menuItem(t('root.none'), () => {}, { disabled: true }))
@@ -3638,18 +3670,18 @@ function Page(props) {
         /* 文件行上的「加入对话」按钮。放在这里而不是只放在 changeActions 里：
            那个函数只对「有变更的文件」渲染，而文件模式下大多数行没有 change，
            于是按钮在最常用的地方反而看不见。 */
-        row.dir === false
-          ? E('span', { className: 'scw-rowActions' },
-            E('button', {
-              type: 'button',
-              className: 'scw-rowBtn',
-              title: t('action.addToChat') + ' — ' + row.rel,
-              onClick: (event) => {
-                event.stopPropagation()
-                addToChat(row.rel)
-              },
-            }, '@'))
-          : null,
+        /* 目录也支持：引用一个目录让 agent 自己去翻，比逐个文件点更快。
+           目录引用带尾斜杠，DSH 的引用面板据此走文件夹那条分支。 */
+        E('span', { className: 'scw-rowActions' },
+          E('button', {
+            type: 'button',
+            className: 'scw-rowBtn',
+            title: t('action.addToChat') + ' — ' + row.rel,
+            onClick: (event) => {
+              event.stopPropagation()
+              addToChat(row.dir === true ? row.rel + '/' : row.rel)
+            },
+          }, '@')),
         row.dir === false && row.change !== null && row.change !== undefined
           ? E('span', { className: 'scw-rowActions' },
             E('button', {
@@ -5156,6 +5188,7 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
 
 
 
