@@ -1060,16 +1060,15 @@ async function tagOnRemote(root, remote, name) {
  */
 async function snapshotOf(root) {
   const [statusRaw, stagedNumstat, worktreeNumstat] = await Promise.all([
-    /* Builds create thousands of untracked files; --untracked-files=all walks
-       every one and rename detection hashes modified files, which is what made
-       the panel sit on "正在读取仓库…" while a build ran. 
-ormal collapses an
-       untracked directory into one row, --no-renames skips the similarity
-       hashing; both stay well-defined for the UI (a directory row just has no
-       synthetic diff). */
+        /* --untracked-files=all, NOT normal: `normal` collapses a brand-new directory
+           into ONE row, so the files inside it never appeared in 变更 and could not
+           be staged individually. The cost is real - a build that leaves thousands
+           of untracked files makes this walk slower - but a changes list that hides
+           new work is worse than one that takes a moment. --no-renames still skips
+           similarity hashing. */
     runGit(root, [
       '--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2',
-      '--branch', '-z', '--untracked-files=normal', '--no-renames',
+      '--branch', '-z', '--untracked-files=all', '--no-renames',
       '--ignore-submodules=dirty',
     ], { timeoutMs: 30_000 }),
     runGit(root, ['diff', '--cached', '--numstat', '-z', '--no-renames'], { timeoutMs: 30_000 }),
@@ -3054,4 +3053,5 @@ export function apply(ctx, config) {
     }, 'dsh-gitcraft: session workspace resolution')
   })
 }
+
 
