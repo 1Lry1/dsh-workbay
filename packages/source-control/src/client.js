@@ -1322,7 +1322,7 @@ const NARROW_PANE_W = 225
     /* ============================== styles ============================== */
 
     const CSS = `
-.scw-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;color:var(--dsw-alias-label-primary,#e6e6e6);/* 主题底色在工作台里是半透明的（亚克力效果），整页会透出后面的对话文字；最后这一行把底色补成不透明，内容才不会从缝里透出来 */background:var(--dsw-alias-bg-base,#14161a);background-color:#14161a;font:inherit;font-size:13px}
+.scw-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-base,#14161a);font:inherit;font-size:13px}
 .scw-icon{flex:none;display:block}
 /* position:relative is the anchor for the badge; the badge sits OUTSIDE the button box
    so it never pushes the icon off centre or widens the header. */
@@ -1403,7 +1403,8 @@ const NARROW_PANE_W = 225
 .scw-rowChevron{display:inline-flex;align-items:center;justify-content:center;width:12px;flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .scw-rowIcon{flex:none;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-row.is-dir .scw-rowIcon{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
-.scw-rowName{flex:0 1 auto;min-width:3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scw-row{color:var(--dsw-alias-label-primary,#e6e6e6)}
+  .scw-rowName{color:inherit;flex:0 1 auto;min-width:3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* GitCraft puts the path AFTER the name and lets it shrink first: the name is what
    you pick a file by, the path is context. */
 .scw-rowDir.is-after{flex:1 1 auto;min-width:0;max-width:none;margin-left:6px;text-align:left}
@@ -1471,7 +1472,7 @@ const NARROW_PANE_W = 225
 .scw-bulkBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#fff)}
 .scw-bulkBtn.is-danger{color:var(--dsw-alias-state-error-primary,#ff6b6b);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 45%,transparent)}
 .scw-bulkBtn:disabled{opacity:.45;cursor:default}
-.scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;/* 不再吸顶：吸顶时分组行会盖住正在滚动的文件名，露出半截字，看起来就像背景透了出来。分组标题跟着列表一起滚，永远不会有东西夹在它下面。 */background:linear-gradient(var(--dsw-alias-bg-base,#14161a),var(--dsw-alias-bg-base,#14161a)),#14161a;box-shadow:0 1px 0 0 var(--dsw-alias-border-l1,rgba(255,255,255,.12))}
+.scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;/* 不吸顶：吸顶时分组行会盖住滚动的文件名，露半截字，看着像背景透了。 */box-shadow:0 1px 0 0 var(--dsw-alias-border-l1,rgba(255,255,255,.12))}
 .scw-groupCount{font-weight:400;opacity:.7}
 .scw-groupFoot{padding:6px 8px}
 
@@ -1568,7 +1569,7 @@ const NARROW_PANE_W = 225
 .scw-commitPatch{display:flex;flex-direction:column;width:100%;height:100%;min-height:0}
 
 /* ---- mode toolbar ---- */
-.scw-toolbar{display:flex;flex:none;gap:3px;padding:3px 5px;background-color:#14161a;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));overflow-x:auto;scrollbar-width:none}
+.scw-toolbar{display:flex;flex:none;gap:3px;padding:3px 5px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));overflow-x:auto;scrollbar-width:none}
 .scw-toolbar::-webkit-scrollbar{display:none}
 .scw-toolIcon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:22px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .scw-toolIcon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#fff)}
@@ -5254,6 +5255,9 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
+
 
 
 
