@@ -147,7 +147,7 @@ const NARROW_PANE_W = 225
     const TREE_MAX_W = 360
     const TREE_DEFAULT_W = 280
 
-    const TREE_ROW_HEIGHT = 22
+    const TREE_ROW_HEIGHT = 24
     const TREE_OVERSCAN = 8
 
     /* ============================== i18n ============================== */
@@ -1451,7 +1451,7 @@ const NARROW_PANE_W = 225
 /* ---- history ---- */
 /* ---- history rows: graph | hash | refs | subject .......... author time ---- */
 /* flex-direction is REQUIRED: the base .scw-commitRow is a column (hash above subject). Without this the graph row stacked vertically — every cell on its own line. */
-.scw-commitRow.is-graph{display:flex;flex-direction:row;align-items:center;gap:7px;min-height:30px;padding:0 8px 0 4px}
+.scw-commitRow.is-graph{display:flex;flex-direction:row;align-items:center;gap:9px;min-height:34px;padding:4px 10px 4px 6px}
 .scw-commitRow.is-graph .scw-graph{flex:none;overflow:visible}
 .scw-commitRow.is-graph .scw-commitShort{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 /* Must be able to SHRINK. flex:none plus a percentage max-width let the chips run
@@ -1468,7 +1468,7 @@ const NARROW_PANE_W = 225
 .scw-refChip.is-tag{border-color:var(--dsw-alias-state-warning-primary,#e0a458);color:var(--dsw-alias-state-warning-primary,#e0a458);border-style:dashed}
 .scw-commitRow.is-graph .scw-commitSubject{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .scw-commitRow.is-graph .scw-commitAuthor{flex:none;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
-.scw-commitRow.is-graph .scw-commitTime{flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);opacity:.85}
+.scw-commitRow.is-graph .scw-commitTime{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98);opacity:.85}
 .scw-loadMore{display:flex;justify-content:center;padding:8px}
 .scw-loadMoreBtn{border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;padding:4px 14px;cursor:pointer}
 .scw-loadMoreBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
@@ -4097,7 +4097,7 @@ function Page(props) {
 
         /* ---- 历史 ---- */
         const LANE_W = 12
-        const GRAPH_ROW_H = 30
+        const GRAPH_ROW_H = 34
         const LANE_COLORS = ['#4d6bfe', '#4ec9a0', '#e0a458', '#c678dd', '#5aa9e6', '#e06c75']
 
         /**
@@ -4120,10 +4120,28 @@ function Page(props) {
           for (let lane = 0; lane < before.length; lane += 1) {
             if (before[lane] === null || before[lane] === undefined) continue
             if (lane === node) continue
+            /* 这条泳道在本行还继续吗？after 的同一位置还是同一个提交才算继续。 */
+            const continues = lane < after.length && after[lane] === before[lane]
+            if (continues === true) {
+              parts.push(E('line', {
+                key: 'v' + lane,
+                x1: xOf(lane), y1: 0, x2: xOf(lane), y2: GRAPH_ROW_H,
+                stroke: LANE_COLORS[lane % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.55,
+              }))
+              continue
+            }
+            /* 这条线在本行汇入节点：先竖着到中线，再横着接到节点。
+               以前这里画的是一根贯穿整行的竖线，线走到行末就断了、永远接不上节点——
+               看起来就是「泳道图画错了」。 */
             parts.push(E('line', {
-              key: 'v' + lane,
-              x1: xOf(lane), y1: 0, x2: xOf(lane), y2: GRAPH_ROW_H,
+              key: 'vin' + lane,
+              x1: xOf(lane), y1: 0, x2: xOf(lane), y2: mid,
               stroke: LANE_COLORS[lane % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.55,
+            }))
+            parts.push(E('line', {
+              key: 'join' + lane,
+              x1: xOf(lane), y1: mid, x2: xOf(node), y2: mid,
+              stroke: LANE_COLORS[lane % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.85,
             }))
           }
           if (before[node] !== null && before[node] !== undefined) {
@@ -5206,6 +5224,9 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
+
 
 
 

@@ -488,7 +488,8 @@ try {
   check('each commit is a node in the graph', graphDom.nodes === graphDom.rows, graphDom)
   check('the commits are CONNECTED by lines', graphDom.lines > 0, graphDom)
   check('the graph row lays out horizontally, not stacked',
-    graphDom.rowHeight > 0 && graphDom.rowHeight <= 40 && graphDom.cells >= 3, graphDom)
+    /* 行高上限放宽到 48：34 的行高 + 上下各 4px 内边距 + 边框，为的是让列表不那么挤。 */
+    graphDom.rowHeight > 0 && graphDom.rowHeight <= 48 && graphDom.cells >= 3, graphDom)
   check('branch refs are shown on the commit that carries them', graphDom.refs > 0, graphDom)
   /* History is paged, not capped: the pager must NOT appear when the whole history
      already fits in one page (a permanent "加载更多" that loads nothing is worse than
