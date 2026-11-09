@@ -868,33 +868,52 @@ const NARROW_PANE_W = 225
     function buildCommitGraph(commits) {
       const rows = []
       let lanes = []
+      /* 颜色跟着「这条分支」走，而不是跟着泳道序号走。
+         否则一条分支换道（合并后从 1 道挪到 0 道）会突然变色——
+         用户看到的就是「同一根线一半蓝一半绿」。 */
+      const colorOf = new Map()
+      let nextColor = 0
+      const colorFor = (hash) => {
+        const known = colorOf.get(hash)
+        if (known !== undefined) return known
+        const fresh = nextColor
+        nextColor += 1
+        colorOf.set(hash, fresh)
+        return fresh
+      }
       for (const commit of commits) {
         const parents = Array.isArray(commit.parents) ? commit.parents.filter((entry) => entry !== '') : []
+        const color = colorFor(commit.hash)
         const before = lanes.slice()
         let node = before.indexOf(commit.hash)
         if (node < 0) node = before.length
         lanes = before.slice()
         while (lanes.length <= node) lanes.push(null)
-        /* 第一个父节点如果已经出现在别的泳道上，说明这个分支在这里汇合 —— 本泳道
-       到此结束（置 null），而不是把父节点再写一遍。重复会让同一条线被画两次，
-       然后一路延伸下去：屏幕上就是一条永远没有节点的幽灵竖线。 */
-    const firstParent = parents.length > 0 ? parents[0] : null
-    lanes[node] = firstParent
-    /* 父节点若已存在于别的泳道，说明两条线在这一行汇合：保留本泳道的延续，
-       把「另一条」置 null —— 反过来做（结束本泳道）会把这条线整根掐断，
-       屏幕上就是「上面的线还在、下面突然没了」。 */
-    if (firstParent !== null) {
-      for (let index = 0; index < lanes.length; index += 1) {
-        if (index !== node && lanes[index] === firstParent) lanes[index] = null
-      }
-    }
+        const firstParent = parents.length > 0 ? parents[0] : null
+        lanes[node] = firstParent
+        /* 父节点若已存在于别的泳道，说明两条线在这一行汇合：保留本泳道的延续，
+           把「另一条」置 null —— 反过来做（结束本泳道）会把这条线整根掐断。 */
+        if (firstParent !== null) {
+          colorOf.set(firstParent, color)
+          for (let index = 0; index < lanes.length; index += 1) {
+            if (index !== node && lanes[index] === firstParent) lanes[index] = null
+          }
+        }
         for (let index = 1; index < parents.length; index += 1) {
-          if (lanes.indexOf(parents[index]) < 0) lanes.push(parents[index])
+          if (lanes.indexOf(parents[index]) < 0) {
+            colorFor(parents[index])
+            lanes.push(parents[index])
+          }
         }
         /* Trim empty lanes at the TAIL only: a hole in the middle must keep its index,
            or the lines would jump sideways between adjacent rows. */
         while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop()
-        rows.push({ commit, node, before, after: lanes.slice() })
+        rows.push({
+          commit, node, color, before,
+          after: lanes.slice(),
+          /* 每条泳道当前承载的分支色，供渲染时给穿过的竖线上色 */
+          beforeColors: before.map((hash) => (hash === null || hash === undefined ? null : colorOf.get(hash))),
+        })
       }
       return rows
     }
@@ -4126,7 +4145,7 @@ function Page(props) {
               parts.push(E('line', {
                 key: 'v' + lane,
                 x1: xOf(lane), y1: 0, x2: xOf(lane), y2: GRAPH_ROW_H,
-                stroke: LANE_COLORS[lane % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.55,
+                stroke: LANE_COLORS[((graphRow.beforeColors && graphRow.beforeColors[lane]) || lane) % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.55,
               }))
               continue
             }
@@ -4148,14 +4167,14 @@ function Page(props) {
             parts.push(E('line', {
               key: 'in',
               x1: xOf(node), y1: 0, x2: xOf(node), y2: mid,
-              stroke: LANE_COLORS[node % LANE_COLORS.length], strokeWidth: 1.5,
+              stroke: LANE_COLORS[(graphRow.color || 0) % LANE_COLORS.length], strokeWidth: 1.5,
             }))
           }
           if (after[node] !== null && after[node] !== undefined) {
             parts.push(E('line', {
               key: 'out',
               x1: xOf(node), y1: mid, x2: xOf(node), y2: GRAPH_ROW_H,
-              stroke: LANE_COLORS[node % LANE_COLORS.length], strokeWidth: 1.5,
+              stroke: LANE_COLORS[(graphRow.color || 0) % LANE_COLORS.length], strokeWidth: 1.5,
             }))
           }
           for (let lane = 0; lane < after.length; lane += 1) {
@@ -4171,7 +4190,7 @@ function Page(props) {
           parts.push(E('circle', {
             key: 'n',
             cx: xOf(node), cy: mid, r: 3.4,
-            fill: LANE_COLORS[node % LANE_COLORS.length],
+            fill: LANE_COLORS[(graphRow.color || 0) % LANE_COLORS.length],
             stroke: 'var(--dsw-alias-bg-base,#14161a)', strokeWidth: 1.5,
           }))
           return E('svg', {
@@ -5224,6 +5243,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
