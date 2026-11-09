@@ -890,13 +890,21 @@ const NARROW_PANE_W = 225
         lanes = before.slice()
         while (lanes.length <= node) lanes.push(null)
         const firstParent = parents.length > 0 ? parents[0] : null
-        lanes[node] = firstParent
-        /* 父节点若已存在于别的泳道，说明两条线在这一行汇合：保留本泳道的延续，
-           把「另一条」置 null —— 反过来做（结束本泳道）会把这条线整根掐断。 */
-        if (firstParent !== null) {
-          colorOf.set(firstParent, color)
-          for (let index = 0; index < lanes.length; index += 1) {
-            if (index !== node && lanes[index] === firstParent) lanes[index] = null
+        /* 父节点已经等在别的泳道上 → 本泳道在这里汇入那一条，自己结束。
+           反过来（保留本道、清掉另一条）会让主线整根换道：合并之后所有提交都被挤到
+           第 2 道，原来那条线上再没有节点 —— 正是用户看到的那种图。 */
+        let joinTo = null
+        if (firstParent === null) {
+          lanes[node] = null
+        } else {
+          /* 不要覆盖：父节点可能早就属于主线的颜色，覆盖会让主线中途变色。 */
+          if (colorOf.has(firstParent) === false) colorOf.set(firstParent, color)
+          const existing = lanes.indexOf(firstParent)
+          if (existing >= 0 && existing !== node) {
+            lanes[node] = null
+            joinTo = existing
+          } else {
+            lanes[node] = firstParent
           }
         }
         for (let index = 1; index < parents.length; index += 1) {
@@ -909,7 +917,7 @@ const NARROW_PANE_W = 225
            or the lines would jump sideways between adjacent rows. */
         while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop()
         rows.push({
-          commit, node, color, before,
+          commit, node, color, before, joinTo,
           after: lanes.slice(),
           /* 每条泳道当前承载的分支色，供渲染时给穿过的竖线上色 */
           beforeColors: before.map((hash) => (hash === null || hash === undefined ? null : colorOf.get(hash))),
@@ -4187,7 +4195,17 @@ function Page(props) {
               stroke: LANE_COLORS[lane % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.7,
             }))
           }
-          parts.push(E('circle', {
+          /* 本泳道在这一行结束、并入了另一条道：画一条斜线把节点接下去，
+           否则节点下面什么都没有，看起来像图断了。 */
+        if (graphRow.joinTo !== null && graphRow.joinTo !== undefined
+          && graphRow.joinTo < lanes && graphRow.joinTo !== node) {
+          parts.push(E('line', {
+            key: 'joinTo',
+            x1: xOf(node), y1: mid, x2: xOf(graphRow.joinTo), y2: GRAPH_ROW_H,
+            stroke: LANE_COLORS[(graphRow.color || 0) % LANE_COLORS.length], strokeWidth: 1.5, strokeOpacity: 0.85,
+          }))
+        }
+        parts.push(E('circle', {
             key: 'n',
             cx: xOf(node), cy: mid, r: 3.4,
             fill: LANE_COLORS[(graphRow.color || 0) % LANE_COLORS.length],
@@ -5243,6 +5261,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
