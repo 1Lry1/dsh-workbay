@@ -1370,13 +1370,13 @@ const NARROW_PANE_W = 225
 /* 窄的时候上下分栏：左右各占一半在 700px 以下两边都只剩几十列，读不了。
    M 档（720-1024）仍是左右分栏，放得下。 */
 .scw-body.is-stacked{flex-direction:column}
-.scw-body.is-stacked>.scw-treePane{flex:0 0 auto!important;width:auto!important;max-width:none!important;height:44%;border-right:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-body.is-stacked>.scw-treePane{flex:0 0 auto!important;width:auto!important;max-width:none!important;height:56%;border-right:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .scw-body.is-stacked>.scw-content{flex:1 1 auto;min-height:0}
 /* flex: 0 0 auto is load-bearing: without it the pane is a shrinking flex item,
    so a long line in the content pane squeezes the tree to a sliver and dragging
    the grip looks like it does nothing (the flex layout shrinks it straight back).
    The width comes from the inline style, driven by the drag. */
-.scw-treePane{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-treePane{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;overflow:hidden;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 /* A 5px hit target is a hair too thin for a mouse; the visual stays thin but the
 /* The grip must occupy its OWN column. It used to be margin-left:-4px with z-index:2,
    so it sat ON TOP of the tree pane's scrollbar and every hover painted a tint over
@@ -3890,12 +3890,9 @@ function Page(props) {
             const unstagedCount = groups[2].rows.length + groups[3].rows.length
             const hasChanges = changeTotal > 0
             return E('div', { className: 'scw-toolbar' },
-              /* Stage-all lives on the group header, next to the discard that pairs with it.
-           A second one here duplicated the same action an inch away. */
-              toolbarIcon('more', t('head.more'), () => openMenu(t('mode.changes'), '', [
-                menuItem(t('stash.pushTitle'), () => doStashPush(), { disabled: hasChanges === false }),
-                menuItem(t('head.refresh'), () => refresh()),
-              ])))
+              /* 直接摆出来，不再折进「⋯」：窄侧栏里那个省略号本身就把整行挤乱了。 */
+              toolbarIcon('stash', t('stash.pushTitle'), () => doStashPush(), { disabled: hasChanges === false }),
+              toolbarIcon('refresh', t('head.refresh'), () => refresh()))
           }
           if (treeMode === 'files') {
             return E('div', { className: 'scw-toolbar' },
@@ -3910,12 +3907,8 @@ function Page(props) {
           if (treeMode === 'history') {
             return E('div', { className: 'scw-toolbar' },
               toolbarIcon('refresh', t('head.refresh'), () => { historyLoadedRef.current = false; void loadHistory() }),
-              toolbarIcon('more', t('head.more'), () => openMenu(t('mode.history'), '', [
-                menuItem(t('action.tagCreate'), () => doTagCreate(selectedCommit === null ? undefined : selectedCommit)),
-                /* Tags could be created but never published; that left one terminal
-                   step in every release. */
-                menuItem(t('action.tagPush'), () => doTagPush()),
-              ])))
+              toolbarIcon('tag', t('action.tagCreate'), () => doTagCreate(selectedCommit === null ? undefined : selectedCommit)),
+              toolbarIcon('arrowUp', t('action.tagPush'), () => doTagPush()))
           }
           if (treeMode === 'branches') {
             return E('div', { className: 'scw-toolbar' },
@@ -5261,6 +5254,8 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 

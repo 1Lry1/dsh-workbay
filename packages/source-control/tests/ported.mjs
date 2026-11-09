@@ -262,8 +262,8 @@ try {
 
   /* ============ stash ============ */
   await clickMode('变更'); await sleep(800)
-  await clickTool('更多'); await sleep(400)
-  await clickMenu('贮藏更改'); await sleep(600)
+  /* 「贮藏更改」现在是工具栏上的直接按钮，不再折进「更多」菜单。 */
+  await clickTool('贮藏更改'); await sleep(600)
   await ev(`window.__TYPE__('.scw-dialogInput', 'ported test stash')`)
   await sleep(300)
   await ev(`window.__CLICK__('.scw-dialog .scw-btn.is-primary')`)
@@ -288,8 +288,8 @@ try {
   await clickMode('历史'); await sleep(1800)
   await ev(`window.__CLICK__('.scw-commitRow')`)
   await sleep(1500)
-  await clickTool('更多'); await sleep(400)
-  await clickMenu('打标签')
+  /* 打标签现在是历史工具栏上的直接按钮。 */
+  await clickTool('打标签'); await sleep(500)
   await sleep(500)
   await ev(`window.__TYPE__('.scw-dialogInput', 'v0.1.0')`)
   await sleep(300)
@@ -978,7 +978,7 @@ try {
   writeFileSync(path.join(gitRepo, 'two.ts'), 'const two = 2222' + String.fromCharCode(10))
   /* 刷新 lives on the 变更 toolbar; switching modes does not unmount the editor. */
   await clickMode('变更'); await sleep(700)
-  await clickTool('更多'); await sleep(600); await clickMenu('刷新')
+  await clickTool('刷新')
   await sleep(2600)
   const afterRefresh = await ev(`(function () {
     var slot = document.querySelector('.scw-paneSlot')
@@ -1211,12 +1211,11 @@ try {
     && String(untrackedDiffDom.text).indexOf('second line') >= 0, untrackedDiffDom)
   /* Tags could be created but never published — every release needed a terminal step.
      With no remote configured the page must SAY so, not fail silently. */
-  await clickMode('历史'); await sleep(1200)
-  await mustClick('.scw-toolbar .scw-toolIcon[title="更多"]'); await sleep(700)
-  const tagMenu = JSON.parse(await ev(`JSON.stringify([].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }))`))
-  check('the history menu offers 推送标签', Array.isArray(tagMenu) && tagMenu.indexOf('推送标签…') >= 0, tagMenu)
-  await clickMenu('推送标签…')
-  await sleep(2200)
+  await clickMode('历史'); await sleep(1400)
+  /* 推送标签现在是历史工具栏上的直接按钮，不再走「更多」菜单。 */
+  await mustClick('.scw-toolbar .scw-toolIcon[title^="推送标签"]'); await sleep(2200)
+  const tagPushButtons = JSON.parse(await ev(`JSON.stringify([].slice.call(document.querySelectorAll('.scw-toolbar .scw-toolIcon')).map(function (n) { return n.title }))`))
+  check('the history toolbar offers 推送标签', tagPushButtons.some(function (x) { return String(x).indexOf('推送标签') === 0 }), tagPushButtons)
   const tagPushState = JSON.parse(await ev(`JSON.stringify({
     bar: document.querySelector('.scw-bar') ? document.querySelector('.scw-bar').textContent : null,
     menu: document.querySelectorAll('.scw-menu').length,
@@ -1238,6 +1237,7 @@ try {
 console.log('')
 console.log(failures === 0 ? 'PORTED PASS' : ('FAILURES: ' + failures))
 process.exit(failures === 0 ? 0 : 1)
+
 
 
 
