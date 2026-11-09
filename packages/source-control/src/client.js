@@ -3583,6 +3583,21 @@ const NARROW_PANE_W = 225
             row.added > 0 ? E('span', { className: 'scw-statAdd' }, '+' + row.added) : null,
             row.deleted > 0 ? E('span', { className: 'scw-statDel' }, '−' + row.deleted) : null)
           : null,
+        /* 文件行上的「加入对话」按钮。放在这里而不是只放在 changeActions 里：
+           那个函数只对「有变更的文件」渲染，而文件模式下大多数行没有 change，
+           于是按钮在最常用的地方反而看不见。 */
+        row.dir === false
+          ? E('span', { className: 'scw-rowActions' },
+            E('button', {
+              type: 'button',
+              className: 'scw-rowBtn',
+              title: t('action.addToChat') + ' — ' + row.rel,
+              onClick: (event) => {
+                event.stopPropagation()
+                addToChat(row.rel)
+              },
+            }, '@'))
+          : null,
         row.dir === false && row.change !== null && row.change !== undefined
           ? E('span', { className: 'scw-rowActions' },
             E('button', {
