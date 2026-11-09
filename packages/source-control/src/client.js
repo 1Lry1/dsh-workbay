@@ -162,6 +162,8 @@ const NARROW_PANE_W = 225
       'state.truncated': '目录过大，已截断',
       'action.stage': '暂存',
       'action.unstage': '取消暂存',
+      'action.addToChat': '加入对话',
+      'chat.unavailable': '当前没有可写入的对话输入框（请在会话里再试）',
       'action.discard': '丢弃更改',
       'action.open': '打开',
       'conflict.dirtyTitle': '该文件有未保存的修改',
@@ -393,6 +395,8 @@ const NARROW_PANE_W = 225
       'state.truncated': 'Directory too large, truncated',
       'action.stage': 'Stage',
       'action.unstage': 'Unstage',
+      'action.addToChat': 'Add to chat',
+      'chat.unavailable': 'No conversation input to write into',
       'action.discard': 'Discard changes',
       'action.open': 'Open',
       'conflict.dirtyTitle': 'This file has unsaved edits',
@@ -3270,6 +3274,32 @@ const NARROW_PANE_W = 225
          a changing closure would be indistinguishable from a new mount. */
       hunkActionRef.current = doHunkAction
 
+      /**
+       * 把一个文件引用写进对话输入框。
+       *
+       * 不复制路径、也不新开窗口：DSH 自己的引用面板认 `@相对路径`，写进去之后
+       * agent 按需读取/修改，用户还能继续补话。这是社区插件（better-sidebar /
+       * workspace-explorer）用的同一条路——它们也是「把 @文件 插进输入框」。
+       */
+      const addToChat = useCallback((rel) => {
+        const path = typeof rel === 'string' ? rel.trim() : ''
+        if (path === '') return
+        const conversation = ctx !== null && ctx !== undefined && typeof ctx.get === 'function'
+          ? ctx.get('conversation')
+          : null
+        const input = conversation !== null && conversation !== undefined ? conversation.input : null
+        if (input === null || input === undefined || typeof input.requestDraftInitialization !== 'function') {
+          setBar({ kind: 'error', message: t('chat.unavailable') })
+          return
+        }
+        try {
+          /* append：输入框里已经有字时接在后面，而不是把用户写了一半的话冲掉。 */
+          input.requestDraftInitialization({ prompt: '@' + path + ' ', whenDraftExists: 'append' })
+        } catch (error) {
+          setBar({ kind: 'error', message: t('chat.unavailable') })
+        }
+      }, [ctx, t])
+
       const stageRow = useCallback((row) => {
         if (row === null || row === undefined) return
         const path = toRepoPath(row.rel, repoRootRel)
@@ -3837,6 +3867,19 @@ const NARROW_PANE_W = 225
          */
         const changeActions = (rel, change) => {
           const actions = []
+          /* 每个文件都能「加入对话」：把 @路径 写进输入框最前面。
+             DSH 的引用面板认得 @path，agent 会按需读它——和 better-sidebar 的
+             「悬浮 @文件 一键引用进输入框」是同一个路子。 */
+          actions.push(E('button', {
+            key: 'addToChat',
+            type: 'button',
+            className: 'scw-rowBtn',
+            title: t('action.addToChat') + ' — ' + rel,
+            onClick: (event) => {
+              event.stopPropagation()
+              addToChat(rel)
+            },
+          }, '@'))
           if (change.conflicted === true) {
             const resolve = (side, label, hint) => E('button', {
               key: side,
@@ -5034,6 +5077,8 @@ const NARROW_PANE_W = 225
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
 
 
 
