@@ -169,6 +169,13 @@ const clickMode = (label) => ev(`(function(){
 })()`)
 
 await clickMode('变更'); await sleep(900); await shot('panel-changes.png')
+  /* 窄侧栏（767px）会切到堆叠布局：树在上、内容在下，头部最容易互相压住。
+     宽屏截图看不出这个问题，所以单独拍一张。 */
+  await send('Emulation.setDeviceMetricsOverride', { width: 767, height: 620, deviceScaleFactor: 1, mobile: false })
+  await sleep(900)
+  await shot('panel-narrow.png')
+  await send('Emulation.clearDeviceMetricsOverride', {})
+  await sleep(600)
 const strip2 = JSON.parse(await ev(`JSON.stringify((function () {
   var el = document.querySelector('.scw-modes')
   var r = el.getBoundingClientRect()

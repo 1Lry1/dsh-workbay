@@ -1471,7 +1471,7 @@ const NARROW_PANE_W = 225
 .scw-bulkBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#fff)}
 .scw-bulkBtn.is-danger{color:var(--dsw-alias-state-error-primary,#ff6b6b);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 45%,transparent)}
 .scw-bulkBtn:disabled{opacity:.45;cursor:default}
-.scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;position:sticky;top:0;background:var(--dsw-alias-bg-base,#14161a);z-index:1}
+.scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;position:sticky;top:0;/* 两层：主题底色（可能是半透明）+ 底部实色垫底，否则滚动时下面的行会透出来 */background:linear-gradient(var(--dsw-alias-bg-base,#14161a),var(--dsw-alias-bg-base,#14161a)),#14161a;box-shadow:0 1px 0 0 var(--dsw-alias-border-l1,rgba(255,255,255,.12));z-index:2}
 .scw-groupCount{font-weight:400;opacity:.7}
 .scw-groupFoot{padding:6px 8px}
 
@@ -5254,6 +5254,7 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
 
 
 
