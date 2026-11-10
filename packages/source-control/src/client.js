@@ -4781,7 +4781,9 @@ function Page(props) {
             E('div', { className: 'scw-emptyTitle' }, t('empty.noRoot')),
             E('div', { className: 'scw-emptyHint' }, t('empty.chooseRoot')))
         }
-        if (snapshotError !== null) {
+        /* 不是 git 仓库时，只有「没选文件」才该看到那句提示：选了文件就正常看源码，
+           没有 git 不代表文件不能读。 */
+        if (snapshotError !== null && selectedRel === null) {
           const notRepo = snapshotError !== null && snapshotError !== undefined && snapshotError.code === 'not-a-repo'
           return E('div', { className: 'scw-empty' },
             E('div', { className: 'scw-emptyTitle' }, notRepo ? t('empty.noRepo') : t('state.failed')),
