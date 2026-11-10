@@ -237,7 +237,7 @@ const NARROW_PANE_W = 225
       'branches.behindHint': '落后上游的提交数',      'branches.empty': '没有分支',
       'stash.empty': '贮藏区是空的',
       'action.stageAll': '全部暂存',
-      'action.stashPop': '取出',
+      'action.stashPop': '弹出',
       'action.stashDrop': '删除',
       'time.justNow': '刚刚',
       'time.minutesAgo': ' 分钟前',
