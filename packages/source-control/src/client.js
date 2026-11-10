@@ -1557,7 +1557,7 @@ const NARROW_PANE_W = 225
 .scw-commitInfo{display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-dim{color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .scw-commitBodyWrap{flex:none;display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-height:0}
-  .scw-commitBodyWrap .scw-commitBody{max-height:120px;overflow:hidden}
+  .scw-commitBodyWrap .scw-commitBody{max-height:calc(1.5em * 3);overflow:hidden}
   .scw-commitBodyWrap.is-open .scw-commitBody{max-height:none;overflow:auto}
   .scw-commitBodyToggle{align-self:flex-start;height:20px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font-size:10.5px;cursor:pointer}
   .scw-commitBodyToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
@@ -4619,13 +4619,14 @@ function Page(props) {
           detail.body === '' || detail.body === null || detail.body === undefined
             ? null
             : E('div', { className: 'scw-commitBodyWrap' + (commitBodyOpen === true ? ' is-open' : '') },
-              E('pre', { className: 'scw-commitBody' }, detail.body),
+              /* 按钮放在正文上方：折起时正文只露三行，按钮在下面是「先看到被截断的内容才找到按钮」。 */
               E('button', {
                 type: 'button',
                 className: 'scw-commitBodyToggle',
                 'aria-expanded': commitBodyOpen === true,
                 onClick: () => setCommitBodyOpen((value) => value !== true),
-              }, commitBodyOpen === true ? t('commit.bodyCollapse') : t('commit.bodyExpand'))),
+              }, commitBodyOpen === true ? t('commit.bodyCollapse') : t('commit.bodyExpand')),
+              E('pre', { className: 'scw-commitBody' }, detail.body)),
           E('div', { className: 'scw-commitFilesLabel' }, t('commit.files') + ' (' + files.length + ')'),
           E('div', { className: 'scw-commitFiles' },
             files.map((file, index) => E('div', {
@@ -5267,6 +5268,7 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
 
 
 
