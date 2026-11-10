@@ -3892,8 +3892,7 @@ function Page(props) {
             const hasChanges = changeTotal > 0
             return E('div', { className: 'scw-toolbar' },
               /* 直接摆出来，不再折进「⋯」：窄侧栏里那个省略号本身就把整行挤乱了。 */
-              toolbarIcon('stash', t('stash.pushTitle'), () => doStashPush(), { disabled: hasChanges === false }),
-              toolbarIcon('refresh', t('head.refresh'), () => refresh()))
+              toolbarIcon('stash', t('stash.pushTitle'), () => doStashPush(), { disabled: hasChanges === false }))
           }
           if (treeMode === 'files') {
             return E('div', { className: 'scw-toolbar' },
@@ -3907,18 +3906,15 @@ function Page(props) {
           }
           if (treeMode === 'history') {
             return E('div', { className: 'scw-toolbar' },
-              toolbarIcon('refresh', t('head.refresh'), () => { historyLoadedRef.current = false; void loadHistory() }),
               toolbarIcon('tag', t('action.tagCreate'), () => doTagCreate(selectedCommit === null ? undefined : selectedCommit)),
               toolbarIcon('arrowUp', t('action.tagPush'), () => doTagPush()))
           }
           if (treeMode === 'branches') {
             return E('div', { className: 'scw-toolbar' },
-              toolbarIcon('plus', t('action.branchCreate'), () => doBranchCreate(), { primary: true }),
-              toolbarIcon('refresh', t('head.refresh'), () => { branchesLoadedRef.current = false; void loadBranches() }))
+              toolbarIcon('plus', t('action.branchCreate'), () => doBranchCreate(), { primary: true }))
           }
           return E('div', { className: 'scw-toolbar' },
-            toolbarIcon('plus', t('stash.pushTitle'), () => doStashPush(), { primary: true, disabled: changeTotal === 0 }),
-            toolbarIcon('refresh', t('head.refresh'), () => { stashLoadedRef.current = false; void loadStash() }))
+            toolbarIcon('plus', t('stash.pushTitle'), () => doStashPush(), { primary: true, disabled: changeTotal === 0 }))
         })()
 
         /**

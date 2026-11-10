@@ -976,10 +976,9 @@ try {
   await mustClick('.scw-row', 'two.ts')
   await sleep(2200)
   writeFileSync(path.join(gitRepo, 'two.ts'), 'const two = 2222' + String.fromCharCode(10))
-  /* 刷新 lives on the 变更 toolbar; switching modes does not unmount the editor. */
+  /* 刷新现在只有顶部那一个按钮（工具栏里的重复按钮已删）；切换模式不会卸载编辑器。 */
   await clickMode('变更'); await sleep(700)
-  await clickTool('刷新')
-  await sleep(2600)
+  await mustClick('.scw-head .scw-iconBtn[title="刷新"]'); await sleep(2600)
   const afterRefresh = await ev(`(function () {
     var slot = document.querySelector('.scw-paneSlot')
     return slot ? slot.innerText.slice(0, 200) : ''
