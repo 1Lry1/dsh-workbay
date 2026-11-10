@@ -247,8 +247,6 @@ const NARROW_PANE_W = 225
       'commit.showPatch': '查看这次提交对该文件的改动',
       'commit.back': '返回提交',
       'commit.whole': '整个提交',
-      'commit.bodyExpand': '展开完整信息',
-      'commit.bodyCollapse': '收起信息',
       'commit.wholeBtn': '完整改动',
       'commit.wholeHint': '把这次提交涉及的所有文件合成一个 patch 查看',
       'diff.modeUnified': '合并查看',
@@ -1549,23 +1547,18 @@ const NARROW_PANE_W = 225
    rows long. Without flex:none the message body was the only shrinkable item, so it
    collapsed to a sliver of clipped glyphs — the "提交信息显示异常" report. Every block
    keeps its natural height; only the file list scrolls. */
-.scw-commitDetail{display:flex;flex-direction:column;gap:6px;padding:10px 12px;overflow:hidden;height:100%;min-height:0}
+.scw-commitDetail{display:flex;flex-direction:column;gap:6px;padding:10px 12px;overflow:auto;height:100%;min-height:0}
 .scw-commitDetail > *{flex:none}
 .scw-commitHead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .scw-commitHash{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-commitSubject.is-large{font-size:13px;font-weight:600}
 .scw-commitInfo{display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-dim{color:var(--dsw-alias-label-tertiary,#8a8f98)}
-.scw-commitBodyWrap{flex:none;display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-height:0}
-  .scw-commitBodyWrap .scw-commitBody{max-height:calc(1.5em * 3);overflow:hidden}
-  .scw-commitBodyWrap.is-open .scw-commitBody{max-height:none;overflow:auto}
-  .scw-commitBodyToggle{align-self:flex-start;height:20px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font-size:10.5px;cursor:pointer}
-  .scw-commitBodyToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
   .scw-commitBody{flex:none;margin:2px 0;padding:8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04));font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
 .scw-commitFilesLabel{font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
 /* The ONLY scrolling region: the list can be thousands of rows, and giving it the
    remaining height keeps the message and the header pinned above it. */
-.scw-commitFiles{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:1px}
+.scw-commitFiles{flex:none;min-height:0;overflow:visible;display:flex;flex-direction:column;gap:1px}
 .scw-commitFile{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:4px;font-size:11px}
 .scw-commitFile[role="button"]{cursor:pointer}
 .scw-commitFile[role="button"]:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
@@ -1975,8 +1968,6 @@ function Page(props) {
       const [commitDetail, setCommitDetail] = useState({ status: 'idle', detail: null, error: null })
       /* Which file of the selected commit is being diffed, if any. */
       const [commitFile, setCommitFile] = useState(null)
-      /* 提交详情里的完整信息默认折起：一段长的提交说明能把下面的文件列表整个挤出屏幕。 */
-      const [commitBodyOpen, setCommitBodyOpen] = useState(false)
       /**
        * Selecting a file always ends the "commit patch" view.
        *
@@ -4618,15 +4609,7 @@ function Page(props) {
             }, t('commit.wholeBtn'))),
           detail.body === '' || detail.body === null || detail.body === undefined
             ? null
-            : E('div', { className: 'scw-commitBodyWrap' + (commitBodyOpen === true ? ' is-open' : '') },
-              /* 按钮放在正文上方：折起时正文只露三行，按钮在下面是「先看到被截断的内容才找到按钮」。 */
-              E('button', {
-                type: 'button',
-                className: 'scw-commitBodyToggle',
-                'aria-expanded': commitBodyOpen === true,
-                onClick: () => setCommitBodyOpen((value) => value !== true),
-              }, commitBodyOpen === true ? t('commit.bodyCollapse') : t('commit.bodyExpand')),
-              E('pre', { className: 'scw-commitBody' }, detail.body)),
+            : E('pre', { className: 'scw-commitBody' }, detail.body),
           E('div', { className: 'scw-commitFilesLabel' }, t('commit.files') + ' (' + files.length + ')'),
           E('div', { className: 'scw-commitFiles' },
             files.map((file, index) => E('div', {
@@ -5268,6 +5251,10 @@ function Page(props) {
     return { apply, name: 'dsh-workbay-source-control', __test: TEST_API }
   },
 })
+
+
+
+
 
 
 
