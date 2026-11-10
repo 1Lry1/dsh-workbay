@@ -1978,6 +1978,9 @@ function Page(props) {
        */
       const selectRel = useCallback((rel) => {
         setCommitFile(null)
+        /* 选文件就离开了「看某个提交」这件事。不清掉它，从搜索结果点文件时
+           右边仍然停在之前那个提交的详情上——文件选了半天，内容区一动不动。 */
+        setSelectedCommit(null)
         setSelectedRel(rel)
       }, [])
       /**
