@@ -1539,9 +1539,9 @@ const NARROW_PANE_W = 225
 .scw-stashRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .scw-stashRef{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-stashSubject{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary,#b6bac1)}
-.scw-stashRow .scw-rowActions{opacity:0}
-.scw-stashRow:hover .scw-rowActions{opacity:1}
-
+        /* 通用规则把 .scw-rowActions 设成 display:none，只在 .scw-row 悬停时解除；贮藏行没有那个 class，
+           于是「应用 / 弹出 / 删除」三个按钮从来没显示过。这里直接常显：贮藏条目本来就不多，藏起来只会让人找不到。 */
+        .scw-stashRow .scw-rowActions{display:flex;opacity:1}
 /* ---- commit detail ---- */
 /* The detail is a flex COLUMN whose siblings include a list that can be thousands of
    rows long. Without flex:none the message body was the only shrinkable item, so it
