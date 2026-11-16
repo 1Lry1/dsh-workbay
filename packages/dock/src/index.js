@@ -16,6 +16,8 @@
  */
 
 import { badRequest, mountJsonApi } from '@dsh-workbay/kit'
+import os from 'node:os'
+import { createCpuReader, createGpuReader, sampleLoad } from './load.js'
 
 export const name = 'dsh-workbay-dock'
 export const inject = ['webServer']
@@ -44,12 +46,39 @@ function pageList() {
   return [...pages.values()].sort((a, b) => a.order - b.order)
 }
 
+/**
+ * The load-meter readers live at MODULE scope, not inside `apply`.
+ *
+ * The CPU reader and the GPU reader are both stateful (baseline ticks, cached
+ * GPU row), and that state has to survive across requests. Building them inside
+ * `apply` would reset the baseline every time the profile is recomposed, so the
+ * first reading after every restart would be `null`.
+ *
+ * They are also created once so the process runs at most one `nvidia-smi` at a
+ * time: the reader's own busy gate is per-instance.
+ */
+const readCpu = createCpuReader({ nowMs: Date.now, readCpus: () => os.cpus() })
+const readGpu = createGpuReader({ nowMs: Date.now })
+const readMem = () => ({ total: os.totalmem(), free: os.freemem() })
+const loadOnce = () => sampleLoad({ nowMs: Date.now, cpu: readCpu, readMem, gpu: readGpu })
+
 const METHODS = {
   async ping() {
     return { ok: true, service: 'dsh-workbay-dock', pages: pageList().length }
   },
   async registry() {
     return { pages: pageList() }
+  },
+  /**
+   * One CPU / GPU / MEM sample for the titlebar meter.
+   *
+   * Called only while the workbench panel is open AND its window is focused, so
+   * there is no host-side timer anywhere: a closed workbench spawns nothing.
+   * `cpu` is null on the first call (no baseline yet) and after a gap longer
+   * than `BASELINE_TTL_MS`; the client retries once on null.
+   */
+  async load() {
+    return loadOnce()
   },
 }
 
