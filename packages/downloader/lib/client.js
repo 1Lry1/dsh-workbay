@@ -431,48 +431,45 @@ function appendLogs(current, items, max) {
         loading: true, auto: false, exists: false, value: null, noSleep: false, path: '',
       })
       const [noSleepChecked, setNoSleepChecked] = React.useState(false)
-      const noSleepLastValue = React.useRef(null)
       const noSleepBusy = React.useRef(false)
+      /* A request that started before the user toggled must not overwrite the
+         toggle result when it finally lands. */
+      const noSleepSeq = React.useRef(0)
       const watchPath = st.watch && typeof st.watch.path === 'string' ? st.watch.path : ''
       React.useEffect(() => {
         let alive = true
-        const applyStatus = (data, syncChoice) => {
+        const applyStatus = (data) => {
           if (!alive || !data || data.error) return
           setNoSleep({ ...data, loading: false })
-          if (data.exists !== true) {
-            if (syncChoice) {
-              noSleepLastValue.current = null
-              setNoSleepChecked(false)
-            }
-            return
-          }
-          const value = data.value === null || data.value === undefined ? '' : String(data.value)
-          const changed = value !== noSleepLastValue.current
-          noSleepLastValue.current = value
-          /* A manual edit is a change in the file; re-sync the checkbox. If the
-             value merely stayed the same after an uncheck, keep it unchecked. */
-          if (syncChoice || changed) setNoSleepChecked(data.noSleep === true)
+          /* The checkbox represents "自动保持不休眠" (the persisted option), not
+             only the file's momentary value. A build/vendor tool can rewrite the
+             file to 10 while auto-hold is still ON; the pane must keep the box
+             checked and show that it will be corrected before the next burn. */
+          setNoSleepChecked(data.auto === true)
         }
-        const load = (initial) => {
+        const load = () => {
           if (noSleepBusy.current) return
-          api.get('/setting/no-sleep').then((data) => { applyStatus(data, initial) })
+          const seq = noSleepSeq.current + 1
+          noSleepSeq.current = seq
+          api.get('/setting/no-sleep').then((data) => {
+            if (seq !== noSleepSeq.current) return
+            applyStatus(data)
+          })
         }
-        load(true)
-        const timer = setInterval(() => load(false), 2000)
+        load()
+        const timer = setInterval(load, 2000)
         return () => { alive = false; clearInterval(timer) }
       }, [watchPath])
       const toggleNoSleep = async (event) => {
         const want = event.target.checked === true
         noSleepBusy.current = true
+        noSleepSeq.current += 1
         setNoSleep((previous) => ({ ...previous, loading: true }))
         const r = await api.post('/setting/no-sleep', { on: want })
         noSleepBusy.current = false
         if (r && !r.error) {
           setNoSleep({ ...r, loading: false })
-          setNoSleepChecked(want)
-          noSleepLastValue.current = r.exists === true
-            ? (r.value === null || r.value === undefined ? '' : String(r.value))
-            : null
+          setNoSleepChecked(r.auto === true)
           setNotice(want
             ? (r.exists === true
               ? '已设为不休眠（sys_sleep_time=0），烧录前会自动保持'
@@ -1040,16 +1037,20 @@ function appendLogs(current, items, max) {
 
       const noSleepNow = noSleep.exists === true && noSleep.noSleep === true
       const noSleepValue = noSleep.value === null || noSleep.value === undefined ? '' : String(noSleep.value)
+      const autoNoSleep = noSleep.auto === true
       const noSleepText = noSleep.exists !== true
-        ? '不休眠（未生成）'
+        ? (autoNoSleep ? '不休眠（生成后应用）' : '不休眠（未生成）')
         : noSleepNow
-          ? (noSleepChecked === true ? '不休眠' : '当前不休眠（未自动保持）')
-          : (noSleepChecked === true ? '不休眠（烧录前修正）' : '当前会休眠（' + (noSleepValue === '' ? '?' : noSleepValue) + '）')
+          ? (autoNoSleep ? '不休眠' : '当前不休眠（未自动保持）')
+          : (autoNoSleep
+            ? '当前会休眠（' + (noSleepValue === '' ? '?' : noSleepValue) + '）· 烧录前修正'
+            : '当前会休眠（' + (noSleepValue === '' ? '?' : noSleepValue) + '）')
       const noSleepTitle = (noSleep.exists === true
         ? '当前 sys_sleep_time=' + (noSleepValue === '' ? '?' : noSleepValue) + (noSleepNow ? '（不休眠）' : '（会休眠）')
         : '还没有找到 watch.setting；编译生成后自动应用')
+        + '\n自动保持：' + (autoNoSleep ? '开启（每次烧录前确保 0）' : '关闭')
         + '\n' + (noSleep.path || '路径：由当前 app.dcf 同级 Settings/watch.setting 自动推导')
-        + '\n勾选 = 写入 0 并在每次烧录前保持；取消勾选只停止保持，不改写文件。'
+        + '\n勾选 = 写入 0 并在每次烧录前保持；取消勾选会还原上次的原始休眠值。'
       const btnNoSleep = h('label', {
         className: 'abw-dim',
         style: { display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, cursor: noSleep.loading === true ? 'default' : 'pointer' },
