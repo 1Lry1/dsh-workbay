@@ -202,6 +202,8 @@ const NARROW_PANE_W = 225
       'group.unstaged': '更改',
       'changes.stagedSection': '已暂存',
       'changes.unstagedSection': '未暂存',
+      'changes.mixed': '已暂存 + 未暂存',
+      'changes.mixedHint': '这个文件既有已暂存改动，也有未暂存改动；当前行显示已暂存侧。',
       'group.untracked': '未跟踪',
       'group.conflicted': '冲突',
       'tab.source': '源码',
@@ -270,6 +272,8 @@ const NARROW_PANE_W = 225
       'group.unstaged': '更改',
       'changes.stagedSection': '已暂存',
       'changes.unstagedSection': '未暂存',
+      'changes.mixed': '已暂存 + 未暂存',
+      'changes.mixedHint': '这个文件既有已暂存改动，也有未暂存改动；当前行显示已暂存侧。',
       'group.untracked': '未跟踪',
       'changes.clean': '工作区是干净的',
       'history.empty': '还没有提交',
@@ -502,6 +506,8 @@ const NARROW_PANE_W = 225
       'group.unstaged': 'Changes',
       'changes.stagedSection': 'Staged',
       'changes.unstagedSection': 'Unstaged',
+      'changes.mixed': 'Staged + unstaged',
+      'changes.mixedHint': 'This file has both staged and unstaged edits; this row shows the staged side.',
       'group.modified': 'Modified',
       'group.deleted': 'Deleted',
       'group.added': 'Added',
@@ -576,6 +582,8 @@ const NARROW_PANE_W = 225
       'group.unstaged': 'Changes',
       'changes.stagedSection': 'Staged',
       'changes.unstagedSection': 'Unstaged',
+      'changes.mixed': 'Staged + unstaged',
+      'changes.mixedHint': 'This file has both staged and unstaged edits; this row shows the staged side.',
       'group.modified': 'Modified',
       'group.deleted': 'Deleted',
       'group.added': 'Added',
@@ -1838,6 +1846,7 @@ const NARROW_PANE_W = 225
 .scw-subgroup.is-staged{color:var(--dsw-alias-state-success-primary,#4ec9a0)}
 .scw-subgroupName{white-space:nowrap}
 .scw-subgroupCount{font-weight:400;opacity:.65;font-variant-numeric:tabular-nums}
+.scw-stageBadge{flex:none;padding:0 4px;border-radius:3px;background:color-mix(in srgb,var(--dsw-alias-state-warning-primary,#d29922) 16%,transparent);color:var(--dsw-alias-state-warning-primary,#d29922);font-size:9px;line-height:15px;white-space:nowrap}
 .scw-group[role=button]{cursor:pointer;user-select:none}
 .scw-group[role=button]:hover{background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04))}
 .scw-groupChevron{display:inline-flex;align-items:center;justify-content:center;width:12px;opacity:.65;flex:none}
@@ -5217,6 +5226,10 @@ function Page(props) {
               }
               const letter = statusLetterOf(change)
               const isActive = rel === selectedRel
+              const mixed = change.staged === true && change.untracked !== true && (
+                (typeof change.worktree === 'string' && change.worktree.trim() !== '')
+                || (Number(change.unstagedAdded) > 0 || Number(change.unstagedDeleted) > 0)
+              )
               out.push(E('div', {
                 key: 'cr:' + rel,
                 className: 'scw-row' + (isActive ? ' is-active' : ''),
@@ -5243,6 +5256,9 @@ function Page(props) {
               letter === ''
                 ? E(Icon, { name: 'file', size: 13, className: 'scw-rowIcon' })
                 : E('span', { className: 'scw-letter ' + statusColorClass(letter) }, letter),
+              mixed
+                ? E('span', { className: 'scw-stageBadge', title: t('changes.mixedHint') }, t('changes.mixed'))
+                : null,
               E('span', { className: 'scw-rowName' }, baseNameOf(rel)),
                 /* GitCraft's arrangement: the NAME stays intact and the directory
                    follows in a dimmer, shrinkable column. The name never gets squeezed —
