@@ -577,7 +577,7 @@ const TOOL_CONFIG_FILE = path.join(LOG_DIR, 'tool-path.json')
    那是最没必要的一次重复劳动。 */
 function readToolConfig() {
   try {
-    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false }
+    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false, noSleepOriginal: null }
     const raw = JSON.parse(fs.readFileSync(TOOL_CONFIG_FILE, 'utf8'))
     return {
       exe: typeof raw.exe === 'string' ? raw.exe : '',
@@ -587,9 +587,11 @@ function readToolConfig() {
       autoStartPaused: raw.autoStartPaused === true,
       /* AI loop convenience: keep sys_sleep_time=0 in the generated watch.setting. */
       noSleep: raw.noSleep === true,
+      /* The value from before the checkbox wrote 0; uncheck restores it. */
+      noSleepOriginal: typeof raw.noSleepOriginal === 'string' ? raw.noSleepOriginal : null,
     }
   } catch {
-    return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false }
+    return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false, noSleepOriginal: null }
   }
 }
 
@@ -1433,6 +1435,14 @@ function freshestDcf(override) {
     if (file === '' || !fs.existsSync(file)) return false
     try {
       const text = fs.readFileSync(file, 'utf8')
+      const parsed = sleepSettingOf(text)
+      const cfg = readToolConfig()
+      /* If a build (or the user) put a new sleep value here, remember that as
+         the value to restore on uncheck. A zero from our own write must not
+         overwrite the original. */
+      if (parsed.value !== null && (typeof cfg.noSleepOriginal !== 'string' || parsed.value !== '0')) {
+        writeToolConfig({ noSleepOriginal: String(parsed.value) })
+      }
       const next = withNoSleepSetting(text)
       if (next.changed === false) return true
       fs.writeFileSync(file, next.text, 'utf8')
@@ -1442,6 +1452,50 @@ function freshestDcf(override) {
       pushLog('S', '修改 watch.setting 不休眠失败：' + String(error && error.message ? error.message : error))
       return false
     }
+  }
+  /* Enable/disable no-sleep and restore the exact value the file had before the
+     checkbox first wrote 0. The original is persisted because DSH can restart
+     between check and uncheck. */
+  function setNoSleepMode(on) {
+    const file = watchSettingPath()
+    const before = readToolConfig()
+    if (on === true) {
+      if (file !== '' && fs.existsSync(file)) {
+        try {
+          const parsed = sleepSettingOf(fs.readFileSync(file, 'utf8'))
+          const current = parsed.value === null ? '0' : String(parsed.value)
+          if (typeof before.noSleepOriginal !== 'string' || (parsed.value !== null && parsed.value !== '0')) {
+            writeToolConfig({ noSleepOriginal: current })
+          }
+        } catch (error) { void error }
+      }
+      writeToolConfig({ noSleep: true })
+      applyNoSleep()
+      return noSleepStatus()
+    }
+
+    const original = typeof before.noSleepOriginal === 'string' ? before.noSleepOriginal : ''
+    let restored = false
+    if (file !== '' && fs.existsSync(file) && /^\d+$/.test(original)) {
+      try {
+        const text = fs.readFileSync(file, 'utf8')
+        const next = withConfigValue(text, 'sys_sleep_time', original)
+        if (next.changed === true) {
+          fs.writeFileSync(file, next.text, 'utf8')
+          restored = true
+        }
+      } catch (error) {
+        pushLog('S', '还原 watch.setting 休眠时间失败：' + String(error && error.message ? error.message : error))
+      }
+    }
+    writeToolConfig({ noSleep: false, noSleepOriginal: null })
+    pushLog('S', restored
+      ? '已关闭自动不休眠，并还原 watch.setting 的 sys_sleep_time=' + original
+      : '已关闭自动不休眠（没有可还原的原始值）')
+    const status = noSleepStatus()
+    status.restored = restored
+    status.original = original
+    return status
   }
   function watchTick() {
     const w = state.watch
@@ -2458,12 +2512,7 @@ function freshestDcf(override) {
         scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog,
         sseClients, DEFAULT_DL_DIR, guardDcf: guessDcf, setWatch, doFlash, freshestDcf,
         clearLogFile, startSerialGuard, stopSerialGuard, resetStaleFlashConnection,
-        noSleepStatus, applyNoSleep, burnOptionsStatus, applyBurnOptions, setNoSleep: (on) => {
-          const w = writeToolConfig({ noSleep: on === true })
-          if (w.ok !== true) return { error: w.error || 'write config failed' }
-          if (on === true) applyNoSleep()
-          return noSleepStatus()
-        },
+        noSleepStatus, applyNoSleep, burnOptionsStatus, applyBurnOptions, setNoSleep: (on) => setNoSleepMode(on),
         clearFlashTimersNow: () => clearFlashTimers(flashTimers),
       }),
     }), 'downloader: routes')

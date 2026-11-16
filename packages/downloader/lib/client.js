@@ -477,7 +477,9 @@ function appendLogs(current, items, max) {
             ? (r.exists === true
               ? '已设为不休眠（sys_sleep_time=0），烧录前会自动保持'
               : '已开启不休眠；等编译生成 Settings/watch.setting 后自动写入')
-            : '已取消勾选；未修改 watch.setting，仍按当前文件显示')
+            : (r.restored === true
+              ? '已取消勾选，并还原 watch.setting 的 sys_sleep_time=' + (r.original || '')
+              : '已取消勾选；没有记录的原始休眠值，保持当前 setting'))
         } else {
           setNoSleep((previous) => ({ ...previous, loading: false }))
           setNotice('修改不休眠设置失败：' + ((r && (r.message || r.error)) || '未知错误'))
