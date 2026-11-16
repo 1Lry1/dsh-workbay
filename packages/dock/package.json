@@ -11,7 +11,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node --test tests/client.test.mjs tests/restart.test.mjs",
+    "test": "node --test tests/client.test.mjs tests/restart.test.mjs tests/load.test.mjs",
     "test:back": "node tests/back-stack.e2e.mjs",
     "test:tree": "node tests/files-tree.e2e.mjs",
     "test:branches": "node tests/branches.e2e.mjs",
