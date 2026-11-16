@@ -973,6 +973,11 @@ test('a symlink pointing outside the root is refused by read, stat, tree and wri
 
   const mkdir = await call('mkdir', { root: ws, rel: 'escape/evil-dir' })
   assert.equal(mkdir.status, 403)
+
+  /* context-menu 'reveal in file manager' must not open a path outside root */
+  const reveal = await call('reveal', { root: ws, rel: 'escape/secret.txt' })
+  assert.equal(reveal.status, 403, JSON.stringify(reveal))
+  assert.equal(reveal.error.code, 'outside-root')
 })
 
 test('delete removes an escaping symlink itself without touching its target', async (t) => {

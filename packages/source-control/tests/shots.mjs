@@ -21,7 +21,7 @@ const git = (a, c) => execFileSync('git', a, { cwd: c, encoding: 'utf8', stdio: 
 
 mkdirSync(gitRepo, { recursive: true })
 git(['init', '-q', '-b', 'feature/composed-page'], gitRepo)
-git(['config', 'user.email', 'dev@example.com'], gitRepo); git(['config', 'user.name', 'Dev']) 
+git(['config', 'user.email', 'dev@example.com'], gitRepo); git(['config', 'user.name', 'Dev'], gitRepo)
 mkdirSync(path.join(gitRepo, 'src', 'components'), { recursive: true })
 mkdirSync(path.join(gitRepo, 'docs'), { recursive: true })
 writeFileSync(path.join(gitRepo, 'src', 'app.ts'), 'export const app = create()\n')

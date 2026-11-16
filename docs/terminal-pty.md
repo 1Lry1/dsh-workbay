@@ -65,7 +65,10 @@ helper → host（读 helper.stdout）：
   `write(data, callback)` 统计未解析字符数，超过 **100k** 发 `flow {paused:true}`，
   低于 **5k** 发 `flow {paused:false}`。宿主收到暂停后停止转发并 `pause()` helper 的
   stdout，让 ConPTY 反压到 shell（build 会变慢而不是把内存/事件循环吃满）；恢复时
-  `resume()` 并冲刷。最后一个订阅者断开时宿主**强制恢复**，避免 build 永久卡在写管道。
+  `resume()` 并冲刷。暂停期间收到的输出保留在 `pendingOutput`（≤1 MiB），恢复后补发，
+  不再丢弃。最后一个订阅者断开时宿主**强制恢复**，避免 build 永久卡在写管道。
+  注意：客户端 xterm 延迟 chunk 的 `write(text, callback)` 必须把 callback 传给
+  `terminal.write`；丢掉它会让 100k 高水位永不回落，是“长输出后终端不再刷新”的直接原因。
 - `command`（非 Windows / 没有 helper）：保留现有逐命令模型作为回退，
   `hello.mode` 里告知客户端。客户端据此决定要不要本地回显和行编辑。
 

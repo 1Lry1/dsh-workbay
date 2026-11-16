@@ -28,3 +28,13 @@ packages/suite/vendor/
 packages/suite/client.js
 packages/suite/lib/
 packages/suite/cordis.patch.yml
+
+# secrets / credentials — never commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*credentials*

@@ -2,21 +2,24 @@
 
 工作台的**单插件形态**：一个可安装包 = 一个插件条目。
 
-DSH 的插件列表按**已安装包**展示，所以“5 个独立 bundle + 一个聚合金”仍然会出现 5 行
-“未开启”。这个包把 5 个 bundle **物理收进来**：
+DSH 的插件列表按**已安装包**展示，所以“多个独立 bundle + 一个聚合金”仍然会出现多行
+“未开启”。这个包把 8 个 bundle **物理收进来**：
 
 ```
 packages/suite/
 ├─ cordis.patch.yml      生成的：只插入 1 行 loader
-├─ lib/index.js          生成的：一个 apply() 依次挂载 5 个宿主半侧
-├─ client.js             生成的：5 个 client 半侧拼接成 1 个 ModuleLoader bundle
+├─ lib/index.js          生成的：一个 apply() 依次挂载 8 个宿主半侧
+├─ client.js             生成的：8 个 client 半侧拼接成 1 个 ModuleLoader bundle
 ├─ vendor/
 │  ├─ dock/              原 packages/dock 的拷贝（src + package.json）
 │  ├─ files/             … + lib/chunks/editor.js
 │  ├─ terminal/          … + lib/chunks/xterm.js + helper/WorkbayPty.exe
 │  ├─ gitcraft/
 │  ├─ downloader/        … + helper/AbSerialHost.exe + ipc-helper/DownloaderIpcBridge.exe
-│  └─ kit/               宿主辅助库（被其它 5 个 import）
+│  ├─ source-control/    组合页（无路由，读 files / gitcraft 的面板）
+│  ├─ memmap/            … + tools/memmap_report.py
+│  ├─ absolute-file-references/  `@` 选择器改写（host 半侧是空 apply()）
+│  └─ kit/               宿主辅助库（被其它 bundle import）
 └─ tests/build.test.mjs  验证生成物
 ```
 
@@ -27,13 +30,18 @@ packages/suite/
 - 宿主：每个包的 `apply(ctx, config)` 是普通函数，聚合金在一个 ctx 上依次调用它们即可；
   每个包仍保留自己的路由前缀、自己的失败域。
 - 客户端：DSH 的 client 模块图**按包名建行**——`dsh-workbay-suite` 这一行要求 bundle
-  注册 `id: 'dsh-workbay-suite'` 的 factory。所以生成器把五个 client 半侧的
+  注册 `id: 'dsh-workbay-suite'` 的 factory。所以生成器把各 client 半侧的
   `__ModuleLoader__.load(...)` **截获**成 `capture(...)`，最后只注册一个
-  `dsh-workbay-suite`：它的 factory 依次物化五个子模块，`apply()` 在同一 fiber 里
-  组合它们（逐个 try/catch，单页坏了不会拖垮入口）。**不要**让五段代码各自
+  `dsh-workbay-suite`：它的 factory 依次物化各子模块，`apply()` 在同一 fiber 里
+  组合它们（逐个 try/catch，单页坏了不会拖垮入口）。**不要**让各段代码各自
   `load()` 注册自己的 id——那样 suite 这一行永远拿不到 factory，web boot 会报
   `1 entry did not activate`，并回退重执行同一 bundle 触发
   `duplicate factory registration`。
+- **inject 是并集，而一行只有在每个 inject 的服务都存在时才会激活（否则 `pending`）。**
+  所以任何 vendor 半侧都不要声明会让工作台等服务的 `inject`：
+  `dsh-absolute-file-references` 因此声明**空 inject**，自己用 `ctx.inject` 等
+  `inputTriggers` / `sessions`（详见该包 README）。`packages/suite/tests/build.test.mjs`
+  会断言合并后的 `inject` 仍为空数组。
 - 路径：files/terminal 用 `import.meta.url` 找自己的 `lib/chunks` / `helper`，downloader 用
   同样方式找 `helper` —— vendor 保留了包内目录结构，所以这些相对路径继续成立；
   `@dsh-workbay/kit` 的 import 在拷贝时改写成相对路径。
@@ -58,15 +66,15 @@ pnpm install                # 或 dsh plugin --profile desktop add file:.../pack
 pnpm run verify:profile     # 校验装进去的副本完整、且没有多余 workbay 包
 ```
 
-装完重启 DSH：插件列表里只有 **一个** `dsh-workbay-suite`，工作台四个页面照常。
+装完重启 DSH：插件列表里只有 **一个** `dsh-workbay-suite`，工作台的各个页面照常。
 
 > 不要在同一个 profile 里同时列聚合金和任何单独 bundle：同一条 loader 行会插两次，
 > 前缀路由重复注册，整棵插件树起不来。`verify:profile` 会拦住这种配置。
 
 ## 开发时仍可分开装
 
-源码仍是 5 个独立包（`packages/dock|files|terminal|gitcraft|downloader`），跑各自测试、
-单独调试时用“分别安装”即可；聚合金只是发布形态。改完源码后 `pnpm run build`
+源码仍是各自独立的包（`packages/dock|files|terminal|gitcraft|downloader|source-control|memmap`），
+跑各自测试、单独调试时用“分别安装”即可；聚合金只是发布形态。改完源码后 `pnpm run build`
 重新生成即可。
 
 ## 测试
@@ -75,5 +83,6 @@ pnpm run verify:profile     # 校验装进去的副本完整、且没有多余 w
 pnpm --filter dsh-workbay-suite test
 ```
 
-4 个用例：生成物齐全（含 helper 与 chunk）、patch 只有一行、client 注册了 5 个模块且 id
-唯一、宿主 apply 在假 ctx 上把每个包的路由前缀各注册一次。
+4 个用例：生成物齐全（含 helper、chunk、vendor 的每个包）、patch 只有一行、
+client 只注册 1 个 id 且**合并后的 inject 为空**、宿主 apply 在假 ctx 上把每个包的
+路由前缀各注册一次。

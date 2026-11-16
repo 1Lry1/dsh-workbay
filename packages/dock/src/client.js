@@ -64,11 +64,27 @@ window.__ModuleLoader__.load({
       'pane.emptyHint': '插件通过 window.__DSH_WORKBAY__.registerPage 注册页面后，会出现在这里。',
       'pane.global': '全局面板 · 与当前会话无关',
       'pane.close': '关闭',
+      'pane.restart': '重启工作台',
+      'pane.restarting': '重启中…',
+      'pane.restartConfirm': '重启工作台会重新加载工作台插件并刷新整个 DSH 页面；会话不会丢失，但工作台的页签和临时界面状态会重置。继续？',
+      'pane.restartUnavailable': '当前 DSH 没有启用 HMR，无法在不重启 DSH 的情况下重载宿主代码；请完整重启 DSH。',
+      'pane.restartFailed': '重启请求失败：',
       'pane.minimize': '收起',
       'pane.resize': '拖动调整大小',
       'pane.docked': '已停靠右侧 · 与会话并排',
       'pane.dock': '停靠到右侧',
       'pane.float': '改为浮动窗口',
+      'ctx.none': '未选择工作区',
+      'ctx.noPath': '工作区路径未提供 — 在源码管理里选择一个目录',
+      'ctx.branch': '当前分支（由页面提供）',
+      'ctx.changes': '变更',
+      'status.noPage': '无页面',
+      'layoutGroup': '布局',
+      'layoutTooNarrow': '当前窗口不够宽',
+      'layout.auto': '自动（跟随面板宽度）',
+      'layout.single': '单栏',
+      'layout.split': '主从双栏',
+      'layout.tri': '三栏',
     }
 
     const EN = {
@@ -79,11 +95,27 @@ window.__ModuleLoader__.load({
       'pane.emptyHint': 'A plugin appears here after calling window.__DSH_WORKBAY__.registerPage.',
       'pane.global': 'Global panel · independent of the current session',
       'pane.close': 'Close',
+      'pane.restart': 'Restart workbench',
+      'pane.restarting': 'Restarting…',
+      'pane.restartConfirm': 'Restarting the workbench reloads its plugins and the whole DSH page. The session is kept, but workbench tabs and temporary UI state are reset. Continue?',
+      'pane.restartUnavailable': 'HMR is not enabled in this DSH, so host code cannot be reloaded without a full DSH restart.',
+      'pane.restartFailed': 'Restart request failed: ',
       'pane.minimize': 'Collapse',
       'pane.resize': 'Drag to resize',
       'pane.docked': 'Docked beside the conversation',
       'pane.dock': 'Dock to the right',
       'pane.float': 'Float as a window',
+      'ctx.none': 'No workspace',
+      'ctx.noPath': 'No workspace path yet — pick a folder in Source control',
+      'ctx.branch': 'Current branch (reported by the page)',
+      'ctx.changes': 'changes',
+      'status.noPage': 'No page',
+      'layoutGroup': 'Layout',
+      'layoutTooNarrow': 'window is too narrow',
+      'layout.auto': 'Auto (follow the panel width)',
+      'layout.single': 'Single column',
+      'layout.split': 'Master-detail',
+      'layout.tri': 'Three columns',
     }
 
     const LOCALES = { en: EN }
@@ -222,6 +254,82 @@ window.__ModuleLoader__.load({
       try { window.localStorage.setItem(STORAGE_DOCK_W, String(width)) } catch (error) { void error }
     }
 
+    /* ============================== shell: tiers & layout ============================== */
+
+    /* These four helpers mirror @dsh-workbay/kit/src/ui.js (the canonical copy,
+       pinned by unit tests). They are duplicated rather than imported because a
+       client half is ONE self-contained file: `window.__ModuleLoader__.load`
+       gives it no module system, so `import` is simply not available here.
+
+       The PANEL's own width decides the tier — never `window.innerWidth`. The
+       panel can be docked at 620px inside a 1920px viewport, floated at 1100px,
+       or scaled by WORKBENCH_ZOOM, so a media query would answer the wrong
+       question. */
+    const STORAGE_LAYOUT = 'dsh-workbay-dock.layout.v1'
+    const TIER_MIN_WIDTH = { t2: 680, t3: 980, t4: 1280 }
+    const LAYOUT_MODES = ['auto', 'single', 'split', 'tri']
+    const LAYOUT_LABEL = { auto: '自动', single: '单栏', split: '双栏', tri: '三栏' }
+
+    /**
+     * Ctrl+E (Cmd+E on macOS) toggles the workbench panel.
+     *
+     * Pure predicate so the binding is unit-tested instead of only exercised by a
+     * real key press: no repeat, no modifiers beyond the command key, and the
+     * layout of the event is exactly what a keyboard leaves behind.
+     */
+    function isWorkbenchShortcut(event) {
+      if (event === null || event === undefined || typeof event !== 'object') return false
+      if (event.repeat === true) return false
+      if (event.altKey === true || event.shiftKey === true) return false
+      if (event.ctrlKey !== true && event.metaKey !== true) return false
+      const key = typeof event.key === 'string' ? event.key.toLowerCase() : ''
+      return key === 'e'
+    }
+    /* 点「单栏/双栏/三栏」不只是换排版：面板宽度也要跟到位，否则在窄面板上点
+       「三栏」只会得到三栏档位却渲染成单列的怪状态。取各档位的最小可用宽度。 */
+    const LAYOUT_TARGET_WIDTH = { single: 660, split: 1000, tri: 1320 }
+    const TIER_LABEL = { t1: '紧凑', t2: '标准', t3: '宽', t4: '超宽' }
+    /** Empty context: pages fill this in through `dock.setContext`. */
+    const EMPTY_CONTEXT = { path: '', name: '', branch: '', ahead: 0, behind: 0, changes: 0, status: '', statuses: {} }
+
+    function tierForWidth(width) {
+      const value = Number(width)
+      if (Number.isFinite(value) === false || value <= 0) return 't1'
+      if (value >= TIER_MIN_WIDTH.t4) return 't4'
+      if (value >= TIER_MIN_WIDTH.t3) return 't3'
+      if (value >= TIER_MIN_WIDTH.t2) return 't2'
+      return 't1'
+    }
+
+    function normalizeLayoutMode(mode) {
+      return LAYOUT_MODES.includes(mode) ? mode : 'auto'
+    }
+
+    /** `auto` follows the tier; a manual choice wins at every tier. */
+    function resolveLayoutKind(tier, mode) {
+      const chosen = normalizeLayoutMode(mode)
+      if (chosen !== 'auto') return chosen
+      if (tier === 't4') return 'tri'
+      if (tier === 't3') return 'split'
+      return 'single'
+    }
+
+    function readLayoutMode() {
+      try {
+        const raw = window.localStorage.getItem(STORAGE_LAYOUT)
+        return normalizeLayoutMode(raw === null ? undefined : raw)
+      } catch {
+        return 'auto'
+      }
+    }
+
+    function writeLayoutMode(mode) {
+      const value = normalizeLayoutMode(mode)
+      try { window.localStorage.setItem(STORAGE_LAYOUT, value) } catch (error) { void error }
+      return value
+    }
+
+
     /** Non-null, non-array object. Guards the optional `panes`/`commands` fields. */
     function isPlainObject(value) {
       return value !== null && value !== undefined && typeof value === 'object' && Array.isArray(value) === false
@@ -233,6 +341,18 @@ window.__ModuleLoader__.load({
       const entries = new Map()
       const listeners = new Set()
       const notify = () => { for (const listener of [...listeners]) { try { listener() } catch (error) { void error } } }
+      /* The workbench CONTEXT: one workspace shared by every page. Pages push it
+         (they are the ones that know the repo/branch/device); the shell renders it
+         as the always-visible context bar. Kept here rather than in React state so
+         a page that registers before the overlay mounts still lands its context. */
+      const contextListeners = new Set()
+      /* Esc「返回上一级」的页面栈：每个页面注册一个「退一层」回调，返回 true
+         表示这一层吃掉了 Esc；外壳只在没人处理时才关闭面板。 */
+      const backHandlers = new Map()
+      let contextState = { ...EMPTY_CONTEXT }
+      const notifyContext = () => {
+        for (const listener of [...contextListeners]) { try { listener({ ...contextState }) } catch (error) { void error } }
+      }
       return {
         registerPage(page) {
           if (page === null || typeof page !== 'object') throw new Error('registerPage needs a page object')
@@ -242,6 +362,9 @@ window.__ModuleLoader__.load({
           entries.set(id, {
             id,
             title: typeof page.title === 'string' && page.title !== '' ? page.title : id,
+            /* 窄栏（rail 60px）放不下长标题：「Downloader」会被截成「Downloa…」。
+               短名只用于 rail，pill 与状态栏仍显示完整标题。 */
+            short: typeof page.short === 'string' && page.short !== '' ? page.short : undefined,
             order: Number.isFinite(page.order) ? page.order : 100,
             component: page.component,
             icon: typeof page.icon === 'function' ? page.icon : undefined,
@@ -280,6 +403,74 @@ window.__ModuleLoader__.load({
         subscribe(listener) {
           listeners.add(listener)
           return () => { listeners.delete(listener) }
+        },
+        /**
+         * Publish the current workspace context (path / name / branch / counters).
+         * MERGED, not replaced: a page that only knows the branch does not have to
+         * re-send the path, and a page that says nothing cannot blank the bar.
+         *
+         * `status` is the page's own one-liner for the status bar (e.g. "烧录中 62%").
+         */
+        setContext(patch) {
+          if (patch === null || typeof patch !== 'object') return { ...contextState, statuses: { ...contextState.statuses } }
+          const next = { ...contextState }
+          for (const key of Object.keys(EMPTY_CONTEXT)) {
+            if (patch[key] === undefined) continue
+            /* The per-page map is merged, never replaced: a patch that mentions
+               one page must not wipe the other pages' status lines. */
+            if (key === 'statuses') {
+              next.statuses = { ...contextState.statuses, ...(patch.statuses !== null && typeof patch.statuses === 'object' ? patch.statuses : {}) }
+            } else {
+              next[key] = patch[key]
+            }
+          }
+          contextState = next
+          notifyContext()
+          return { ...contextState, statuses: { ...contextState.statuses } }
+        },
+        getContext() { return { ...contextState, statuses: { ...contextState.statuses } } },
+        /**
+         * Per-page status line. The status bar shows the ACTIVE page's line in
+         * place, and every other page's line as a clickable badge — that is how a
+         * running burn stays visible while the user is reading code.
+         *
+         * `setContext({ status })` still works for the active page; this one is
+         * attributed by page id, so a page cannot overwrite another page's line.
+         */
+        setStatus(pageId, text) {
+          const id = typeof pageId === 'string' ? pageId.trim() : ''
+          if (id === '') return { ...contextState, statuses: { ...contextState.statuses } }
+          const statuses = { ...contextState.statuses }
+          const value = typeof text === 'string' ? text.trim() : ''
+          if (value === '') delete statuses[id]
+          else statuses[id] = value
+          contextState = { ...contextState, statuses }
+          notifyContext()
+          return { ...contextState, statuses: { ...statuses } }
+        },
+        subscribeContext(listener) {
+          if (typeof listener !== 'function') return () => {}
+          contextListeners.add(listener)
+          return () => { contextListeners.delete(listener) }
+        },
+        /**
+         * Register the active page's "go back one level" handler.
+         *
+         * Esc unwinds ONE level at a time: the page's dialog, then its modal, then
+         * its detail pane, then its selection — only when nothing is left does the
+         * workbench itself close. `null` clears the handler on unmount.
+         */
+        setBackHandler(pageId, handler) {
+          const id = typeof pageId === 'string' ? pageId.trim() : ''
+          if (id === '') return
+          if (typeof handler === 'function') backHandlers.set(id, handler)
+          else backHandlers.delete(id)
+        },
+        runBack(pageId) {
+          const id = typeof pageId === 'string' ? pageId.trim() : ''
+          const handler = backHandlers.get(id)
+          if (handler === undefined) return false
+          try { return handler() === true } catch (error) { return false }
         },
         /** Open/close the dock from anywhere (a page can call this itself). */
         open() { setOpen(true) },
@@ -343,6 +534,15 @@ window.__ModuleLoader__.load({
           if (typeof target.registerPage !== 'function') target.registerPage = own.registerPage
           if (typeof target.list !== 'function') target.list = () => own.list()
           if (typeof target.subscribe !== 'function') target.subscribe = own.subscribe
+          /* The context bus must be reachable from the SAME object a page sees,
+             whichever bundle created it first. A stub created by a page has no
+             context API, so the dock grafts its own here — same rule as above. */
+          if (typeof target.setContext !== 'function') target.setContext = own.setContext
+          if (typeof target.getContext !== 'function') target.getContext = own.getContext
+          if (typeof target.setStatus !== 'function') target.setStatus = own.setStatus
+          if (typeof target.subscribeContext !== 'function') target.subscribeContext = own.subscribeContext
+          if (typeof target.setBackHandler !== 'function') target.setBackHandler = own.setBackHandler
+          if (typeof target.runBack !== 'function') target.runBack = own.runBack
         } catch (error) { void error }
         /* Bridge: a page registered through the dock's own API lands in the
            object the overlay reads. */
@@ -445,6 +645,112 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* --- the workbench context: published by pages, rendered by the shell --- */
+
+    function readContext() {
+      const source = registrySource === null ? registry : registrySource
+      try {
+        if (source !== null && typeof source.getContext === 'function') {
+          const value = source.getContext()
+          if (value !== null && typeof value === 'object') {
+            return { ...EMPTY_CONTEXT, ...value, statuses: { ...(value.statuses !== null && typeof value.statuses === 'object' ? value.statuses : {}) } }
+          }
+        }
+      } catch (error) { void error }
+      return { ...EMPTY_CONTEXT, statuses: {} }
+    }
+
+    function useWorkbenchContext() {
+      const [value, setValue] = useState(() => readContext())
+      useEffect(() => {
+        const source = registrySource === null ? registry : registrySource
+        if (source === null || source === undefined || typeof source.subscribeContext !== 'function') return undefined
+        let off = null
+        try { off = source.subscribeContext((next) => setValue({ ...EMPTY_CONTEXT, ...next, statuses: { ...(next !== null && next !== undefined && typeof next.statuses === 'object' ? next.statuses : {}) } })) } catch (error) { void error }
+        /* Adopt whatever was published before this mount: the subscription only
+           sees writes that happen AFTER it, and pages register before the overlay
+           renders. */
+        setValue(readContext())
+        return () => { if (typeof off === 'function') { try { off() } catch (error) { void error } } }
+      }, [])
+      return value
+    }
+
+    /**
+     * The always-visible workspace bar.
+     *
+     * It never disappears — that was the whole point of the 2.0 layout. Narrow
+     * tiers DEGRADE it instead (path hidden below 680px, status chips below
+     * 980px), so "which workspace am I in" is answerable at every width.
+     */
+    function WorkbenchContextBar(props) {
+      const { t, ctx } = props
+      const state = ctx === null || ctx === undefined ? EMPTY_CONTEXT : ctx
+      const name = typeof state.name === 'string' && state.name !== '' ? state.name : ''
+      const path = typeof state.path === 'string' && state.path !== '' ? state.path : ''
+      const branch = typeof state.branch === 'string' && state.branch !== '' ? state.branch : ''
+      const ahead = Number.isFinite(state.ahead) && state.ahead > 0 ? state.ahead : 0
+      const behind = Number.isFinite(state.behind) && state.behind > 0 ? state.behind : 0
+      const changes = Number.isFinite(state.changes) && state.changes > 0 ? state.changes : 0
+      return E('div', { className: 'wbd-ctx' + (name === '' ? ' is-empty' : '') },
+        E('span', { className: 'wbd-ctxGlyph' }, E(Icon, { name: 'workbench', size: 14 })),
+        E('div', { className: 'wbd-ctxMain' },
+          E('div', { className: 'wbd-ctxLine1' },
+            E('span', { className: 'wbd-ctxName', title: path === '' ? t('ctx.none') : path },
+              name === '' ? t('ctx.none') : name)),
+          path === ''
+            ? E('div', { className: 'wbd-ctxPath is-hint' }, t('ctx.noPath'))
+            : E('div', { className: 'wbd-ctxPath', title: path }, path)),
+        E('div', { className: 'wbd-ctxMeta' },
+          branch === '' ? null : E('span', { className: 'wbd-branchPill', title: t('ctx.branch') },
+            E(Icon, { name: 'branch', size: 11 }),
+            E('span', { className: 'wbd-branchName' }, branch),
+            ahead === 0 && behind === 0 ? null : E('span', { className: 'wbd-sync' },
+              ahead > 0 ? E('span', { className: 'wbd-ahead' }, '↑' + ahead) : null,
+              behind > 0 ? E('span', { className: 'wbd-behind' }, '↓' + behind) : null)),
+          changes === 0 ? null : E('span', { className: 'wbd-chip is-warn' }, t('ctx.changes') + ' ' + changes)))
+    }
+
+    /** The status bar belongs to the shell: it says which page is open, what that
+        page is doing, and which tier/layout is active. Pages that are NOT open but
+        ARE doing something (a burn, a running shell) show up as badges — that is
+        the "background task" surface. */
+    function WorkbenchStatusBar(props) {
+      const { t, page, tier, layout, ctx, pages, onSelect, layoutMode, onLayout, layoutFits } = props
+      const state = ctx === null || ctx === undefined ? EMPTY_CONTEXT : ctx
+      const statuses = state.statuses !== null && typeof state.statuses === 'object' ? state.statuses : {}
+      const activeId = page === null || page === undefined ? '' : page.id
+      const activeStatus = activeId !== '' && typeof statuses[activeId] === 'string' ? statuses[activeId] : ''
+      const fallback = typeof state.status === 'string' ? state.status : ''
+      const shown = activeStatus === '' ? fallback : activeStatus
+      const badges = (Array.isArray(pages) ? pages : []).filter((entry) => {
+        return entry.id !== activeId && typeof statuses[entry.id] === 'string' && statuses[entry.id] !== ''
+      })
+      return E('footer', { className: 'wbd-status' },
+        E('span', { className: 'wbd-statusItem' }, page === null || page === undefined ? t('status.noPage') : page.title),
+        shown === '' ? null : E('span', { className: 'wbd-statusItem is-dim' }, '· ' + shown),
+        badges.length === 0 ? null : E('span', { className: 'wbd-statusTasks' }, badges.map((entry) => E('button', {
+          key: entry.id,
+          type: 'button',
+          className: 'wbd-task',
+          title: entry.title + ' — ' + statuses[entry.id],
+          onClick: () => { if (typeof onSelect === 'function') onSelect(entry.id) },
+        }, E('span', { className: 'wbd-taskDot' }), E('span', null, statuses[entry.id])))),
+        E('span', { className: 'wbd-statusLayout', role: 'group', 'aria-label': t('layoutGroup') },
+          LAYOUT_MODES.map((entry) => E('button', {
+            key: entry,
+            type: 'button',
+            className: 'wbd-lsBtn' + (layoutMode === entry ? ' is-on' : ''),
+            title: t('layout.' + entry) + (typeof layoutFits === 'function' && layoutFits(entry) === false ? ' · ' + t('layoutTooNarrow') : ''),
+            'aria-label': t('layout.' + entry),
+            disabled: typeof layoutFits === 'function' && layoutFits(entry) === false,
+            'aria-pressed': layoutMode === entry,
+            onClick: () => { if (typeof onLayout === 'function') onLayout(entry) },
+          }, E(Icon, { name: 'layout-' + entry, size: 12 })))),
+        E('span', { className: 'wbd-statusRight' },
+          TIER_LABEL[tier] + ' · ' + LAYOUT_LABEL[layout] + ' · ' + tier.toUpperCase()))
+    }
+
     /* ============================== icons ============================== */
 
     /* The glyph's INK must measure like the host's own sidebar icons, which
@@ -454,10 +760,23 @@ window.__ModuleLoader__.load({
     const ICONS = {
       workbench: ['M1.8 1.8h12.4v12.4H1.8z', 'M1.8 6.2h12.4', 'M6.2 6.2v8'],
       close: ['M4 4l8 8', 'M12 4l-8 8'],
+      restart: ['M13.2 8a5.2 5.2 0 1 1-1.5-3.7', 'M13.2 2.8v3.4h-3.4'],
       minimize: ['M3.5 8h9'],
       resize: ['M13.5 2.5v11h-11', 'M13.5 6.5v7h-7'],
       dock: ['M1.8 2.5h12.4v11H1.8z', 'M9.5 2.5v11'],
       float: ['M2.5 3.5h8v8h-8z', 'M5.5 2h8v8'],
+      /* Layout switch icons: one glyph per resolveLayout outcome, replacing the
+         text labels so the switch fits (and stays visible) in the narrowest tier. */
+      'layout-auto': ['M2.5 2.5h4v4h-4z', 'M9.5 2.5h4v4h-4z', 'M2.5 9.5h4v4h-4z', 'M9.5 9.5h4v4h-4z'],
+      'layout-single': ['M2.5 2.5h11v11h-11z'],
+      'layout-split': ['M2.5 2.5h11v11h-11z', 'M8 2.5v11'],
+      'layout-tri': ['M2.5 2.5h11v11h-11z', 'M6.2 2.5v11', 'M9.8 2.5v11'],
+      branch: [
+        'M4.6 5.6v5.4',
+        'M11.4 5.6v2a2 2 0 0 1-2 2H4.6',
+        'M4.6 2.9a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3',
+        'M11.4 2.9a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3',
+      ],
     }
 
     function Icon(props) {
@@ -505,11 +824,15 @@ window.__ModuleLoader__.load({
     function WorkbenchOverlay(props) {
       const { t } = props
       const pages = usePages()
-      const isOpen = useOpenFlag()
+      const openFlag = useOpenFlag()
+      const isOpen = openFlag
 
       /* Float vs docked. Docked is the default because "一边是会话，一边是工作台"
          is the common case; the flag is remembered. */
-      const [mode, setModeState] = useState(() => readMode())
+      /* 停靠固定：面板紧贴会话右侧，另外提供一个「工作台」会话页签显示完整界面。
+         浮动窗口用的「移到浮动」按钮已删除——浮动会盖住输入框。 */
+      const [restarting, setRestarting] = useState(false)
+      const [mode, setModeState] = useState('docked')
       const setMode = useCallback((next) => {
         setModeState(next)
         writeMode(next)
@@ -523,13 +846,18 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!isOpen || mode !== 'docked') {
           document.documentElement.style.removeProperty('--wbd-dock-width')
+          document.documentElement.style.removeProperty('--wbd-dock-css')
           document.body.classList.remove('wbd-docked-open')
           return undefined
         }
+        /* --wbd-dock-width is the PHYSICAL reservation; the element's CSS width is
+           that divided by zoom so its rendered box matches the reservation exactly. */
         document.documentElement.style.setProperty('--wbd-dock-width', dockWidth + 'px')
+        document.documentElement.style.setProperty('--wbd-dock-css', (dockWidth / WORKBENCH_ZOOM).toFixed(2) + 'px')
         document.body.classList.add('wbd-docked-open')
         return () => {
           document.documentElement.style.removeProperty('--wbd-dock-width')
+          document.documentElement.style.removeProperty('--wbd-dock-css')
           document.body.classList.remove('wbd-docked-open')
         }
       }, [isOpen, mode, dockWidth])
@@ -544,7 +872,7 @@ window.__ModuleLoader__.load({
           const drag = dockDragRef.current
           if (drag === null) return
           /* Dragging LEFT widens the dock: the grip is on its left edge. */
-          const nextW = Math.max(360, Math.min(window.innerWidth - 320, drag.startW - (moveEvent.clientX - drag.startX)))
+          const nextW = Math.max(520, Math.min(window.innerWidth - 320, drag.startW - (moveEvent.clientX - drag.startX)))
           setDockWidth(Math.round(nextW))
         }
         const onUp = () => {
@@ -583,6 +911,95 @@ window.__ModuleLoader__.load({
         }
       }, [current, active])
 
+      /* --- shell state: context, tier, layout, keep-alive ---------------------- */
+
+      const ctxState = useWorkbenchContext()
+
+      /* The PANEL width, not the viewport: `docked` is sized by the drag grip and
+         `float` by the resize handle, and both are exactly known here — so the
+         tier is derived synchronously instead of from a ResizeObserver that would
+         paint one wrong frame first. */
+      /* Measured width of the panel itself. The stored dock width and the geometry
+         are the INTENT; `zoom` and DPI make the rendered box differ from both, and
+         a wrong tier silently hides the path row and the status chips. Measure what
+         is actually on screen and fall back to the intent before the first frame. */
+      const shellRef = useRef(null)
+      const [measuredWidth, setMeasuredWidth] = useState(0)
+      useEffect(() => {
+        if (typeof ResizeObserver !== 'function') return undefined
+        const el = shellRef.current
+        if (el === null || el === undefined) return undefined
+        /* measure PHYSICAL px (getBoundingClientRect), not contentRect: the panel has
+           zoom, and the tier/layout thresholds are expressed in physical px like every
+           other width here (innerWidth, layout targets, drag deltas). */
+        const measure = () => {
+          const next = Math.round(el.getBoundingClientRect().width)
+          if (next > 0) setMeasuredWidth(next)
+        }
+        const observer = new ResizeObserver(() => { measure() })
+        observer.observe(el)
+        measure()
+        return () => { try { observer.disconnect() } catch (error) { void error } }
+      }, [isOpen, mode])
+
+      const panelWidth = measuredWidth > 0
+        ? measuredWidth
+        : (mode === 'docked' ? dockWidth : geometry.w)
+      const tier = tierForWidth(panelWidth)
+
+      const [layoutMode, setLayoutModeState] = useState(() => readLayoutMode())
+      /* 可用最大宽度：停靠要让出会话栏，浮动只留边距。窗口放不下的布局直接禁用，
+         而不是先把面板拉宽、再渲染出一个挤坏的三栏。 */
+      const maxPanelWidth = () => (typeof window === 'object' && window !== null ? window.innerWidth : 1600) - (mode === 'docked' ? 320 : 40)
+      const layoutFits = useCallback((entry) => {
+        const max = maxPanelWidth()
+        if (entry === 'auto') return true
+        if (entry === 'single') return max >= 520
+        if (entry === 'split') return max >= 980
+        if (entry === 'tri') return max >= 1280
+        return false
+      }, [mode])
+      const setLayoutMode = useCallback((next) => {
+        const value = writeLayoutMode(next)
+        if (value !== 'auto' && layoutFits(value) === false) return
+        setLayoutModeState(value)
+        if (value === 'auto') return
+        const target = LAYOUT_TARGET_WIDTH[value]
+        if (typeof target !== 'number') return
+        if (mode === 'docked') {
+          const max = Math.max(520, (typeof window === 'object' && window !== null ? window.innerWidth : 1600) - 320)
+          const width = Math.max(520, Math.min(max, target))
+          setDockWidth(width)
+          writeDockWidth(width)
+        } else {
+          const max = Math.max(560, (typeof window === 'object' && window !== null ? window.innerWidth : 1600) - 40)
+          const width = Math.max(560, Math.min(max, target))
+          setGeometry((current) => {
+            const nextGeometry = { w: width, h: current.h }
+            writeJson(STORAGE_GEOM, nextGeometry)
+            return nextGeometry
+          })
+        }
+      }, [mode, layoutFits])
+      const layout = resolveLayoutKind(tier, layoutMode)
+
+      /* One page switch, used by the pill strip, the rail and the status-bar task
+         badges: they must all persist the same choice. */
+      const selectPage = useCallback((id) => {
+        setActive(id)
+        try { window.localStorage.setItem(STORAGE_PAGE, id) } catch (error) { void error }
+      }, [])
+
+      /* Keep-alive: a page mounts the first time it is opened and is never
+         unmounted afterwards. Switching away must not kill a terminal session, a
+         running burn, or the row selection a page is showing. */
+      const [visited, setVisited] = useState(() => new Set())
+      useEffect(() => {
+        if (current === null) return
+        setVisited((previous) => (previous.has(current.id) ? previous : new Set(previous).add(current.id)))
+      }, [current, active])
+
+
       /* Esc closes the dock; that is the only keyboard binding, so it can never
          shadow a page's own shortcuts. */
       useEffect(() => {
@@ -595,11 +1012,19 @@ window.__ModuleLoader__.load({
           const target = event.target
           if (target !== null && target !== undefined && typeof target.tagName === 'string'
             && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+          /* 逐级返回：先让当前页退一层（对话框 → 弹窗 → 详情 → 选中），
+             所有层级都退完了才关闭工作台。 */
+          const registry = typeof window === 'object' && window !== null ? window[GLOBAL_KEY] : undefined
+          const activeId = current === null || current === undefined ? '' : current.id
+          const handled = registry !== undefined && registry !== null && typeof registry.runBack === 'function'
+            ? registry.runBack(activeId)
+            : false
+          if (handled === true) { event.preventDefault(); return }
           setOpen(false)
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-      }, [isOpen])
+      }, [isOpen, current])
 
       /* Resizing: pointer-driven, persisted, clamped to the viewport. */
       const onResizeStart = useCallback((event) => {
@@ -635,11 +1060,69 @@ window.__ModuleLoader__.load({
 
       if (!isOpen) return null
 
-      const body = current === null
+      /* Pages mount on first visit and STAY mounted (see `visited`): the stack
+         renders every visited page and hides the inactive ones with CSS, so a
+         terminal session or a running burn survives a tab switch. Only the active
+         page is exposed to assistive tech. */
+      const stack = pages.length === 0
         ? E('div', { className: 'wbd-empty' },
           E('div', { className: 'wbd-emptyTitle' }, t('pane.empty')),
           E('div', { className: 'wbd-emptyHint' }, t('pane.emptyHint')))
-        : E(PageBoundary, { key: current.id }, E(current.component, { t, dock: registry }))
+        : E('div', { className: 'wbd-stack' },
+          pages.filter((page) => visited.has(page.id)).map((page) => {
+            const pageActive = current !== null && current.id === page.id
+            return E('div', {
+              key: page.id,
+              className: 'wbd-page' + (pageActive ? ' is-active' : ''),
+              'aria-hidden': pageActive ? undefined : true,
+            }, E(PageBoundary, null, E(page.component, {
+              t,
+              dock: registry,
+              active: pageActive,
+              /* The shell's resolved tier + layout, so a page can shape its own
+                 columns instead of guessing from a media query. A page that
+                 ignores them keeps working: they are additive. */
+              tier,
+              layout,
+              /* `hosted` tells a page the shell already shows the workspace name,
+                 branch and change count. Pages use it to drop THEIR copy of that
+                 text while keeping their own actions (fetch/pull/push/search). */
+              hosted: true,
+            })))
+          }))
+
+      const body = E('div', { className: 'wbd-body' }, stack)
+
+      const restartWorkbench = async () => {
+        if (restarting) return
+        const confirmFn = typeof window.confirm === 'function' ? window.confirm : null
+        if (confirmFn !== null && confirmFn(t('pane.restartConfirm')) !== true) return
+        setRestarting(true)
+        try {
+          const restartUrl = new URL('dsh-workbay-dock/api/restart', document.baseURI).href
+          const response = await fetch(restartUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          })
+          const envelope = await response.json().catch(() => null)
+          const payload = envelope && envelope.data ? envelope.data : envelope
+          if (response.ok !== true || payload === null || payload.ok !== true) {
+            const message = payload && payload.message ? payload.message : ''
+            if (typeof window.alert === 'function') window.alert(t('pane.restartUnavailable') + (message === '' ? '' : '\n' + message))
+            setRestarting(false)
+            return
+          }
+          /* The host schedules HMR reconciliation after responding. Give it a
+             moment to replace the changed bundles, then reload the whole DSH
+             page so the new client bundle is fetched too. */
+          await new Promise((resolve) => setTimeout(resolve, 1800))
+          window.location.reload()
+        } catch (error) {
+          if (typeof window.alert === 'function') window.alert(t('pane.restartFailed') + String(error && error.message ? error.message : error))
+          setRestarting(false)
+        }
+      }
 
       const titlebar = E('div', { className: 'wbd-titlebar' },
         E('span', { className: 'wbd-titleIcon' }, E(Icon, { name: 'workbench', size: 14 })),
@@ -647,16 +1130,16 @@ window.__ModuleLoader__.load({
         E('span', { className: 'wbd-titleHint' }, mode === 'docked' ? t('pane.docked') : t('pane.global')),
         E('span', { className: 'wbd-titleActions' },
           E('button', {
-            type: 'button',
-            className: 'wbd-titleBtn',
-            title: mode === 'docked' ? t('pane.float') : t('pane.dock'),
-            'aria-label': mode === 'docked' ? t('pane.float') : t('pane.dock'),
-            onClick: () => setMode(mode === 'docked' ? 'float' : 'docked'),
-          }, E(Icon, { name: mode === 'docked' ? 'float' : 'dock', size: 13 })),
+            type: 'button', className: 'wbd-titleBtn', title: restarting ? t('pane.restarting') : t('pane.restart'),
+            'aria-label': t('pane.restart'), disabled: restarting,
+            onClick: () => { void restartWorkbench() },
+          }, E(Icon, { name: 'restart', size: 13 })),
           E('button', {
             type: 'button', className: 'wbd-titleBtn', title: t('pane.close'), 'aria-label': t('pane.close'),
             onClick: () => setOpen(false),
           }, E(Icon, { name: 'close', size: 13 }))))
+
+      const contextBar = E(WorkbenchContextBar, { t, ctx: ctxState })
 
       const tabStrip = pages.length <= 1
         ? null
@@ -676,28 +1159,63 @@ window.__ModuleLoader__.load({
           page.icon === undefined ? null : E('span', { className: 'wbd-tabIcon' }, page.icon(13)),
           E('span', { className: 'wbd-tabLabel' }, page.title))))
 
-      if (mode === 'docked') {
-        return E('div', { className: 'wbd-docked', role: 'complementary', 'aria-label': t('pane.title'), style: { zoom: WORKBENCH_ZOOM } },
-          titlebar,
-          tabStrip,
-          E('div', { className: 'wbd-body' }, body),
-          E('div', {
-            className: 'wbd-dockGrip',
-            title: t('pane.resize'),
-            onPointerDown: onDockResizeStart,
-          }))
-      }
+      const statusBar = E(WorkbenchStatusBar, {
+        t,
+        page: current,
+        tier,
+        layout,
+        ctx: ctxState,
+        pages,
+        onSelect: selectPage,
+        layoutMode,
+        onLayout: setLayoutMode,
+        layoutFits,
+      })
 
-      return E('div', { className: 'wbd-overlay', role: 'dialog', 'aria-modal': 'false', 'aria-label': t('pane.title') },
-        E('div', { className: 'wbd-window', style: { width: geometry.w + 'px', height: geometry.h + 'px', zoom: WORKBENCH_ZOOM } },
-          titlebar,
-          tabStrip,
-          E('div', { className: 'wbd-body' }, body),
-          E('div', {
-            className: 'wbd-resizeHandle',
-            title: t('pane.resize'),
-            onPointerDown: onResizeStart,
-          }, E(Icon, { name: 'resize', size: 11 }))))
+      /* The same roster rendered twice: a horizontal pill strip at t1/t2 and a
+         vertical rail at t3/t4. CSS shows exactly one of them, so the JSX stays
+         branch-free and a stale `data-w` can never leave the user with no nav. */
+      const rail = pages.length <= 1
+        ? null
+        : E('nav', { className: 'wbd-rail', 'aria-label': t('pane.title') },
+          pages.map((page) => {
+            const pageActive = current !== null && current.id === page.id
+            return E('button', {
+              key: page.id,
+              type: 'button',
+              className: 'wbd-railItem' + (pageActive ? ' is-active' : ''),
+              title: page.title,
+              'aria-current': pageActive ? 'page' : undefined,
+              onClick: () => selectPage(page.id),
+            },
+            E('span', { className: 'wbd-railGlyph' }, page.icon === undefined ? E(Icon, { name: 'workbench', size: 16 }) : page.icon(16)),
+            E('span', { className: 'wbd-railLabel' }, page.short === undefined ? page.title : page.short))
+          }))
+
+      const main = E('div', { className: 'wbd-main' }, rail, body)
+
+      /* Docked is the only placement now: a floating window covered the
+         conversation's input, and the separate「工作台」conversation tab was removed
+         on request — the side panel IS the workbench. */
+      return E('div', {
+        className: 'wbd-docked',
+        ref: shellRef,
+        role: 'complementary',
+        'aria-label': t('pane.title'),
+        'data-w': tier,
+        'data-layout': layout,
+        style: { zoom: WORKBENCH_ZOOM },
+      },
+        titlebar,
+        contextBar,
+        tabStrip,
+        main,
+        statusBar,
+        E('div', {
+          className: 'wbd-dockGrip',
+          title: t('pane.resize'),
+          onPointerDown: onDockResizeStart,
+        }))
     }
 
     /* ============================== the entry button ============================== */
@@ -773,8 +1291,8 @@ window.__ModuleLoader__.load({
         className: 'wbd-entryBtn' + (isOpen ? ' is-open' : ''),
         role: 'button',
         tabIndex: 0,
-        title: t('button.tooltip'),
-        'aria-label': t('button.tooltip'),
+        title: t('button.tooltip') + ' (Ctrl+E)',
+        'aria-label': t('button.tooltip') + ' (Ctrl+E)',
         'aria-pressed': isOpen,
       }, E(Icon, { name: 'workbench', size: glyph }))
     }
@@ -806,24 +1324,88 @@ window.__ModuleLoader__.load({
 button:has(.wbd-entryBtn.is-open){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 /* Docked: a real column on the right edge; the shell is padded so the
    conversation keeps its own space and both stay interactive. */
-.wbd-docked{position:fixed;top:0;right:0;bottom:0;width:var(--wbd-dock-width,620px);z-index:700;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));box-shadow:-8px 0 24px rgba(0,0,0,.28);overflow:hidden}
+/* 宽度单位统一为“物理像素”：--wbd-dock-width 是面板占用的真实宽度（body 用同一个值
+   预留会话空间），--wbd-dock-css 是除以 zoom 之后写进 CSS 的宽度。两者分离是因为
+   面板带 zoom:1.1：CSS 宽度 1400 实际渲染 1541，预留 1400 就会盖住会话 141px。 */
+.wbd-docked{position:fixed;top:0;right:0;bottom:0;width:var(--wbd-dock-css,564px);z-index:700;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));box-shadow:-8px 0 24px rgba(0,0,0,.28);overflow:hidden}
 body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border-box;transition:padding-right .12s ease}
 .wbd-dockGrip{position:absolute;left:0;top:0;bottom:0;width:6px;cursor:ew-resize}
 .wbd-dockGrip:hover{background:var(--dsw-alias-brand-primary,#4d6bfe);opacity:.35}
 .wbd-overlay{position:fixed;left:0;top:0;right:0;bottom:0;z-index:900;display:flex;align-items:center;justify-content:center;pointer-events:none}
 .wbd-window{pointer-events:auto;display:flex;flex-direction:column;max-width:calc(100vw - 40px);max-height:calc(100vh - 60px);border-radius:var(--dsw-radius-lg,12px);border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.16));background:var(--dsw-alias-bg-layer-2,#22262c);box-shadow:var(--dsw-elevation-prominent,0 18px 60px rgba(0,0,0,.55));overflow:hidden;position:relative}
-.wbd-titlebar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-3,rgba(255,255,255,.04));flex:none}
+.wbd-titlebar{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 8px 0 12px;border-bottom:none;background:var(--dsw-alias-bg-layer-1,#1b1e24);flex:none}
+/* 停靠面板贴在窗口右上角，而 DSH 的窗口按钮（− □ ✕）画在同一个角上、层级更高：
+   不预留这段宽度，布局切换和我们的收/关按钮会被窗口按钮盖住。 */
+.wbd-docked .wbd-titlebar{padding-right:140px}
 .wbd-titleIcon{display:flex;color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .wbd-title{font-weight:600;font-size:13px}
 .wbd-titleHint{flex:1;min-width:0;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wbd-titleActions{display:flex;gap:2px;flex:none}
 .wbd-titleBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .wbd-titleBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
-.wbd-tabs{display:flex;gap:2px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));flex:none}
-.wbd-tab{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:12px;cursor:pointer}
-.wbd-tab:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
-.wbd-tab.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.16));color:var(--dsw-alias-label-primary,#fff)}
+.wbd-titleBtn:disabled{opacity:.45;cursor:default;background:transparent}
+.wbd-tabs{display:flex;align-items:center;gap:2px;height:38px;flex:none;padding:0 10px;border-bottom:none;background:var(--dsw-alias-bg-layer-1,#1b1e24);overflow-x:auto;scrollbar-width:thin}
+.wbd-tab{display:inline-flex;align-items:center;gap:5px;flex:none;height:26px;padding:0 10px;border:none;border-radius:7px;background:transparent;color:#9aa0a8;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.wbd-tab:hover{background:rgba(255,255,255,.05);color:#cfd3d9}
+.wbd-tab.is-active{background:rgba(255,255,255,.085);color:#f2f3f5;font-weight:500}
 .wbd-tabIcon{display:flex}
+/* ---- shell 2.0: context bar, layout switch, page stack, status bar ----
+   Sizes keyed off the data-w attribute on the panel root, because the tier is the
+   PANEL's width (docked 620 / floated 1100 / scaled) and not the viewport's. */
+.wbd-ctx{display:flex;align-items:center;gap:9px;flex:none;padding:0 10px 0 12px;min-height:56px;background:var(--dsw-alias-bg-layer-1,#1b1e24)}
+.wbd-ctxGlyph{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;flex:none;background:linear-gradient(160deg,rgba(77,107,254,.30),rgba(77,107,254,.12));color:var(--dsw-alias-brand-primary,#7c93ff);box-shadow:inset 0 0 0 1px rgba(120,145,255,.20)}
+.wbd-ctx.is-empty .wbd-ctxGlyph{background:rgba(255,255,255,.05);color:var(--dsw-alias-label-tertiary,#8a8f98);box-shadow:none}
+.wbd-ctxMain{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
+.wbd-ctxLine1{display:flex;align-items:center;gap:6px;min-width:0}
+.wbd-ctxName{font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.wbd-ctx.is-empty .wbd-ctxName{font-weight:500;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.wbd-ctxPath.is-hint{color:var(--dsw-alias-label-tertiary,#5f656d)}
+.wbd-ctxPath{font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f757e);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
+.wbd-ctxMeta{display:flex;align-items:center;gap:6px;flex:none}
+.wbd-branchPill{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:6px;background:rgba(255,255,255,.05);color:var(--dsw-alias-label-secondary,#b6bac1);font-size:11px;white-space:nowrap}
+.wbd-branchName{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wbd-sync{display:inline-flex;gap:3px;font-size:10px}
+.wbd-ahead{color:var(--dsw-alias-state-success-primary,#3fb950)}
+.wbd-behind{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
+.wbd-chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:5px;font-size:10px;background:rgba(255,255,255,.05);color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
+.wbd-chip.is-warn{color:var(--dsw-alias-state-warn-primary,#e2a03f);background:rgba(226,160,63,.12)}
+.wbd-layoutSwitch{display:flex;gap:1px;flex:none;padding:2px;border-radius:7px;background:rgba(255,255,255,.04)}
+.wbd-lsBtn{height:22px;padding:0 7px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);font:inherit;font-size:10.5px;cursor:pointer;white-space:nowrap}
+.wbd-lsBtn:hover{background:rgba(255,255,255,.07);color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbd-lsBtn.is-on{background:rgba(255,255,255,.10);color:var(--dsw-alias-label-primary,#fff)}
+/* T1/T2 keep the bar to one line: the workspace NAME is the part that must never
+   leave the screen, so only the path and the counters fold away. */
+[data-w="t1"] .wbd-ctx{min-height:48px}
+[data-w="t1"] .wbd-ctxPath,[data-w="t1"] .wbd-ctxMeta{display:none}
+[data-w="t1"] .wbd-titleHint,[data-w="t2"] .wbd-titleHint{display:none}
+/* The layout switch stays visible at every width so the control is discoverable;
+   below three columns it simply has less room to work with. */
+.wbd-stack{flex:1;min-height:0;display:flex;overflow:hidden;position:relative}
+.wbd-page{display:none;flex:1;min-height:0;min-width:0;flex-direction:column;overflow:hidden}
+.wbd-page.is-active{display:flex}
+/* One roster, two renderings: pills at t1/t2, a rail at t3/t4. Exactly one is
+   ever displayed, so the user can never end up with no navigation at all. */
+.wbd-main{display:flex;flex:1;min-height:0;overflow:hidden}
+.wbd-rail{display:none;flex-direction:column;align-items:center;gap:3px;width:60px;flex:none;padding:8px 0;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.07))}
+.wbd-railItem{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:52px;height:44px;border:none;border-radius:9px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);font:inherit;font-size:9.5px;cursor:pointer}
+.wbd-railItem:hover{background:rgba(255,255,255,.06);color:var(--dsw-alias-label-secondary,#b6bac1)}
+.wbd-railItem.is-active{background:rgba(77,107,254,.14);color:var(--dsw-alias-brand-primary,#8fa4ff)}
+.wbd-railGlyph{display:flex;align-items:center;justify-content:center}
+.wbd-railLabel{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[data-w="t3"] .wbd-rail,[data-w="t4"] .wbd-rail{display:flex}
+[data-w="t3"] .wbd-tabs,[data-w="t4"] .wbd-tabs{display:none}
+.wbd-status{display:flex;align-items:center;gap:8px;height:22px;flex:none;padding:0 12px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.07));background:#101216;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:9.5px;color:var(--dsw-alias-label-tertiary,#6f757e)}
+.wbd-statusRight{margin-left:auto;white-space:nowrap}
+/* 布局切换搬到状态栏：标题栏右上角是窗口按钮的地盘，长期抢不过它。 */
+.wbd-statusLayout{display:flex;align-items:center;gap:1px;margin-left:8px;flex:none}
+.wbd-status .wbd-lsBtn{height:18px;width:20px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+/* Background-task badges: a page that is not open but is DOING something (a burn,
+   a live shell) stays visible and one click away. */
+.wbd-statusTasks{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
+.wbd-task{display:inline-flex;align-items:center;gap:5px;height:16px;padding:0 6px;border:none;border-radius:8px;background:rgba(255,255,255,.06);color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:9.5px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.wbd-task:hover{background:rgba(255,255,255,.12);color:var(--dsw-alias-label-primary,#e6e6e6)}
+.wbd-taskDot{width:5px;height:5px;border-radius:50%;background:var(--dsw-alias-state-warn-primary,#e2a03f);flex:none}
+.wbd-statusItem.is-dim{opacity:.85}
 .wbd-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
 .wbd-empty{padding:30px 20px;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:12px}
 .wbd-emptyTitle{font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);margin-bottom:6px}
@@ -833,6 +1415,26 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 .wbd-errorBody{font-family:var(--dsw-font-markdown-code-block,monospace);white-space:pre-wrap}
 .wbd-resizeHandle{position:absolute;right:2px;bottom:2px;display:flex;align-items:center;justify-content:center;width:18px;height:18px;color:var(--dsw-alias-label-tertiary,#6f757e);cursor:nwse-resize}
 .wbd-resizeHandle:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}
+
+/* ===== readability baseline: 13px body / 12px secondary / 11px labels ===== */
+.wbd-titlebar{min-height:44px}
+.wbd-title{font-size:13px}
+.wbd-titleHint{font-size:11px}
+.wbd-lsBtn{height:24px;width:24px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.wbd-ctx{min-height:60px}
+.wbd-ctxName{font-size:13px}
+.wbd-ctxPath{font-size:11.5px}
+.wbd-branchPill{font-size:12px;height:24px}
+.wbd-chip{font-size:11px;height:22px}
+.wbd-tabs{height:42px}
+.wbd-tab{font-size:13px;height:28px;padding:0 12px}
+.wbd-status{font-size:11px;height:26px;gap:10px}
+.wbd-task{font-size:10.5px;height:18px}
+.wbd-rail{width:64px}
+.wbd-railItem{width:56px;height:50px;gap:4px}
+.wbd-railLabel{font-size:10.5px}
+[data-w="t1"] .wbd-ctx{min-height:52px}
+
 `
 
     /* ============================== apply ============================== */
@@ -845,6 +1447,21 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
       ctx.effect(() => () => { style.remove() }, 'dsh-workbay-dock: styles')
 
       const t = translatorOf(ctx)
+      /* Global shortcut: Ctrl+E opens/closes the panel from anywhere, including
+         while the conversation input has focus (that is the point of a global key). */
+      ctx.effect(() => {
+        const onKeyDown = (event) => {
+          if (isWorkbenchShortcut(event) !== true) return
+          event.preventDefault()
+          event.stopPropagation()
+          setOpen(openState !== true)
+        }
+        window.addEventListener('keydown', onKeyDown, true)
+        return () => {
+          try { window.removeEventListener('keydown', onKeyDown, true) } catch (error) { void error }
+        }
+      }, 'dsh-workbay-dock: shortcut')
+
       ctx.effect(() => () => {
         for (const timer of fallbackTimers) clearTimeout(timer)
         for (const off of fallbackDisposers) { try { off() } catch (error) { void error } }
@@ -864,7 +1481,6 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
           locale: LOCALE_NS,
         }, (slotProps) => E(WorkbenchEntryButton, Object.assign({}, slotProps, { t })))),
         'dsh-workbay-dock: panellist entry')
-
         /* Fallback: if the top seat never rendered this entry, put it in the
            footer seat instead, which every host composition renders. */
         const timer = setTimeout(() => {
@@ -911,6 +1527,15 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
       apply,
       name: 'dsh-workbay-dock',
       registerPage: registry.registerPage,
+      /* Pages reach these through the `dock` prop as well; exposing them on the
+         bundle's own surface keeps a page that only has the global object working. */
+      setContext: (patch) => registry.setContext(patch),
+      getContext: () => registry.getContext(),
+      setStatus: (pageId, text) => registry.setStatus(pageId, text),
+      subscribeContext: (listener) => registry.subscribeContext(listener),
+      /* The tier/layout rules are exported so the duplicated copy here can be
+         pinned by tests against the canonical ones in @dsh-workbay/kit/src/ui.js. */
+      shell: { tierForWidth, resolveLayoutKind, normalizeLayoutMode, isWorkbenchShortcut },
       open: () => setOpen(true),
       close: () => setOpen(false),
     }

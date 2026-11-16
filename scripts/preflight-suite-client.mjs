@@ -81,6 +81,20 @@ window.__CHECK__ = async function () {
   var services = new Map()
   services.set('locale', { register: function () {}, subscribe: function () { return function () {} }, getSnapshot: function () { return { active: 'zh' } } })
   services.set('slots', { register: function () { return function () {} }, inject: function () { return function () {} } })
+  /* The @ picker rewrite needs these two. The sessions service reports a fixed
+     cwd, and the reference source mimics @deepseek-ai/dsh-client-ui-reference
+     exactly: a relative mention in, so the wrapper has something to absolutize. */
+  window.__DEBUG_SESSION_CWD__ = 'D:\\\\AI_workspace'
+  window.__REF_SOURCE__ = {
+    trigger: '@',
+    name: 'reference',
+    onPick: function (pick) {
+      if (pick.action === 'drill') return { text: pick.candidate.ref, continue: true }
+      return { insert: { source: 'reference', ref: pick.candidate.ref, label: pick.candidate.label, appearance: pick.candidate.appearance || 'file', clipboardText: pick.candidate.ref } }
+    },
+  }
+  services.set('sessions', { list: { getSnapshot: function () { return { byId: { s1: { cwd: window.__DEBUG_SESSION_CWD__ } } } } } })
+  services.set('inputTriggers', { live: { sources: [window.__REF_SOURCE__] }, registerSource: function (s) { this.live.sources.push(s); return function () {} } })
   function mkctx() {
     var ctx = {
       effect: function (fn) { try { var d = fn(); return typeof d === 'function' ? d : function () {} } catch (e) { out.errors.push('effect: ' + e.message); return function () {} } },
@@ -103,6 +117,18 @@ window.__CHECK__ = async function () {
   var dock = window.__DSH_WORKBAY__
   out.diag.pagesAfterApply = dock.list().map(function (p) { return p.id })
   out.pages = dock.list().map(function (p) { return p.id })
+  /* The @ picker rewrite, driven through the real pick() path: a relative file
+     mention must come back absolute, with the chip label untouched. */
+  try {
+    var source = window.__REF_SOURCE__
+    var picked = source.onPick({ candidate: { ref: '@build.bat', label: 'build.bat' }, session: { sessionId: 's1' }, action: 'pick', via: 'menu', position: 'inline', span: {} })
+    out.absoluteRef = {
+      ref: picked && picked.insert ? picked.insert.ref : null,
+      label: picked && picked.insert ? picked.insert.label : null,
+    }
+  } catch (e) {
+    out.errors.push('absoluteRef: ' + (e && e.message))
+  }
   /* THE point of this check: can the shell reach the other pages by id, and do
      those pages actually publish the panes it needs? */
   out.getWorks = typeof dock.get === 'function'
@@ -212,8 +238,10 @@ console.log('')
 check('the merged client registers ONE module', result.registrations.length === 1, result.registrations)
 check('its id is dsh-workbay-suite', result.registrations[0] === 'dsh-workbay-suite', result.registrations)
 check('the plugin applies without error', result.applied === true && result.errors.length === 0, result.errors)
-check('all five pages register', JSON.stringify(result.pages) === '["files","source-control","gitcraft","terminal","downloader"]'
-  || result.pages.length === 5, result.pages)
+check('every workbench page registers', JSON.stringify(result.pages) === '["files","terminal","gitcraft","downloader","source-control","memmap"]'
+  || (result.pages.length === 6 && ['files', 'source-control', 'gitcraft', 'terminal', 'downloader', 'memmap'].every(function (id) { return result.pages.indexOf(id) >= 0 })), result.pages)
+check('the @ picker inserts an ABSOLUTE path', !!result.absoluteRef && result.absoluteRef.ref === '@D:\\AI_workspace\\build.bat', result.absoluteRef)
+check('the @ picker keeps the short chip label', !!result.absoluteRef && result.absoluteRef.label === 'build.bat', result.absoluteRef)
 check('dock.get() exists in the merged build', result.getWorks === true)
 check('files publishes panes.source', result.panes.filesSource === true, result.panes)
 check('gitcraft publishes panes.diff', result.panes.gitcraftDiff === true, result.panes)

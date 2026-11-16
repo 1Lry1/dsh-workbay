@@ -56,6 +56,22 @@ dock.registerPage({
 
 > **已知约束**：跨 bundle 的页面注册有过一次真实事故 —— 页面先注册进一个 stub 对象，dock 后加载时新建对象覆盖了它，导致浮层显示「没有页面」而后台 `list()` 却有 1 个。现在的实现让 dock **采纳**已存在的对象（把控制面嫁接到同一个对象上），并且浮层每 250ms 重读一次页面表，不再依赖订阅时序。
 
+## 重启工作台（不重启 DSH）
+
+标题栏有一个 ⟳ **重启工作台** 按钮。点击并确认后：
+
+1. 宿主调用 DSH 的 HMR `reconcileProfile()`，重新组合 profile；
+2. 工作台各 bundle 中**文件已变化的宿主插件**被替换（Downloader / Files / GitCraft 等）；
+3. 约 1.8 秒后刷新整个 DSH 页面，浏览器重新加载最新的 client bundle。
+
+效果等于“重启工作台”，但 **DSH 进程和当前会话不重启**：聊天记录、会话上下文保留；
+工作台页签、临时 UI 状态会按页面刷新重置。若 HMR 不可用，按钮会明确提示需要完整重启 DSH，
+不会假装成功。
+
+实现位置：`packages/dock/src/index.js` 的 `/dsh-workbay-dock/api/restart`，
+以及 `packages/dock/src/client.js` 标题栏按钮。HMR 重组在响应之后调度，
+避免在写响应时把正在处理请求的插件替换掉。
+
 ## 安装
 
 ```powershell

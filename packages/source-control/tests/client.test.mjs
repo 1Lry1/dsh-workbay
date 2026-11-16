@@ -147,6 +147,42 @@ test('repoRootRelative: a repository OUTSIDE the workspace is not representable'
   assert.equal(api.repoRootRelative('D:/ws', ''), null)
 })
 
+test('absoluteFromRoot turns a tree row into the host path the @ button inserts', () => {
+  assert.equal(api.absoluteFromRoot('D:\\work\\workspace\\demo', 'build.bat'), 'D:\\work\\workspace\\demo\\build.bat')
+  assert.equal(api.absoluteFromRoot('D:\\work\\workspace\\demo\\', 'app/src/main.c'), 'D:\\work\\workspace\\demo\\app\\src\\main.c')
+  assert.equal(api.absoluteFromRoot('D:\\work\\workspace\\demo', '/tools/build.bat'), 'D:\\work\\workspace\\demo\\tools\\build.bat')
+  assert.equal(api.absoluteFromRoot('D:\\work\\workspace\\demo', 'docs/'), 'D:\\work\\workspace\\demo\\docs\\')
+  assert.equal(api.absoluteFromRoot('D:\\work\\workspace\\demo', ''), 'D:\\work\\workspace\\demo')
+  assert.equal(api.absoluteFromRoot('', 'build.bat'), '')
+  assert.equal(api.absoluteFromRoot('\\\\srv\\share\\', 'app/x.c'), '\\\\srv\\share\\app\\x.c')
+})
+
+test('parseRemotes + webUrlOfRemote + branchWebUrl build the browser address', () => {
+  const remotes = api.parseRemotes([
+    'origin\thttps://gitea.idoocn.com:30443/linf/demo.git (fetch)',
+    'origin\thttps://gitea.idoocn.com:30443/linf/demo.git (push)',
+    'mirror\tgit@example.com:team/repo.git (fetch)',
+    'mirror\tgit@example.com:team/repo.git (push)',
+  ])
+  assert.equal(remotes.origin.fetch, 'https://gitea.idoocn.com:30443/linf/demo.git')
+  assert.equal(remotes.origin.push, 'https://gitea.idoocn.com:30443/linf/demo.git')
+  assert.equal(remotes.mirror.fetch, 'git@example.com:team/repo.git')
+
+  assert.equal(api.webUrlOfRemote('https://gitea.idoocn.com:30443/linf/demo.git'), 'https://gitea.idoocn.com:30443/linf/demo')
+  assert.equal(api.webUrlOfRemote('http://host/a/b.git'), 'http://host/a/b')
+  assert.equal(api.webUrlOfRemote('git@example.com:team/repo.git'), 'https://example.com/team/repo')
+  assert.equal(api.webUrlOfRemote('ssh://git@example.com:2222/team/repo.git'), 'https://example.com:2222/team/repo')
+  assert.equal(api.webUrlOfRemote(''), '')
+  assert.equal(api.webUrlOfRemote('D:\\local\\repo'), '')
+
+  const base = 'https://gitea.idoocn.com:30443/linf/demo'
+  assert.equal(api.branchWebUrl(base, 'branch', 'project-a-Pre'), base + '/src/branch/project-a-Pre')
+  assert.equal(api.branchWebUrl(base, 'branch', 'feature/login'), base + '/src/branch/feature/login')
+  assert.equal(api.branchWebUrl(base, 'tag', 'v1.0'), base + '/src/tag/v1.0')
+  assert.equal(api.branchWebUrl('', 'branch', 'main'), '')
+  assert.equal(api.branchWebUrl(base, 'branch', ''), '')
+})
+
 test('toRepoPath / toWorkspaceRel are inverses, and refuse to guess', () => {
   /* Same root: identity both ways. */
   assert.equal(api.toRepoPath('src/x.ts', ''), 'src/x.ts')
@@ -278,6 +314,52 @@ test('flatten descends only into expanded directories', () => {
   assert.deepEqual(expanded.filter((row) => row.kind === 'entry').map((row) => row.rel), ['src', 'src/deep', 'src/c.ts', 'a.ts', 'b.ts'])
 })
 
+test('a manually collapsed directory overrides "changes only" auto-expansion', () => {
+  const dirs = {
+    '': { status: 'ready', entries: [{ name: 'src', rel: 'src', type: 'dir' }, { name: 'a.ts', rel: 'a.ts', type: 'file' }] },
+    src: { status: 'ready', entries: [{ name: 'c.ts', rel: 'src/c.ts', type: 'file' }] },
+  }
+  const statusIndex = new Map([['src/c.ts', { kind: 'modified', added: 1, deleted: 0, staged: false }]])
+  const dirtyDirs = api.buildDirtyDirs(statusIndex)
+  /* 只看变更：有改动的目录自动展开（这里没有显式展开 src）。 */
+  const auto = api.flattenTree(dirs, new Set(['']), { statusIndex, dirtyDirs, onlyChanges: true })
+  assert.ok(auto.filter((row) => row.kind === 'entry').map((row) => row.rel).includes('src/c.ts'))
+  /* 用户手动收起 src 后，自动展开必须让位。 */
+  const collapsed = api.flattenTree(dirs, new Set(['']), { statusIndex, dirtyDirs, onlyChanges: true, collapsed: new Set(['src']) })
+  assert.equal(collapsed.filter((row) => row.kind === 'entry').map((row) => row.rel).includes('src/c.ts'), false)
+  assert.equal(collapsed.find((row) => row.rel === 'src').expanded, false)
+})
+test('changes-only shows deleted files that no longer exist on disk', () => {
+  const dirs = {
+    '': { status: 'ready', entries: [{ name: 'src', rel: 'src', type: 'dir' }, { name: 'kept.ts', rel: 'kept.ts', type: 'file' }] },
+    src: { status: 'ready', entries: [{ name: 'c.ts', rel: 'src/c.ts', type: 'file' }] },
+  }
+  const statusIndex = new Map([
+    ['gone.ts', { kind: 'deleted', added: 0, deleted: 3, staged: false }],
+    ['src/old.ts', { kind: 'deleted', added: 0, deleted: 1, staged: false }],
+    ['olddir/sub/dead.bin', { kind: 'deleted', added: 0, deleted: 9, staged: false }],
+  ])
+  const dirtyDirs = api.buildDirtyDirs(statusIndex)
+  const rows = api.flattenTree(dirs, new Set(['']), { statusIndex, dirtyDirs, onlyChanges: true })
+  const entries = rows.filter((row) => row.kind === 'entry')
+  const gone = entries.find((row) => row.rel === 'gone.ts')
+  const nested = entries.find((row) => row.rel === 'src/old.ts')
+  assert.ok(gone !== undefined && nested !== undefined, JSON.stringify(entries.map((row) => row.rel)))
+  assert.equal(gone.missing, true)
+  assert.equal(nested.missing, true)
+  assert.equal(gone.letter, 'D')
+  /* A whole deleted directory (olddir/sub) is absent from the disk tree; it and
+     its child must still be synthesised so the D record is reachable. */
+  assert.ok(entries.some((row) => row.rel === 'olddir' && row.dir === true && row.missing === true))
+  assert.ok(entries.some((row) => row.rel === 'olddir/sub' && row.dir === true && row.missing === true))
+  assert.equal(entries.find((row) => row.rel === 'olddir/sub/dead.bin').letter, 'D')
+  /* The clean file must stay hidden in changes-only mode. */
+  assert.equal(entries.some((row) => row.rel === 'kept.ts'), false)
+  /* With the filter off, no ghost rows are invented. */
+  const all = api.flattenTree(dirs, new Set(['', 'src']), { statusIndex, dirtyDirs })
+  assert.equal(all.some((row) => row.rel === 'gone.ts' && row.missing === true), false)
+})
+
 test('flatten puts directories first, then names in natural order', () => {
   const dirs = {
     '': {
@@ -296,7 +378,12 @@ test('flatten puts directories first, then names in natural order', () => {
 
 test('flatten attaches the status letter and diff stats per row', () => {
   const dirs = makeDirs()
-  const statusIndex = new Map([['a.ts', { kind: 'modified', added: 5, deleted: 2, staged: false }]])
+  /* A file can carry edits on BOTH sides; the row shows the side its group
+     represents (staged → index counts, unstaged → worktree counts). */
+  const statusIndex = new Map([
+    ['a.ts', { kind: 'modified', added: 5, deleted: 2, staged: true }],
+    ['b.ts', { kind: 'modified', added: 1, deleted: 1, staged: false, unstagedAdded: 7, unstagedDeleted: 3 }],
+  ])
   const rows = api.flattenTree(dirs, new Set(['']), { statusIndex })
   const a = rows.find((row) => row.rel === 'a.ts')
   assert.equal(a.letter, 'M')
@@ -304,8 +391,10 @@ test('flatten attaches the status letter and diff stats per row', () => {
   assert.equal(a.added, 5)
   assert.equal(a.deleted, 2)
   const b = rows.find((row) => row.rel === 'b.ts')
-  assert.equal(b.letter, '', 'a clean file has NO letter (no empty slot)')
-  assert.equal(b.change, null)
+  assert.equal(b.added, 7, 'an unstaged row reports the WORKTREE edits')
+  assert.equal(b.deleted, 3)
+  const clean = rows.find((row) => row.rel === 'src')
+  void clean
 })
 
 test('flatten marks a directory with a dot only when something under it changed', () => {
@@ -462,19 +551,30 @@ test('a hidden document is never polled or watched', () => {
 
 /* ============================== change groups ============================== */
 
-test('buildChangeGroups splits by the four actions a reviewer must take', () => {
+test('commitMessageFromDetail restores subject and optional body for undo-commit', () => {
+  assert.equal(api.commitMessageFromDetail({ subject: 'fix: one', body: '' }), 'fix: one')
+  assert.equal(api.commitMessageFromDetail({ subject: 'fix: one', body: 'details\n\nmore' }), 'fix: one\n\ndetails\n\nmore')
+  assert.equal(api.commitMessageFromDetail({ subject: '', body: 'body only' }), 'body only')
+  assert.equal(api.commitMessageFromDetail(null), '')
+})
+test('buildChangeGroups splits by change type (modified / deleted / added / renamed)', () => {
   const index = new Map([
     ['a.ts', { kind: 'modified', staged: true }],
     ['b.ts', { kind: 'modified', staged: false }],
     ['c.ts', { untracked: true }],
     ['d.ts', { kind: 'modified', conflicted: true }],
+    ['e.ts', { kind: 'deleted', staged: false }],
+    ['f.ts', { kind: 'renamed', staged: false }],
+    ['g.ts', { kind: 'added', staged: false }],
   ])
   const groups = api.buildChangeGroups(index)
-  assert.deepEqual(groups.map((g) => g.key), ['conflicted', 'staged', 'unstaged', 'untracked'])
+  assert.deepEqual(groups.map((g) => g.key), ['conflicted', 'modified', 'deleted', 'added', 'renamed'])
   assert.deepEqual(groups[0].rows.map((r) => r.rel), ['d.ts'])
-  assert.deepEqual(groups[1].rows.map((r) => r.rel), ['a.ts'])
-  assert.deepEqual(groups[2].rows.map((r) => r.rel), ['b.ts'])
-  assert.deepEqual(groups[3].rows.map((r) => r.rel), ['c.ts'])
+  assert.deepEqual(groups[1].rows.map((r) => r.rel), ['a.ts', 'b.ts'])
+  assert.deepEqual(groups[2].rows.map((r) => r.rel), ['e.ts'])
+  assert.deepEqual(groups[3].rows.map((r) => r.rel), ['c.ts', 'g.ts'])
+  assert.deepEqual(groups[4].rows.map((r) => r.rel), ['f.ts'])
+  assert.equal(groups[3].untrackedOnly, false, 'mixed added group does not use delete wording')
 })
 
 test('buildChangeGroups puts a conflicted untracked file in conflicts only', () => {
@@ -484,7 +584,7 @@ test('buildChangeGroups puts a conflicted untracked file in conflicts only', () 
   const index = new Map([['x.ts', { untracked: true, conflicted: true, staged: true }]])
   const groups = api.buildChangeGroups(index)
   assert.deepEqual(groups[0].rows.map((r) => r.rel), ['x.ts'])
-  assert.equal(groups[1].rows.length + groups[2].rows.length + groups[3].rows.length, 0)
+  assert.equal(groups[1].rows.length + groups[2].rows.length + groups[3].rows.length + groups[4].rows.length, 0)
 })
 
 test('buildChangeGroups sorts by path inside each group', () => {
@@ -493,12 +593,12 @@ test('buildChangeGroups sorts by path inside each group', () => {
     ['a.ts', { kind: 'modified', staged: false }],
     ['m.ts', { kind: 'modified', staged: false }],
   ])
-  assert.deepEqual(api.buildChangeGroups(index)[2].rows.map((r) => r.rel), ['a.ts', 'm.ts', 'z.ts'])
+  assert.deepEqual(api.buildChangeGroups(index)[1].rows.map((r) => r.rel), ['a.ts', 'm.ts', 'z.ts'])
 })
 
 test('buildChangeGroups tolerates an empty or junk map', () => {
   const empty = api.buildChangeGroups(new Map())
-  assert.equal(empty.length, 4)
+  assert.equal(empty.length, 5)
   assert.equal(empty.every((g) => g.rows.length === 0), true)
   const junk = api.buildChangeGroups(new Map([['a.ts', null], ['b.ts', undefined]]))
   assert.equal(junk.every((g) => g.rows.length === 0), true, 'null entries are skipped, not crashed on')

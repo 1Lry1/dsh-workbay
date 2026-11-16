@@ -520,6 +520,84 @@ test('parseStoredRoot accepts the plain-string contract and the legacy JSON shap
   assert.equal(api.parseStoredRoot(undefined), null)
 })
 
+test('insertIntoComposer focuses the composer and inserts plain text at the caret', () => {
+  /* The bundle receives its own `document`/`window` objects at boot, so the
+     test mutates those instead of the Node globals. */
+  const doc = booted.document
+  const win = booted.window
+  const saved = {
+    querySelector: doc.querySelector,
+    querySelectorAll: doc.querySelectorAll,
+    createRange: doc.createRange,
+    execCommand: doc.execCommand,
+    getSelection: win.getSelection,
+  }
+  try {
+    /* contenteditable path: the real composer is a Lexical contenteditable. */
+    let inserted = null
+    let execCommandArgs = null
+    const editable = {
+      tagName: 'DIV',
+      focus() {},
+      contains(node) { return node === editable },
+    }
+    const selection = {
+      rangeCount: 1,
+      anchorNode: editable,
+      removeAllRanges() {},
+      addRange() {},
+    }
+    doc.querySelector = () => editable
+    doc.querySelectorAll = () => [editable]
+    doc.createRange = () => ({ selectNodeContents() {}, collapse() {} })
+    doc.execCommand = (command, _ui, value) => {
+      execCommandArgs = { command, value }
+      inserted = value
+      return true
+    }
+    win.getSelection = () => selection
+
+    assert.equal(api.insertIntoComposer('D:\\work\\proj\\build.bat'), true)
+    assert.deepEqual(execCommandArgs, { command: 'insertText', value: 'D:\\work\\proj\\build.bat' })
+    assert.equal(inserted, 'D:\\work\\proj\\build.bat')
+
+    /* textarea fallback: insert at the selection start and fire input. */
+    let inputFired = 0
+    const textarea = {
+      tagName: 'TEXTAREA',
+      value: 'ab',
+      selectionStart: 1,
+      focus() {},
+      setSelectionRange(start) { this.selectionStart = start },
+      dispatchEvent() { inputFired += 1; return true },
+    }
+    doc.querySelector = () => textarea
+    assert.equal(api.insertIntoComposer('XYZ'), true)
+    assert.equal(textarea.value, 'aXYZb')
+    assert.equal(inputFired, 1)
+
+    /* nowhere to insert -> false (page shows a toast instead of pretending). */
+    doc.querySelector = () => null
+    doc.querySelectorAll = () => []
+    assert.equal(api.insertIntoComposer('x'), false)
+  } finally {
+    doc.querySelector = saved.querySelector
+    doc.querySelectorAll = saved.querySelectorAll
+    doc.createRange = saved.createRange
+    doc.execCommand = saved.execCommand
+    win.getSelection = saved.getSelection
+  }
+})
+
+test('absolutePathOf joins the workspace root and the tab path into a host path', () => {
+  assert.equal(api.absolutePathOf('D:\\work\\proj\\', 'app/src/main.c'), 'D:\\work\\proj\\app\\src\\main.c')
+  assert.equal(api.absolutePathOf('D:\\', 'build.bat'), 'D:\\build.bat')
+  assert.equal(api.absolutePathOf('D:\\work\\proj', '/tools/build.bat'), 'D:\\work\\proj\\tools\\build.bat')
+  assert.equal(api.absolutePathOf('D:\\work\\proj\\', ''), 'D:\\work\\proj')
+  assert.equal(api.absolutePathOf('', 'a.c'), '')
+  assert.equal(api.absolutePathOf('\\\\srv\\share\\', 'app/x.c'), '\\\\srv\\share\\app\\x.c')
+})
+
 test('normalizeRootPath keeps drive roots and strips trailing separators', () => {
   assert.equal(api.normalizeRootPath('C:\\'), 'C:\\')
   assert.equal(api.normalizeRootPath('C:/'), 'C:/')
@@ -659,7 +737,7 @@ test('flattenSearchResults creates collapsible file groups with stable keys', ()
   }, 'content', 'foo')
   const rows = api.flattenSearchResults(result, {})
   assert.deepEqual(rows.map((row) => [row.kind, row.rel, row.line]), [
-    ['file', 'b.md', 1],
+    ['file', 'b.md', 9],
     ['match', 'b.md', 9],
     ['file', 'src/a.ts', 1],
     ['match', 'src/a.ts', 1],

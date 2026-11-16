@@ -93,6 +93,8 @@ const MAX_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000
 const MAX_OUTPUT_EVENT = 64 * 1024
 /** Coalesce PTY output for this many ms before sending one SSE frame. */
 const OUTPUT_FLUSH_MS = 16
+/** While flow-paused, in-flight frames are buffered; this caps that buffer. */
+const MAX_PENDING_OUTPUT = 1024 * 1024
 /** A command line larger than this is dropped with an error, not buffered forever. */
 const MAX_LINE_CHARS = 64 * 1024
 /** A single helper frame larger than this is treated as corruption. */
@@ -485,9 +487,17 @@ function createService(settings) {
   function emitOutput(session, text) {
     if (typeof text !== 'string' || text === '') return
     if (session.clients.size === 0) return
-    /* Flow control: the client's xterm backlog is over its high water mark. */
-    if (session.flowPaused === true) return
+    /* Flow control pauses the PTY, but frames already in flight must not be
+       dropped: keep them and flush when the client resumes. */
     session.pendingOutput += text
+    if (session.pendingOutput.length > MAX_PENDING_OUTPUT) {
+      session.pendingOutput = session.pendingOutput.slice(-MAX_PENDING_OUTPUT)
+      if (session.outputTrimWarned !== true) {
+        session.outputTrimWarned = true
+        writeEvent(session, { type: 'error', message: 'terminal output backlog trimmed' })
+      }
+    }
+    if (session.flowPaused === true) return
     if (session.pendingOutput.length >= MAX_OUTPUT_EVENT) {
       flushOutput(session)
       return
@@ -502,10 +512,11 @@ function createService(settings) {
       clearTimeout(session.outputTimer)
       session.outputTimer = null
     }
+    /* Paused: keep the buffered output for the resume flush. */
+    if (session.flowPaused === true) return
     const text = session.pendingOutput
     session.pendingOutput = ''
     if (text === '' || session.clients.size === 0) return
-    if (session.flowPaused === true) return
     for (let at = 0; at < text.length; at += MAX_OUTPUT_EVENT) {
       let end = Math.min(at + MAX_OUTPUT_EVENT, text.length)
       /* Never split a surrogate pair across two events. */
@@ -1156,8 +1167,7 @@ function createService(settings) {
     session.flowPaused = paused
     if (paused) {
       if (session.outputTimer !== null) { clearTimeout(session.outputTimer); session.outputTimer = null }
-      /* The queued fragment is stale once we stop forwarding. */
-      session.pendingOutput = ''
+      /* Keep session.pendingOutput: it is real output, flushed by the resume. */
       if (session.helper !== null && session.helper !== undefined && session.helper.stdout !== null && session.helper.stdout !== undefined) {
         try { session.helper.stdout.pause() } catch { /* helper gone */ }
       }

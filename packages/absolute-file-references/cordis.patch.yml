@@ -1,0 +1,9 @@
+# Standalone installation (development only).
+#
+# The shipped form is dsh-workbay-suite, which vendors this package. Install
+# THIS bundle on its own only when debugging the @ picker without the workbench;
+# never list it in a profile that also lists dsh-workbay-suite (the picker would
+# be wrapped twice, and the merged bundle already carries this code).
+- insert:
+    - id: absolute-file-references
+      name: 'dsh-absolute-file-references'

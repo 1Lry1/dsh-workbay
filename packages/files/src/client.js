@@ -879,6 +879,20 @@ function writeSidebarWidth(width) {
       return path
     }
 
+    /**
+     * Absolute host path of a workspace-relative entry.
+     *
+     * The page keeps tabs as workspace-relative paths ("app/src/main.c") and the
+     * root as the absolute Windows/UNC directory, so the two are joined with a
+     * backslash regardless of which separator the relative path uses.
+     */
+    function absolutePathOf(rootPath, rel) {
+      if (typeof rootPath !== 'string' || rootPath.trim() === '') return ''
+      const base = rootPath.replace(/[\\/]+$/, '')
+      if (typeof rel !== 'string' || rel.trim() === '') return base
+      return base + '\\' + rel.replace(/^[\\/]+/, '').replace(/[\\/]+/g, '\\')
+    }
+
     function workspaceNameOf(root) {
       const path = normalizeRootPath(root)
       if (path === '') return ''
@@ -1324,7 +1338,11 @@ function writeSidebarWidth(width) {
           score: numberOr(file.score, 0),
           indices: Array.isArray(file.indices) ? file.indices.slice() : [],
           recent: file.recent === true,
-          line: 1,
+          /* A file row represents its first hit: clicking the file should land
+             on that hit, not at line 1. Match rows still carry their own line. */
+          line: matches.length > 0 && Number.isFinite(matches[0].line) && matches[0].line > 0
+            ? Math.floor(matches[0].line)
+            : 1,
         })
         if (isCollapsed) continue
         for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
@@ -2722,6 +2740,57 @@ function writeSidebarWidth(width) {
      */
     /* ============================== page ============================== */
 
+    /**
+     * Insert plain text into the conversation composer.
+     *
+     * Cloned from the source-control page (already proven there): focusing the
+     * contenteditable and running insertText makes the browser treat it as real
+     * typing, so the controlled editor, @ autocomplete and undo stack all agree.
+     */
+    function insertIntoComposer(text) {
+      if (typeof document === 'undefined' || document === null) return false
+      const candidates = [
+        '[data-testid="composer"] [contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        'textarea[placeholder]',
+      ]
+      let node = null
+      for (const selector of candidates) {
+        const found = document.querySelector(selector)
+        if (found !== null && found !== undefined) { node = found; break }
+      }
+      if (node === null) {
+        const all = document.querySelectorAll('[contenteditable="true"]')
+        if (all.length > 0) node = all[all.length - 1]
+      }
+      if (node === null) return false
+      try {
+        node.focus()
+        if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') {
+          const start = typeof node.selectionStart === 'number' ? node.selectionStart : node.value.length
+          const before = node.value.slice(0, start)
+          const after = node.value.slice(start)
+          node.value = before + text + after
+          node.setSelectionRange(before.length + text.length, before.length + text.length)
+          node.dispatchEvent(new Event('input', { bubbles: true }))
+          return true
+        }
+        const selection = window.getSelection()
+        if (selection === null) return false
+        if (selection.rangeCount === 0 || node.contains(selection.anchorNode) === false) {
+          const range = document.createRange()
+          range.selectNodeContents(node)
+          range.collapse(false)
+          selection.removeAllRanges()
+          selection.addRange(range)
+        }
+        return document.execCommand('insertText', false, text) === true
+      } catch (error) {
+        void error
+        return false
+      }
+    }
+
     function Page(props) {
       const { t } = props
       const rootRef = useRef(null)
@@ -2808,6 +2877,7 @@ function writeSidebarWidth(width) {
         if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
         toastTimerRef.current = setTimeout(() => setToast(null), 3500)
       }, [])
+
 
       useEffect(() => () => {
         if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current)
@@ -3453,7 +3523,7 @@ function writeSidebarWidth(width) {
 
       const openSearchRow = useCallback((row) => {
         if (row === null || row === undefined || typeof row.rel !== 'string' || row.rel === '') return
-        const line = row.kind === 'match' && Number.isFinite(row.line) && row.line > 0 ? row.line : 1
+        const line = Number.isFinite(row.line) && row.line > 0 ? Math.floor(row.line) : 1
         openEntry(
           { rel: row.rel, name: row.name, size: row.size, mtimeMs: row.mtimeMs },
           { line, fromSearch: true },
@@ -3864,8 +3934,15 @@ function mountSourcePane(container, api, ctx, t) {
         const found = tabsRef.current.find((entry) => entry.rel === target)
         return found !== undefined && found.dirty === true
       }
-      /* Replay whatever the host asked for before we were ready. */
-      if (runtime.pendingOpen !== null) {
+      /* Replay whatever the host asked for before we were ready. A jump must
+         win over openFile: it carries the search-hit line. Leaking pendingJump
+         was why the first content-search click opened the file at line 1. */
+      if (runtime.pendingJump !== null) {
+        const buffered = runtime.pendingJump
+        runtime.pendingJump = null
+        runtime.pendingOpen = null
+        runtime.jump(buffered.rel, buffered.line)
+      } else if (runtime.pendingOpen !== null) {
         const buffered = runtime.pendingOpen
         runtime.pendingOpen = null
         runtime.openFile(buffered)
@@ -3874,6 +3951,8 @@ function mountSourcePane(container, api, ctx, t) {
         runtime.openFile = null
         runtime.reload = null
         runtime.hasDirty = null
+        runtime.jump = null
+        runtime.pendingJump = null
       }
     }, [])
 
@@ -4127,7 +4206,7 @@ function mountSourcePane(container, api, ctx, t) {
 .wbf-searchContentList{display:flex;flex-direction:column;min-height:0}
 .wbf-searchIcon{flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .wbf-searchInput{flex:1;min-width:0;height:24px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
-.wbf-searchInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-searchInput:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .wbf-treeToolbar{display:flex;align-items:center;gap:4px;padding:0 8px 4px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .wbf-treeTitle{flex:1;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .wbf-treeToolbarActions{display:flex;gap:1px;flex:none}
@@ -4169,7 +4248,7 @@ function mountSourcePane(container, api, ctx, t) {
 .wbf-srGlobHead{display:flex;align-items:center;gap:4px;padding:2px 0;border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;text-align:left;cursor:pointer}
 .wbf-srGlobHead:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}
 .wbf-srGlobInput{height:24px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:10px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
-.wbf-srGlobInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-srGlobInput:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .wbf-srGlobChips{display:flex;flex-wrap:wrap;gap:3px;max-height:54px;overflow:auto}
 .wbf-srGlobChip{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.06));color:var(--dsw-alias-label-secondary,#b6bac1);font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:9px;line-height:15px}
 .wbf-srGlobInvalid{color:var(--dsw-alias-state-error-primary,#ff6b6b);font-size:10px;line-height:1.4;word-break:break-word}
@@ -4219,16 +4298,16 @@ function mountSourcePane(container, api, ctx, t) {
 .wbf-conflictText{flex:1;min-width:120px}
 .wbf-conflictActions{display:flex;gap:4px;flex:none}
 .wbf-viewer{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto}
-.wbf-pre{margin:0;padding:10px 12px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;tab-size:2}
+.wbf-pre{margin:0;padding:12px 16px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:13px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;tab-size:2}
 .wbf-editor{display:flex;flex-direction:column;flex:1;min-height:0}
 .wbf-editorHost{flex:1;min-height:0;overflow:hidden}
 .wbf-editorFallback.is-hidden{display:none}
-.wbf-md{padding:12px 16px;line-height:1.65;overflow:auto;word-break:break-word}
+.wbf-md{padding:14px 18px;font-size:13px;line-height:1.75;overflow:auto;word-break:break-word}
 .wbf-md h1,.wbf-md h2,.wbf-md h3,.wbf-md h4,.wbf-md h5,.wbf-md h6{margin:1em 0 .45em;line-height:1.3}
 .wbf-md h1{font-size:1.5em}.wbf-md h2{font-size:1.3em}.wbf-md h3{font-size:1.15em}.wbf-md h4,.wbf-md h5,.wbf-md h6{font-size:1em}
-.wbf-md p{margin:.55em 0}
-.wbf-md ul,.wbf-md ol{margin:.55em 0;padding-left:1.6em}
-.wbf-md li{margin:.18em 0}
+.wbf-md p{margin:.7em 0}
+.wbf-md ul,.wbf-md ol{margin:.7em 0;padding-left:1.7em}
+.wbf-md li{margin:.28em 0}
 .wbf-md code{padding:1px 4px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.07));font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:.92em}
 .wbf-md pre{margin:.7em 0;padding:9px 11px;border-radius:6px;background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.04));overflow:auto}
 .wbf-md pre code{padding:0;background:transparent}
@@ -4268,7 +4347,7 @@ function mountSourcePane(container, api, ctx, t) {
 .wbf-libDrive:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
 .wbf-libInputRow{display:flex;align-items:center;gap:5px}
 .wbf-libInput{flex:1;min-width:0;height:27px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:12px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
-.wbf-libInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.wbf-libInput:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .wbf-libPathBar{display:flex;align-items:center;gap:4px;padding:2px 0}
 .wbf-libPath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .wbf-libList{display:flex;flex-direction:column;gap:1px;max-height:260px;overflow:auto;padding:3px;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));border-radius:7px}
@@ -4424,6 +4503,8 @@ function mountSourcePane(container, api, ctx, t) {
       sanitizeUrl,
       markdownToHtml,
       normalizeRootPath,
+      absolutePathOf,
+      insertIntoComposer,
       workspaceNameOf,
       parseStoredRoot,
       browseEntryPath,

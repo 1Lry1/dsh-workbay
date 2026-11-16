@@ -89,7 +89,7 @@ export function createTerminal(options) {
     rows: clampInteger(opts.rows, DEFAULT_ROWS, MIN_ROWS, MAX_ROWS),
     theme: pickTheme(theme),
     fontFamily: typeof theme.fontFamily === 'string' && theme.fontFamily !== '' ? theme.fontFamily : undefined,
-    fontSize: typeof theme.fontSize === 'number' && Number.isFinite(theme.fontSize) ? theme.fontSize : 12,
+    fontSize: typeof theme.fontSize === 'number' && Number.isFinite(theme.fontSize) ? theme.fontSize : 13,
     cursorBlink: true,
     scrollback: DEFAULT_SCROLLBACK,
     allowProposedApi: false,
@@ -121,13 +121,21 @@ export function createTerminal(options) {
   let disposed = false
 
   return {
-    write(text) {
+    /* The second argument is the page's flow-control signal: xterm calls it
+       after parsing the chunk. It MUST be forwarded — the terminal client only
+       sends flow.resume when this callback fires, so dropping it paused the PTY
+       forever after the first 100k-character burst (compile output froze). */
+    write(text, callback) {
       if (disposed) return
-      terminal.write(typeof text === 'string' ? text : String(text === undefined || text === null ? '' : text))
+      const data = typeof text === 'string' ? text : String(text === undefined || text === null ? '' : text)
+      if (typeof callback === 'function') terminal.write(data, callback)
+      else terminal.write(data)
     },
-    writeln(text) {
+    writeln(text, callback) {
       if (disposed) return
-      terminal.writeln(typeof text === 'string' ? text : String(text === undefined || text === null ? '' : text))
+      const data = typeof text === 'string' ? text : String(text === undefined || text === null ? '' : text)
+      if (typeof callback === 'function') terminal.writeln(data, callback)
+      else terminal.writeln(data)
     },
     reset() {
       if (!disposed) terminal.reset()
@@ -165,6 +173,18 @@ export function createTerminal(options) {
     bufferText() {
       if (disposed) return ''
       return bufferTextOf(terminal)
+    },
+    findNext(term, options) {
+      if (disposed || searchAddon === null) return false
+      try { return searchAddon.findNext(typeof term === 'string' ? term : '', options || {}) } catch (error) { return false }
+    },
+    findPrevious(term, options) {
+      if (disposed || searchAddon === null) return false
+      try { return searchAddon.findPrevious(typeof term === 'string' ? term : '', options || {}) } catch (error) { return false }
+    },
+    clearSearch() {
+      if (disposed || searchAddon === null) return
+      try { searchAddon.clearSearch() } catch (error) { void error }
     },
     getSelection() {
       if (disposed) return ''

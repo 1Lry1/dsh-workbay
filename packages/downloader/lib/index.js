@@ -112,6 +112,16 @@ function refreshLocation(state) {
 
 /* ---------------------------------------------------------------- 日志文件 */
 
+/** dcf 文件字节数；读不到就当 0，UI 显示 —。 */
+function fileSizeOf(target) {
+  try {
+    if (typeof target !== 'string' || target === '') return 0
+    return fs.statSync(target).size
+  } catch {
+    return 0
+  }
+}
+
 function logFileSize() {
   try { return fs.statSync(LOG_FILE).size } catch { return 0 }
 }
@@ -405,6 +415,23 @@ class LineHelper {
     }
     this.alive = true
     this.startedAt = Date.now()
+    /* A child that died while stdin is still considered writable makes
+       stdin.write emit EPIPE as an ASYNCHRONOUS 'error'. There was no listener,
+       so that exception killed the whole DSH host (crash 2026-11-14 15:02:06 via
+       resetStaleFlashConnection -> LineHelper.line('quit')). Never let a helper
+       pipe error escape: mark the helper dead instead. */
+    const guardStream = (stream, label) => {
+      if (stream === null || stream === undefined || typeof stream.on !== 'function') return
+      stream.on('error', (e) => {
+        this.alive = false
+        try {
+          this.onEvent({ ev: 'stderr', where: this.name, line: this.name + ' ' + label + ' error: ' + String(e && e.message ? e.message : e) })
+        } catch (error) { void error }
+      })
+    }
+    guardStream(this.proc.stdin, 'stdin')
+    guardStream(this.proc.stdout, 'stdout')
+    guardStream(this.proc.stderr, 'stderr')
     this.rl = createInterface({ input: this.proc.stdout })
     this.rl.on('line', line => {
       let obj
@@ -443,6 +470,10 @@ class LineHelper {
       this.alive = false
       return { ok: false, error: 'helper exited (code ' + this.proc.exitCode + ')' }
     }
+    if (!this.proc || !this.proc.stdin || this.proc.stdin.destroyed || this.proc.stdin.writableEnded) {
+      this.alive = false
+      return { ok: false, error: 'helper stdin closed' }
+    }
     // 刚启动的 .NET 进程还在初始化，立即写 stdin 会丢；
     // 实测需要至少 ~250ms 才能稳定接收。
     if (this.startedAt && Date.now() - this.startedAt < 250) {
@@ -471,6 +502,10 @@ class LineHelper {
   /** 纯文本行命令（给 IPC helper 用，它的协议是文本不是 JSON）。 */
   line(text) {
     if (!this.alive) return false
+    if (!this.proc || !this.proc.stdin || this.proc.stdin.destroyed || this.proc.stdin.writableEnded) {
+      this.alive = false
+      return false
+    }
     try { this.proc.stdin.write(text + '\n'); return true } catch { return false }
   }
 
@@ -542,14 +577,19 @@ const TOOL_CONFIG_FILE = path.join(LOG_DIR, 'tool-path.json')
    那是最没必要的一次重复劳动。 */
 function readToolConfig() {
   try {
-    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '', scanRoot: '' }
+    if (!fs.existsSync(TOOL_CONFIG_FILE)) return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false }
     const raw = JSON.parse(fs.readFileSync(TOOL_CONFIG_FILE, 'utf8'))
     return {
       exe: typeof raw.exe === 'string' ? raw.exe : '',
       scanRoot: typeof raw.scanRoot === 'string' ? raw.scanRoot : '',
+      /* 工作台为了让「只有一次烧录」，会临时把 Downloader 的 AutoStart 关掉；
+         这个标记用于退出/崩溃恢复时把它改回来。 */
+      autoStartPaused: raw.autoStartPaused === true,
+      /* AI loop convenience: keep sys_sleep_time=0 in the generated watch.setting. */
+      noSleep: raw.noSleep === true,
     }
   } catch {
-    return { exe: '', scanRoot: '' }
+    return { exe: '', scanRoot: '', autoStartPaused: false, noSleep: false }
   }
 }
 
@@ -580,6 +620,79 @@ function resolveDlDir() {
   }
   return DEFAULT_DL_DIR
 }
+/** The Downloader.exe the IPC bridge should launch (selected path wins). */
+function downloaderExePath() {
+  const configured = readToolConfig().exe
+  return configured !== '' ? configured : path.join(DEFAULT_DL_DIR, 'Downloader.exe')
+}
+/** Replace the AutoStart value; null when the file has no such key or no change. */
+export function withAutoStartValue(configText, value) {
+  if (typeof configText !== 'string' || configText === '') return null
+  const re = /<add key="AutoStart" value="(True|False)"\s*\/>/
+  if (re.test(configText) === false) return null
+  const next = configText.replace(re, '<add key="AutoStart" value="' + (value === true ? 'True' : 'False') + '" />')
+  return next === configText ? null : next
+}
+
+/** Read/modify/write Downloader.config's AutoStart, with a backup. */
+function setToolAutoStart(value) {
+  try {
+    const cfgPath = path.join(resolveDlDir(), 'Downloader.config')
+    if (!fs.existsSync(cfgPath)) return { ok: false, error: 'config not found', path: cfgPath }
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+    const next = withAutoStartValue(cfg, value)
+    if (next === null) return { ok: true, changed: false, path: cfgPath }
+    const bak = cfgPath + '.bak-' + Date.now()
+    fs.copyFileSync(cfgPath, bak)
+    fs.writeFileSync(cfgPath, next, 'utf8')
+    pruneBackups(cfgPath, 3)
+    return { ok: true, changed: true, path: cfgPath }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e), path: '' }
+  }
+}
+
+/**
+ * Workbench takes ownership: persist the marker FIRST, then flip AutoStart.
+ *
+ * Only when there is actually something to flip: with no Downloader.config (a
+ * machine without the vendor tool, and every test) we must not leave a marker —
+ * otherwise the "takeover" notice is logged and, more importantly, the next start
+ * would try to "restore" a setting it never changed.
+ */
+function takeOverAutoStart() {
+  let cfgPath
+  try {
+    cfgPath = path.join(resolveDlDir(), 'Downloader.config')
+    if (!fs.existsSync(cfgPath)) return { ok: false, changed: false, error: 'config not found', path: cfgPath }
+    const current = toolAutoStartOf(fs.readFileSync(cfgPath, 'utf8'))
+    if (current.autoStart !== true) return { ok: true, changed: false, path: cfgPath }
+  } catch (e) {
+    return { ok: false, changed: false, error: String(e && e.message ? e.message : e), path: '' }
+  }
+  if (readToolConfig().autoStartPaused !== true) writeToolConfig({ autoStartPaused: true })
+  return setToolAutoStart(false)
+}
+
+/** Give ownership back (watch stopped / workbench exiting). */
+function restoreAutoStart() {
+  const cfg = readToolConfig()
+  if (cfg.autoStartPaused !== true) return { ok: true, changed: false }
+  const result = setToolAutoStart(true)
+  /* 用户如果在我们接管期间自己改过，也把标记清掉，避免无谓的重写循环。 */
+  writeToolConfig({ autoStartPaused: false })
+  return result
+}
+
+/** A previous DSH crashed while owning it: put AutoStart back before anything else. */
+function recoverAutoStart() {
+  const cfg = readToolConfig()
+  if (cfg.autoStartPaused !== true) return { ok: true, changed: false }
+  const result = setToolAutoStart(true)
+  writeToolConfig({ autoStartPaused: false })
+  return result
+}
+
 export function writeDownFile(dcfPath, overrideDir) {
   const dlDir = typeof overrideDir === 'string' && overrideDir !== '' ? overrideDir : resolveDlDir()
   const cfgPath = path.join(dlDir, 'Downloader.config')
@@ -643,11 +756,177 @@ export function pruneBackups(cfgPath, keep) {
   }
 }
 
+/**
+ * What a flash attempt is allowed to do, as a pure decision table.
+ *
+ * manual: a person clicked 开始烧录 — wait for the device, fail loudly if absent.
+ * auto:   a build finished — Downloader queues StartDownload during its COM scan,
+ *         so queue it early and retry long. Giving up here was the bug the real
+ *         logs showed ("设备未在线" then "✓ 烧录完成" 9 s later).
+ */
+export function flashPlanOf(state, opts) {
+  const auto = opts !== undefined && opts !== null && opts.auto === true
+  const online = state !== undefined && state !== null && state.flash !== undefined && state.flash !== null
+    ? state.flash.online === true
+    : false
+  return auto
+    ? { auto: true, queueWhileOffline: true, abortWhenScanning: false, retryLimit: 1, retryDelayMs: 20000, offlineWaitMs: 0, online }
+    : { auto: false, queueWhileOffline: false, abortWhenScanning: true, retryLimit: 1, retryDelayMs: 10000, offlineWaitMs: 20000, online }
+}
+
+/** The main firmware file name the vendor build always produces. */
+export const PRIMARY_FIRMWARE_NAME = 'app.dcf'
+
+export function isPrimaryFirmwareDcf(filePath) {
+  if (typeof filePath !== 'string' || filePath.trim() === '') return false
+  return path.basename(filePath).toLowerCase() === PRIMARY_FIRMWARE_NAME
+}
+
+/**
+ * Keep only app.dcf when the list has any; otherwise keep everything (a project
+ * that really names its firmware differently still works).
+ */
+export function pickPrimaryFirmwareDcf(filePaths) {
+  const list = (Array.isArray(filePaths) ? filePaths : []).filter((entry) => typeof entry === 'string' && entry !== '')
+  const primary = list.filter(isPrimaryFirmwareDcf)
+  return primary.length > 0 ? primary : list
+}
+
+/** Parse the two keys of Downloader.config we care about (pure; unit-tested). */
+export function toolAutoStartOf(configText) {
+  if (typeof configText !== 'string' || configText === '') return { autoStart: false, downFile: '' }
+  const auto = /<add key="AutoStart" value="(True|False)"\s*\/>/.exec(configText)
+  const down = /<add key="DownFile" value="([^"]*)"\s*\/>/.exec(configText)
+  return {
+    autoStart: auto !== null && auto[1] === 'True',
+    downFile: down === null ? '' : down[1],
+  }
+}
+
+/** Same file? Windows compares case-insensitively; everything is normalised first. */
+export function sameFlashPath(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false
+  if (left.trim() === '' || right.trim() === '') return false
+  const a = path.resolve(left)
+  const b = path.resolve(right)
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+/** Should the tool's own AutoStart do the burn instead of us? (pure, testable) */
+export function shouldDeferToAutoStart(autoInfo, watchPath) {
+  if (autoInfo === null || autoInfo === undefined) return false
+  if (autoInfo.autoStart !== true) return false
+  return sameFlashPath(autoInfo.downFile, watchPath)
+}
+
+/** Read Downloader.config (where the selected exe lives) and parse it. */
+function readToolAutoStart() {
+  try {
+    const cfg = path.join(resolveDlDir(), 'Downloader.config')
+    if (!fs.existsSync(cfg)) return { autoStart: false, downFile: '', known: false }
+    return Object.assign(toolAutoStartOf(fs.readFileSync(cfg, 'utf8')), { known: true })
+  } catch (e) {
+    return { autoStart: false, downFile: '', known: false, error: String(e && e.message ? e.message : e) }
+  }
+}
+
+/**
+ * Classify the Downloader.exe processes Windows reports against the PID our
+ * bridge launched. Pure so the decision is unit-tested without spawning anything.
+ */
+/**
+ * Clear the retry interval and the 120 s overall watchdog of one flash.
+ * Pure bookkeeping around the timer handles, so a superseded flash cannot
+ * touch a newer one; returns whether anything was actually cleared.
+ */
+export function clearFlashTimers(flash) {
+  if (flash === null || flash === undefined) return false
+  let cleared = false
+  if (flash.retryTimer !== null && flash.retryTimer !== undefined) {
+    clearInterval(flash.retryTimer)
+    flash.retryTimer = null
+    cleared = true
+  }
+  if (flash.overallTimer !== null && flash.overallTimer !== undefined) {
+    clearTimeout(flash.overallTimer)
+    flash.overallTimer = null
+    cleared = true
+  }
+  return cleared
+}
+
+/**
+ * JSON for SSE. A Node timer handle used to throw out of broadcast and kill the
+ * whole DSH host; serialize defensively: cycles are dropped, bigints/functions
+ * are made printable instead of crashing.
+ */
+/**
+ * While Downloader.exe is running it may scan/burn at any click; the workbench
+ * must yield COM instead of holding it (observed as an endless 「扫描中」).
+ */
+export function shouldReleaseSerialForDownloader(serialOpen, burning, pids) {
+  return serialOpen === true && burning !== true && Array.isArray(pids) && pids.length > 0
+}
+
+export function wireJson(value) {
+  const seen = new WeakSet()
+  try {
+    return JSON.stringify(value, (key, item) => {
+      void key
+      if (typeof item === 'bigint') return String(item)
+      if (typeof item === 'function' || typeof item === 'symbol') return undefined
+      if (item !== null && typeof item === 'object') {
+        /* Node Timeout/Immediate handles: never wire them, and never walk their
+           circular _idlePrev/_idleNext links. */
+        if (typeof item.ref === 'function' && typeof item.unref === 'function') return undefined
+        if (seen.has(item)) return undefined
+        seen.add(item)
+      }
+      return item
+    })
+  } catch (error) {
+    return JSON.stringify({ ev: 'error', message: 'serialize failed: ' + String(error && error.message ? error.message : error) })
+  }
+}
+
+export function classifyDownloaderPids(pids, ourPid) {
+  const list = Array.from(new Set((Array.isArray(pids) ? pids : []).filter(pid => Number.isInteger(pid) && pid > 0)))
+  const mine = Number.isInteger(ourPid) && ourPid > 0 && list.includes(ourPid) ? ourPid : null
+  return {
+    total: list.length,
+    mine,
+    foreign: list.filter(pid => pid !== mine),
+  }
+}
+
 export function shouldLaunchFlash(flash, helperAlive) {
   if (flash.connected) return false
   if (flash.launching) return false
   if (flash.pid && helperAlive) return false
   return true
+}
+
+/**
+ * Acquire the connect lock synchronously, before any await in /flash/start.
+ * Returns false for the second click/request while the first is still starting.
+ */
+export function beginFlashLaunch(flash, helperAlive) {
+  if (!shouldLaunchFlash(flash, helperAlive)) return false
+  flash.launching = true
+  flash.launchAt = Date.now()
+  return true
+}
+/**
+ * `connected` is the IPC bridge's memory, not proof that the Downloader window
+ * still exists. The tool can be closed/killed while the bridge stays alive; the
+ * old code then sent StartDownload into nothing and the page kept "烧录中".
+ */
+export function isStaleFlashConnection(flash, downloaderPids) {
+  if (flash === null || flash === undefined || flash.connected !== true) return false
+  const pids = Array.isArray(downloaderPids) ? downloaderPids : []
+  if (pids.length === 0) return true
+  if (Number.isInteger(flash.pid) && flash.pid > 0 && pids.includes(flash.pid) === false) return true
+  return false
 }
 
 /** 同类串口错误 3 秒内只保留一行；返回 null 表示这条被合并。 */
@@ -664,22 +943,114 @@ export function serialErrorLine(state, msg, now = Date.now()) {
   return `串口错误: ${text}${merged}`
 }
 
-export const __test = { shouldLaunchFlash, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups }
+/* Downloader.config keys that the vendor GUI exposes as persistent burn
+   options. The other menu rows in the vendor tool are actions, not config. */
+const BURN_OPTION_KEYS = {
+  preTest: 'StartPreTestMode',
+  erase: 'StartEraseMode',
+  down: 'StartDownMode',
+  extend: 'StartExtendMode',
+}
+
+export function withConfigValue(text, key, value) {
+  const source = typeof text === 'string' ? text : ''
+  const safeKey = String(key)
+  const safeValue = String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+  const re = new RegExp('(<add\\s+key=["\']' + safeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '["\']\\s+value=["\'])([^"\']*)(["\'])', 'i')
+  const match = re.exec(source)
+  if (match !== null) {
+    const next = source.slice(0, match.index + match[1].length) + safeValue + source.slice(match.index + match[1].length + match[2].length)
+    return { text: next, changed: match[2] !== safeValue }
+  }
+  if (/<\/appSettings>/i.test(source)) {
+    return {
+      text: source.replace(/<\/appSettings>/i, '        <add key="' + safeKey + '" value="' + safeValue + '" />\n    </appSettings>'),
+      changed: true,
+    }
+  }
+  return { text: source, changed: false }
+}
+
+export function parseBurnOptions(text) {
+  const source = typeof text === 'string' ? text : ''
+  const read = (key) => {
+    const re = new RegExp('<add\\s+key=["\']' + key + '["\']\\s+value=["\']([^"\']*)["\']', 'i')
+    const match = re.exec(source)
+    return match === null ? null : match[1]
+  }
+  return {
+    preTest: read('StartPreTestMode') === 'True',
+    erase: read('StartEraseMode') === 'True',
+    down: read('StartDownMode') === 'True',
+    extend: read('StartExtendMode') === 'True',
+    speed: read('SpeedMode') || 'HighSpeed',
+  }
+}
+/* watch.setting is an XML-ish generated settings file; only the one key matters
+   here. Keep the rest of the file byte-for-byte so the vendor tool can still
+   parse formatting/BOM exactly as before. */
+const SLEEP_SETTING_RE = /(<add\s+key=["']sys_sleep_time["']\s+value=["'])([^"']*)(["'])/i
+
+export function sleepSettingOf(text) {
+  const source = typeof text === 'string' ? text : ''
+  const match = SLEEP_SETTING_RE.exec(source)
+  if (match === null) return { found: false, value: null, noSleep: false, text: source, changed: false }
+  const value = match[2]
+  return { found: true, value, noSleep: Number(value) === 0, text: source, changed: false }
+}
+
+export function withNoSleepSetting(text) {
+  const source = typeof text === 'string' ? text : ''
+  const match = SLEEP_SETTING_RE.exec(source)
+  if (match !== null) {
+    if (match[2] === '0') return { found: true, value: '0', noSleep: true, text: source, changed: false }
+    const next = source.slice(0, match.index + match[1].length) + '0' + source.slice(match.index + match[1].length + match[2].length)
+    return { found: true, value: '0', noSleep: true, text: next, changed: true }
+  }
+  /* The key is normally present; add it if an older generated file omitted it. */
+  if (/<\/appSettings>/i.test(source)) {
+    const next = source.replace(/<\/appSettings>/i, '        <add key="sys_sleep_time" value="0" />\n    </appSettings>')
+    return { found: false, value: '0', noSleep: true, text: next, changed: true }
+  }
+  return { found: false, value: null, noSleep: false, text: source, changed: false }
+}
+export const __test = { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions }
 
 export function apply(ctx) {
+  /* AutoStart 是「第二遍烧录」的来源：插件活着的时候由它统一触发。
+     先恢复上一次异常退出可能留下的 takeover，再重新接管。 */
+  try { recoverAutoStart() } catch { /* non-fatal */ }
+  try { takeOverAutoStart() } catch { /* non-fatal */ }
+
+  /* Timer handles are private: state.flash is broadcast over SSE, and a Node
+     Timeout contains circular _idlePrev/_idleNext links. */
+  const flashTimers = { retryTimer: null, overallTimer: null }
+
   const state = {
     root: null,                 // 当前工作台根目录
     project: null,              // 当前选中的工程
     serial: { open: false, port: null, baud: 1500000, opening: false, lastError: null, dupCount: 0, suppressed: 0 },
-    flash: { status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null, busy: false, burnSeq: 0, doneSeq: 0, launching: false, launchAt: 0 },
+    flash: {
+      status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null,
+      connected: false, busy: false, burning: false, burnSeq: 0, doneSeq: 0, launching: false, launchAt: 0, staleChecks: 0,
+      /* Flash generation + its timers; a newer flash invalidates the older one. */
+      token: 0,
+    },
     logs: [],                   // 环形日志（最近 N 条）
     logBatch: [],               // SSE 合并推送：每 60ms 一批，避免逐行 setState
     logBatchTimer: null,
     logFile: { size: 0, lines: 0, exists: false, truncated: false, rotated: false, error: null },
+    dcfSize: 0,
     // 自动烧录：监听编译产物 dcf 的变化
     /* 自动烧录默认开启：用户的工作流是「改代码 -> 编译 -> 自动烧」，
        还要求每次手动点一下按钮才是反直觉的。 */
-    watch: { on: true, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0 },
+    watch: {
+      on: true, path: null, lastMtime: 0, lastSize: 0, timer: null, armedAt: 0,
+      /* Polls for the first app.dcf when boot had no build output yet. */
+      bootTimer: null,
+      /* Auto-flash serialization + real-process bookkeeping. */
+      triggering: false, lastSkipLogAt: 0, lastProcCheckAt: 0, lastForeignLogAt: 0, blocked: null,
+    },
     /* 由「源码管理」页告知的工作目录：扫描 dcf 时只认它，为空时才退回工具自己的目录。
        启动时从配置恢复，DSH 重启后不用再选一次。 */
     scanRoot: readToolConfig().scanRoot,
@@ -757,7 +1128,7 @@ export function apply(ctx) {
   }
 
   const broadcast = (obj) => {
-    const line = `data: ${JSON.stringify(obj)}\n\n`
+    const line = `data: ${wireJson(obj)}\n\n`
     for (const res of sseClients) {
       try { res.write(line) } catch { /* 断开的会被下面的 close 清掉 */ }
     }
@@ -793,6 +1164,12 @@ export function apply(ctx) {
       state._locationAt = now
       refreshLocation(state)
     }
+  }
+
+  /* 让用户知道 AutoStart 被接管了（否则工具里关掉会让人以为我们改坏了）。
+     位置必须在 pushLog 定义之后：写在 apply 开头会踩 const 的 TDZ。 */
+  if (readToolConfig().autoStartPaused === true) {
+    pushLog('S', '工作台已接管自动烧录：临时关闭 Downloader 的 AutoStart（停止自动烧录或退出 DSH 后恢复）')
   }
 
 
@@ -906,8 +1283,11 @@ function freshestDcf(override) {
       return abs === rootResolved || abs.startsWith(rootResolved + path.sep)
     })
   }
+    /* ★ 只自动盯 app.dcf：同一工程里还有 app_gpu.dcf 之类的分体固件，
+       「最新文件」会选错，烧错固件比慢一点更严重。 */
+    const preferred = pickPrimaryFirmwareDcf([...pool])
     let best = null, bestT = 0
-  for (const c of pool) {
+  for (const c of preferred) {
       try {
         const st = fs.statSync(c)
         if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = c }
@@ -928,6 +1308,7 @@ function freshestDcf(override) {
     try {
       const stack = [root]
       let best = null, bestT = 0, guard = 0
+      const candidates = []
       while (stack.length && guard++ < 4000) {
         const d = stack.pop()
         let ents
@@ -938,19 +1319,154 @@ function freshestDcf(override) {
             if (/^(\.git|node_modules|cmake|\.vscode)$/i.test(e.name)) continue
             stack.push(full)
           } else if (e.name.toLowerCase().endsWith('.dcf')) {
-            try {
-              const st = fs.statSync(full)
-              if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = full }
-            } catch { }
+            candidates.push(full)
           }
         }
+      }
+      for (const c of pickPrimaryFirmwareDcf(candidates)) {
+        try {
+          const st = fs.statSync(c)
+          if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = c }
+        } catch { }
       }
       return best
     } catch { return null }
   }
 
+  /* The generated watch.setting sits next to the current app.dcf under
+     Settings/. Derive it from the watched DCF so a changed build output (and a
+     different project) is followed automatically. */
+  function watchSettingPath() {
+    /* Use the DCF the watcher currently tracks. Do not scan scanRoot here: this
+       function is called by a 2 s status poll, and a broad freshestDcf() scan on
+       every poll would compete with git/build I/O. The UI re-polls as soon as
+       watch.path appears. */
+    const dcf = typeof state.watch.path === 'string' ? state.watch.path : ''
+    if (dcf === '') return ''
+    /* Derived from the CURRENT dcf, never a hard-coded project path. The vendor
+       output puts it in Settings/; the two extra candidates cover older layouts
+       and a file placed beside the dcf. */
+    const dir = path.dirname(dcf)
+    const candidates = [
+      path.join(dir, 'Settings', 'watch.setting'),
+      path.join(dir, 'settings', 'watch.setting'),
+      path.join(dir, 'watch.setting'),
+    ]
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return candidate
+    }
+    return candidates[0]
+  }
+
+  /* Locate the config in the SELECTED Downloader.exe directory. Do not rely on
+     the old environment/fallback directory: the page may point at a copied tool
+     whose config sits beside that exact executable. */
+  function downloaderConfigPath() {
+    const exe = downloaderExePath()
+    const dir = path.dirname(exe)
+    const candidates = [path.join(dir, 'Downloader.config'), path.join(dir, 'downloader.config')]
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return candidate
+    }
+    return candidates[0]
+  }
+  function burnOptionsStatus() {
+    const file = downloaderConfigPath()
+    if (!fs.existsSync(file)) return { path: file, exists: false }
+    try {
+      const parsed = parseBurnOptions(fs.readFileSync(file, 'utf8'))
+      return { path: file, exists: true, ...parsed }
+    } catch (error) {
+      return { path: file, exists: true, error: String(error && error.message ? error.message : error) }
+    }
+  }
+
+  /* Only the four persistent start flags and the speed mode are exposed by the
+     vendor config. Other items in its Start dropdown are immediate actions; we
+     do not invent keys for them. */
+  function applyBurnOptions(updates) {
+    const file = downloaderConfigPath()
+    if (!fs.existsSync(file)) return { error: 'Downloader.config not found', path: file }
+    let text = fs.readFileSync(file, 'utf8')
+    const boolKeys = ['preTest', 'erase', 'down', 'extend']
+    for (const name of boolKeys) {
+      if (updates === null || updates === undefined || typeof updates[name] !== 'boolean') continue
+      text = withConfigValue(text, BURN_OPTION_KEYS[name], updates[name] ? 'True' : 'False').text
+    }
+    if (typeof updates === 'object' && updates !== null && typeof updates.speed === 'string') {
+      const speed = updates.speed
+      if (!['HighSpeed', 'NormalSpeed', 'LowSpeed'].includes(speed)) {
+        return { error: 'unsupported speed mode: ' + speed, path: file }
+      }
+      text = withConfigValue(text, 'SpeedMode', speed).text
+    }
+    /* Keep the last few vendor-config revisions; a bad toggle must be
+       recoverable without hand-editing XML. */
+    try {
+      fs.copyFileSync(file, file + '.bak-' + Date.now())
+      pruneBackups(file, 3)
+    } catch (error) { void error }
+    fs.writeFileSync(file, text, 'utf8')
+    pushLog('S', '已更新 Downloader 烧录配置（下次启动 Downloader 生效）')
+    return burnOptionsStatus()
+  }
+  function noSleepStatus() {
+    const file = watchSettingPath()
+    const auto = readToolConfig().noSleep === true
+    if (file === '' || !fs.existsSync(file)) {
+      return { auto, path: file, exists: false, value: null, noSleep: false }
+    }
+    try {
+      const parsed = sleepSettingOf(fs.readFileSync(file, 'utf8'))
+      return { auto, path: file, exists: true, value: parsed.value, noSleep: parsed.noSleep }
+    } catch (error) {
+      return { auto, path: file, exists: true, value: null, noSleep: false, error: String(error && error.message ? error.message : error) }
+    }
+  }
+
+  /* Called immediately by the toggle and again before every launch/flash: a
+     build can regenerate watch.setting with a sleep value, and an AI debug loop
+     must still find the device awake on the next burn. */
+  function applyNoSleep() {
+    if (readToolConfig().noSleep !== true) return false
+    const file = watchSettingPath()
+    if (file === '' || !fs.existsSync(file)) return false
+    try {
+      const text = fs.readFileSync(file, 'utf8')
+      const next = withNoSleepSetting(text)
+      if (next.changed === false) return true
+      fs.writeFileSync(file, next.text, 'utf8')
+      pushLog('S', '已把 Settings/watch.setting 的休眠时间改为不休眠（sys_sleep_time=0）')
+      return true
+    } catch (error) {
+      pushLog('S', '修改 watch.setting 不休眠失败：' + String(error && error.message ? error.message : error))
+      return false
+    }
+  }
   function watchTick() {
     const w = state.watch
+    /* 每 5 秒核对一次真实进程，但只观察：手动打开的 Downloader 不会被结束。
+       真正开始烧录（autoFlashRun / 显式连接）时才允许接管。 */
+    const procNow = Date.now()
+    if (!w.lastProcCheckAt || procNow - w.lastProcCheckAt > 5000) {
+      w.lastProcCheckAt = procNow
+      try {
+        const reality = currentDownloaderReality()
+        /* Merely OPENING Downloader is not permission to kill it. No automatic
+           path (watch tick, auto flash, connect) may terminate a user-opened
+           tool; only an explicit API call can, and the UI no longer does that. */
+        if (reality.foreign.length > 0) {
+          const now = Date.now()
+          if (!w.lastForeignLogAt || now - w.lastForeignLogAt > 10000) {
+            w.lastForeignLogAt = now
+            pushLog('S', '检测到手动的 Downloader（PID ' + reality.foreign.join(',') +
+              '）；自动烧录只观察、不结束它')
+          }
+        } else if (w.blocked !== null) {
+          clearAutoBlock('多余实例已结束')
+        }
+      } catch (error) { void error }
+    }
     // ★ 定期向 Downloader 问一下「你现在选的是哪个 dcf」。
     //   你在它界面里切文件时，它不会主动告诉我们，只能主动去读。
     if (state.flash.connected) {
@@ -975,20 +1491,53 @@ function freshestDcf(override) {
     w.pendingTimer = setTimeout(() => autoFlashTrigger(st), 1200)
   }
 
+  /**
+   * One auto-flash at a time. Watch ticks can fire several times for one build
+   * (and a manual start can overlap); the old code ran them concurrently, which
+   * produced two "自动开始烧录…" and two StartDownload commands.
+   */
   async function autoFlashTrigger(st) {
+    const w = state.watch
+    if (!w.on) return
+    if (w.triggering) {
+      const now = Date.now()
+      if (!w.lastSkipLogAt || now - w.lastSkipLogAt > 5000) {
+        w.lastSkipLogAt = now
+        pushLog('S', '自动烧录：上一次触发仍在处理，忽略重复的文件变化')
+      }
+      return
+    }
+    w.triggering = true
+    try {
+      await autoFlashRun(st)
+    } finally {
+      w.triggering = false
+    }
+  }
+
+  async function autoFlashRun(st) {
     const w = state.watch
     if (!w.on) return
     pushLog('S', '检测到编译产物变化（' + Math.round(st.size / 1024) + 'KB），准备自动烧录')
     broadcast({ ev: 'watch', watch: { on: w.on, path: w.path } })
-    // 若正在烧录就等一下
+    applyNoSleep()
+  // 若正在烧录就等一下
     for (let i = 0; i < 60 && state.flash.burning; i++) await new Promise(r => setTimeout(r, 500))
     if (state.flash.burning) { pushLog('S', '自动烧录跳过：已有烧录在进行'); return }
     // 串口让出由 doFlash 统一处理（它会记下 resumeAfterFlash）。
     // 不要在这里重复关，否则 resumeAfterFlash 被覆盖成 null、烧完抢不回串口。
 
+    /* Bridge says connected but the tool window is gone: never queue a command
+       into that dead connection. Reset, wait for the stale bridge to exit, then
+       the process checks below launch a real Downloader. */
+    if (resetStaleFlashConnection('自动烧录前')) {
+      for (let i = 0; i < 12 && flashHelper.alive; i += 1) await new Promise(r => setTimeout(r, 100))
+    }
+
     // ★★ 顺序：先让出串口，再拉起 Downloader。
     //   它扫不到设备就是因为 COM 被工作台占着（实测：重拉后 online 一直 false）。
     if (!state.flash.connected && state.serial.open) {
+      stopSerialGuard()
       state.serial.resumeAfterFlash = state.serial.wantOpen
         || { port: state.serial.port, baud: state.serial.baud }
       try { await serialHelper.command('close', {}) } catch { }
@@ -998,19 +1547,48 @@ function freshestDcf(override) {
       await new Promise(r => setTimeout(r, 250))
     }
 
-    // ★ 若 Downloader 已被关（烧完为了还串口会退出），这里自己拉起它。
+    // ★ 按 Windows 实际进程决定「复用 / 启动 / 暂停」，绝不再拉起第二个。
     if (!state.flash.connected) {
-      if (shouldLaunchFlash(state.flash, flashHelper.alive)) {
-        pushLog('S', '自动烧录：重新拉起 Downloader…')
+      let reality = currentDownloaderReality()
+      if (reality.foreign.length > 0) {
+        /* NEVER kill a tool the user opened just because a build finished.
+           Skip this auto attempt; the user can burn in the tool or close it. */
+        pushLog('S', '自动烧录跳过：检测到你手动打开的 Downloader（PID ' + reality.foreign.join(', ') +
+          '），不会结束它；关闭工具后可再自动烧录')
+        restoreSerialAfterPause()
+        return
+      }
+      if (reality.mine !== null) {
+        if (flashHelper.alive) {
+          pushLog('S', '自动烧录：Downloader 已在运行（PID ' + reality.mine + '），等待握手，不再启动第二个')
+        } else {
+          /* Bridge died but its child is still alive (job-object failure): it is
+             ours, so clean it up before starting a fresh bridge. A user-started
+             instance never has this recorded PID. */
+          pushLog('S', '自动烧录：上一次的 IPC helper 已退出，清理它留下的 Downloader（PID ' + reality.mine + '）后重连')
+          spawnSyncSafe('taskkill.exe', ['/PID', String(reality.mine), '/F'])
+          state.flash.pid = null
+          await new Promise(r => setTimeout(r, 300))
+          reality = currentDownloaderReality()
+        }
+      }
+      if (reality.foreign.length > 0) {
+        pushLog('S', '自动烧录跳过：检测到手动 Downloader（PID ' + reality.foreign.join(', ') + '），不会结束它')
+        restoreSerialAfterPause()
+        return
+      }
+      if (!state.flash.connected && shouldLaunchFlash(state.flash, flashHelper.alive)) {
+        pushLog('S', '自动烧录：启动 Downloader（当前没有其它实例）…')
         ensureComEnable()
         flashHelper.start()
         state.flash.launching = true
         state.flash.launchAt = Date.now()
+        state.flash.tConnect = Date.now()
         state.flash.busy = true
         state.flash.stage = '启动 Downloader…'
         broadcast({ ev: 'flash', state: state.flash })
         flashHelper.line('launch')
-      } else {
+      } else if (!state.flash.connected) {
         pushLog('S', '自动烧录：Downloader 正在启动，等待握手…')
       }
       let waited = 0
@@ -1020,19 +1598,30 @@ function freshestDcf(override) {
       }
       state.flash.busy = false
       if (!state.flash.connected) {
-        pushLog('S', '自动烧录放弃：Downloader 启动失败')
+        pushLog('S', '自动烧录放弃：Downloader 启动失败（没有握手成功）')
+        restoreSerialAfterPause()
         return
       }
-      for (let i = 0; i < 80 && !state.flash.online; i++) await new Promise(r => setTimeout(r, 250))
     }
 
-    // 设备在线吗？不在就等一下
-    if (!state.flash.online) {
-      for (let i = 0; i < 60 && !state.flash.online; i++) await new Promise(r => setTimeout(r, 250))
-    }
-    if (!state.flash.online) {
-      pushLog('S', '自动烧录放弃：设备未在线（请检查板子/串口）')
+    /* Connected: re-check the real process list before sending the command. */
+    let after = currentDownloaderReality()
+    if (after.foreign.length > 0) {
+      pushLog('S', '自动烧录跳过：连接后检测到手动 Downloader（PID ' + after.foreign.join(', ') + '），不会结束它')
+      restoreSerialAfterPause()
       return
+    }
+    if (!flashHelper.alive) {
+      pushLog('S', '自动烧录放弃：IPC helper 已退出，Downloader 收不到命令')
+      restoreSerialAfterPause()
+      return
+    }
+
+    /* 不再等 DevChange：Downloader 冷启动后要 30–60 秒才扫完 COM，而 StartDownload
+       会被它排队、扫描完成后执行。实测日志里正是「我们放弃 9 秒后它自己烧完」。
+       把命令交给它，进度帧会告诉我们真实结果。 */
+    if (!state.flash.online) {
+      pushLog('S', '设备状态还未上报，先把 StartDownload 交给 Downloader（扫描完成后自动执行）')
     }
     try {
       await doFlash({ confirm: true, auto: true })
@@ -1041,13 +1630,126 @@ function freshestDcf(override) {
     }
   }
 
+  /** Real Downloader PIDs vs the one our bridge recorded. */
+  function currentDownloaderReality() {
+    const reality = classifyDownloaderPids(listDownloaderPids(), state.flash.pid)
+    if (reality.mine === null) state.flash.pid = null
+    return reality
+  }
+
+  /**
+   * A second Downloader (user-opened, or an old leftover) owns COM/IPC too;
+   * spawning another one is exactly the "打开两次工具会冲突" failure. Pause and
+   * tell the user once per PID set instead of flooding the log every tick.
+   */
+  /**
+   * Auto flashing aborted before Downloader accepts a command: hand the serial
+   * port back so the log page is not left dead until the next manual action.
+   */
+  function restoreSerialAfterPause() {
+    const resume = state.serial.resumeAfterFlash
+    if (!resume) return
+    state.serial.resumeAfterFlash = null
+    try {
+      void resumeSerial(resume.port, resume.baud)
+    } catch (error) { void error }
+  }
+
+  /**
+   * Take over from an extra Downloader (user-opened, or a leftover): kill the
+   * PIDs our bridge did NOT launch, then let the caller continue with our own
+   * instance. This is the requested behaviour: "自动直接接管".
+   *
+   * Deduped per PID set for 10 s so the 5 s monitor does not spam taskkill while
+   * the process is terminating; a changed PID set retries immediately.
+   */
+  function takeOverForeign(reality, where) {
+    const pids = reality.foreign.slice()
+    if (pids.length === 0) return reality
+    const key = pids.sort((a, b) => a - b).join(',')
+    const w = state.watch
+    const now = Date.now()
+    if (w.blocked !== null && w.blocked.key === key && now - w.blocked.at < 10000) return reality
+    w.blocked = { key, pids: pids.slice(), at: now }
+    pushLog('S', '⚠ ' + where + '检测到额外的 Downloader 进程（PID ' + key + '），自动接管：结束它…')
+    for (const pid of pids) {
+      try { spawnSyncSafe('taskkill.exe', ['/PID', String(pid), '/F']) } catch (error) { void error }
+    }
+    state.flash.status = '自动接管 Downloader…'
+    state.flash.stage = ''
+    broadcast({ ev: 'flash', state: state.flash })
+    return classifyDownloaderPids(listDownloaderPids(), state.flash.pid)
+  }
+
+  function clearAutoBlock(why) {
+    const w = state.watch
+    if (w.blocked === null) return
+    w.blocked = null
+    pushLog('S', '✓ 自动接管完成，' + why + '；继续自动烧录')
+  }
+
+  /**
+   * The Downloader window can disappear while the IPC bridge stays alive. The
+   * bridge then reports `connected:true` forever and StartDownload goes nowhere,
+   * leaving the page stuck on 「烧录中」 until the 2-minute timeout (observed
+   * 2026-11-14 11:53–12:07: no Downloader.exe, but page said 烧录中).
+   * Reset the connection and stop the bridge so the next attempt starts a real
+   * window instead of sending commands into a dead one.
+   */
+  function resetStaleFlashConnection(where) {
+    /* A live recorded PID is authoritative; tasklist can briefly return an
+       empty list during tool startup and must not be allowed to kill a healthy
+       Downloader. */
+    if (state.flash.connected && isProcessAlive(state.flash.pid)) return false
+    const pids = listDownloaderPids()
+    if (!isStaleFlashConnection(state.flash, pids)) return false
+    clearFlashTimers(flashTimers)
+    state.flash.connected = false
+    state.flash.online = false
+    state.flash.busy = false
+    state.flash.burning = false
+    state.flash.launching = false
+    state.flash.pid = null
+    state.flash.progress = 0
+    state.flash.stage = ''
+    state.flash.status = '离线'
+    state.flash.lastDownStaAt = 0
+    state.flash.scanSince = 0
+    state.flash.staleChecks = 0
+    pushLog('S', '[flash] Downloader 窗口已不存在（' + where + '），重置连接状态；下次会自动重新启动')
+    broadcast({ ev: 'flash', state: state.flash })
+    /* Capture the exact stale proc: a new bridge may be started after this
+       reset, and the old code's delayed kill would then shoot down the NEW one. */
+    const staleProc = flashHelper.proc
+    try { flashHelper.line('quit') } catch { /* bridge may already be gone */ }
+    const timer = setTimeout(() => {
+      if (staleProc && flashHelper.proc === staleProc) {
+        try { staleProc.kill() } catch { /* already gone */ }
+      }
+    }, 700)
+    if (typeof timer.unref === 'function') timer.unref()
+    return true
+  }
+
+  function clearBootWatch() {
+    const w = state.watch
+    if (w.bootTimer !== null && w.bootTimer !== undefined) {
+      clearInterval(w.bootTimer)
+      w.bootTimer = null
+    }
+  }
+
   function setWatch(on, p) {
     const w = state.watch
+    clearBootWatch()
     if (w.timer) { clearInterval(w.timer); w.timer = null }
     if (w.pendingTimer) { clearTimeout(w.pendingTimer); w.pendingTimer = null }
     if (!on) {
       w.on = false
       pushLog('S', '已停止自动烧录')
+      const restored = restoreAutoStart()
+      if (restored.changed === true) pushLog('S', '已恢复 Downloader 的 AutoStart 开关')
+      else pushLog('S', 'Downloader 的 AutoStart 已归还（若你后续要在工具里单用，它是开着的）')
       return { ok: true, on: false }
     }
     // ★ 取路径的优先级（实测：root 为空时靠猜永远失败）：
@@ -1064,10 +1766,17 @@ function freshestDcf(override) {
     //   （之前我改成“扫全盘取最新”是错的：会忽略你的手动选择。）
     //   仅当 Downloader 还没报过路径时，才退化到看串口配置 / 工程目录。
     const fromDl = state.flash.dcfPath
-    const target = p || w.path
+    const preferred = (candidate) => {
+      if (candidate === null || candidate === undefined) return candidate
+      if (isPrimaryFirmwareDcf(candidate)) return candidate
+      /* 同一目录里有 app.dcf 时就换成它（app_gpu.dcf 永远不是默认目标）。 */
+      const primary = path.join(path.dirname(candidate), PRIMARY_FIRMWARE_NAME)
+      return fs.existsSync(primary) ? primary : candidate
+    }
+    const target = preferred(p || w.path
       || (fromDl && fs.existsSync(fromDl) ? fromDl : null)
       || freshestDcf()
-      || guessDcf(state.root) || guessDcf(state.project)
+      || guessDcf(state.root) || guessDcf(state.project))
     if (!target || !fs.existsSync(target)) {
       pushLog('S', '开启自动烧录失败：找不到 dcf 文件' +
         (fromDl ? '（Downloader 报的路径不存在：' + fromDl + '）' : '——请先点「连接 Downloader」'))
@@ -1075,6 +1784,9 @@ function freshestDcf(override) {
     }
     let st
     try { st = fs.statSync(target) } catch { return { ok: false, error: 'stat failed' } }
+    /* 再次接管：用户可能在工具界面里把 AutoStart 又打开了。 */
+    const took = takeOverAutoStart()
+    if (took.changed === true) pushLog('S', '已临时关闭 Downloader 的 AutoStart：由工作台统一触发，避免两次「扫描中」')
     w.on = true
     w.path = target
     w.lastMtime = st.mtimeMs
@@ -1086,12 +1798,45 @@ function freshestDcf(override) {
   }
 
   /**
+   * DSH restart: state.watch.on is true by design, but a fresh process has no
+   * watch timer. Arm it from the persisted scanRoot immediately; if the last
+   * build left no app.dcf, poll cheaply until it appears (or until the page/
+   * Downloader tells us a path) instead of showing "自动烧录 ◉" while nothing
+   * is being monitored.
+   */
+  function armWatchOnBoot() {
+    if (state.watch.on !== true || state.watch.timer !== null) return
+    if (typeof state.scanRoot !== 'string' || state.scanRoot === '') return
+    const target = freshestDcf()
+    if (target !== null) {
+      setWatch(true, target)
+      return
+    }
+    pushLog('S', '自动烧录监控已开启：等待 app.dcf 出现在 ' + state.scanRoot)
+    let tries = 0
+    state.watch.bootTimer = setInterval(() => {
+      if (state.watch.on !== true || state.watch.timer !== null) { clearBootWatch(); return }
+      if (tries >= 40) { clearBootWatch(); return }
+      tries += 1
+      const pick = freshestDcf()
+      if (pick !== null) {
+        clearBootWatch()
+        setWatch(true, pick)
+      }
+    }, 15000)
+    if (typeof state.watch.bootTimer.unref === 'function') state.watch.bootTimer.unref()
+  }
+
+  /**
    * 实际发起一次烧录。
    * HTTP 的 /flash/download 和自动烧录都走这里，保证行为一致。
    * 返回 { ok, error?, message? }
    */
   async function doFlash(opts = {}) {
-    // ★ 先清掉上一轮残留状态（放最前面，避免任何 await 前被读到旧值）
+    const plan = flashPlanOf(state, opts)
+    /* A build may have regenerated watch.setting; apply before command. */
+  applyNoSleep()
+  // ★ 先清掉上一轮残留状态（放最前面，避免任何 await 前被读到旧值）
     state.flash.lastBurn = null
     state.flash.progress = 0
     state.flash.status = '开始下载'
@@ -1099,13 +1844,37 @@ function freshestDcf(override) {
     state.flash.lastDlError = null
     state.flash.dlErrorAt = 0
     if (!state.flash.connected) return { ok: false, error: 'not-connected', message: '还未连接 Downloader' }
+    /* Do not send StartDownload into a bridge whose Downloader window is gone. */
+    if (resetStaleFlashConnection('烧录前')) {
+      return { ok: false, error: 'disconnected', message: 'Downloader 窗口已不存在，已重置连接；请重新连接后再烧录' }
+    }
     if (state.flash.burning && !opts.auto) return { ok: false, error: 'busy', message: '已有烧录在进行' }
+
+    /* A new flash supersedes every timer of the previous one. Without this the
+       old 120 s watchdog fired in the middle of a later flash and reported a
+       timeout for a burn that was actually progressing. */
+    const token = (state.flash.token || 0) + 1
+    state.flash.token = token
+    if (clearFlashTimers(flashTimers) === true) {
+      pushLog('S', '[flash] 已清理上一轮烧录的超时/重试计时器')
+    }
 
     // 1) 让出串口
     if (state.serial.open) {
       state.serial.resumeAfterFlash = state.serial.wantOpen
         || { port: state.serial.port, baud: state.serial.baud }
-      try { await serialHelper.command('close', {}) } catch { }
+      stopSerialGuard()
+      let closed = { ok: false }
+      try { closed = await serialHelper.command('close', {}, 3000) } catch (error) { void error }
+      if (!closed || closed.ok !== true) {
+        startSerialGuard()
+        state.flash.status = '串口被占用'
+        state.flash.burning = false
+        broadcast({ ev: 'flash', state: state.flash })
+        pushLog('S', '✗ 无法让出串口 ' + state.serial.resumeAfterFlash.port + '（' +
+          String((closed && (closed.msg || closed.error)) || 'helper 未确认') + '），烧录未开始')
+        return { ok: false, error: 'serial-busy', message: '串口未能让出，Downloader 无法扫描' }
+      }
       state.serial.open = false
       pushLog('S', '已让出串口 ' + state.serial.resumeAfterFlash.port + '（烧录需独占）')
       broadcast({ ev: 'serial-state', serial: state.serial })
@@ -1114,22 +1883,28 @@ function freshestDcf(override) {
 
     // 2) 等设备在线
     if (!state.flash.online) {
-      let waited = 0
-      while (waited < 20000 && !state.flash.online) {
-        await new Promise(r => setTimeout(r, 250))
-        waited += 250
-      }
-      if (!state.flash.online) {
-        pushLog('S', '烧录前检查：设备未在线（没收到 DevChange）')
-        return {
-          ok: false, error: 'no-device',
-          message: '没检测到设备。请检查：板子是否上电 / USB 是否插好 / 串口是否被占用',
+      if (plan.queueWhileOffline === true) {
+        /* AUTO: give the command to Downloader NOW; it queues it during the COM
+           scan and executes it when the device answers. */
+        pushLog('S', '设备还未上报在线，先排队 StartDownload（Downloader 扫描完成后执行）')
+      } else {
+        let waited = 0
+        while (waited < plan.offlineWaitMs && !state.flash.online) {
+          await new Promise(r => setTimeout(r, 250))
+          waited += 250
+        }
+        if (!state.flash.online) {
+          pushLog('S', '烧录前检查：设备未在线（没收到 DevChange）')
+          return {
+            ok: false, error: 'no-device',
+            message: '没检测到设备。请检查：板子是否上电 / USB 是否插好 / 串口是否被占用',
+          }
         }
       }
     }
     // ★ 若此时仍卡在「扫描中」，说明板子没响应（多半是休眠了）。
-    //   不要干等 5 分钟超时，直接说清楚。
-    if (/扫描中/.test(state.flash.status || '')) {
+    //   手动路径直接说清楚；自动路径会把 StartDownload 排队，让 Downloader 自己判断。
+    if (plan.abortWhenScanning === true && /扫描中/.test(state.flash.status || '')) {
       let w2 = 0
       while (w2 < 25000 && /扫描中/.test(state.flash.status || '')) {
         await new Promise(r => setTimeout(r, 500))
@@ -1167,8 +1942,11 @@ function freshestDcf(override) {
     //      重试再多次也没用 —— 立即停止并说清原因。
     const tCmd = Date.now()
     let retry = 0
+    let lastSendAt = tCmd
+    const retryLimit = plan.retryLimit
     const finishFail = (why) => {
-      clearInterval(retryTimer)
+      if (state.flash.token !== token) { clearInterval(retryTimer); return }
+      clearFlashTimers(flashTimers)
       if (!state.flash.burning) return
       state.flash.burning = false
       state.flash.status = why
@@ -1176,6 +1954,7 @@ function freshestDcf(override) {
       broadcast({ ev: 'flash', state: state.flash })
     }
     const retryTimer = setInterval(() => {
+      if (state.flash.token !== token) { clearInterval(retryTimer); return }
       if (!state.flash.burning) { clearInterval(retryTimer); return }
       // 已经收到进度帧 -> 在正常烧，停止重试
       const got = (state.flash.lastDownStaAt || 0) >= tCmd
@@ -1186,41 +1965,128 @@ function freshestDcf(override) {
         finishFail('板子无响应（Downloader 拒绝下载，可能已休眠，请重新上电/按复位）')
         return
       }
-      if (retry >= 3) {
-        finishFail('板子无响应（3 次重试都没进展，可能已休眠，请重新上电/按复位）')
+      if (retry >= retryLimit) {
+        clearInterval(retryTimer)
+        /* AUTO: keep waiting for Downloader's queued command instead of declaring a
+           failure — a cold launch can take ~2 minutes. The overall 120 s timeout
+           still bounds the wait. Manual keeps the immediate, actionable error. */
+        if (plan.auto !== true) {
+          finishFail('板子无响应（' + retryLimit + ' 次重试都没进展，可能已休眠，请重新上电/按复位）')
+        }
         return
       }
+      /* Space the resends out: a burst of StartDownload frames can make Downloader
+         run the scan/burn several times. */
+      if (Date.now() - lastSendAt < plan.retryDelayMs) return
       retry++
+      lastSendAt = Date.now()
       pushLog('S', '未响应，重试发送 StartDownload（第 ' + retry + ' 次）')
       flashHelper.line('download')
     }, 3000)
+    flashTimers.retryTimer = retryTimer
 
     // 5) 超时兜底（只防「一发命令就永远卡住」的极端情况）
-    setTimeout(() => {
-      if (state.flash.burning) {
+    const overallTimer = setTimeout(() => {
+      if (state.flash.token !== token) return
+      const stale = isStaleFlashConnection(state.flash, listDownloaderPids())
+      const wasActive = state.flash.burning === true
+        || /烧录中|下载中|校验中|初始化/.test(String(state.flash.status || ''))
+      clearFlashTimers(flashTimers)
+      if (stale) {
+        resetStaleFlashConnection('烧录超时')
+      } else {
         state.flash.burning = false
+        state.flash.online = false
+        state.flash.stage = ''
+        if (wasActive) state.flash.status = '烧录超时'
+      }
+      if (wasActive || stale) {
         pushLog('S', '[flash] 烧录超时（2 分钟无进展）')
         broadcast({ ev: 'flash', state: state.flash })
       }
     }, 120000)
+    flashTimers.overallTimer = overallTimer
     return { ok: true }
   }
 
-  async function resumeSerial(port, baud) {
+  let serialGuardTimer = null
 
+  function stopSerialGuard() {
+    if (serialGuardTimer !== null) {
+      clearInterval(serialGuardTimer)
+      serialGuardTimer = null
+    }
+  }
+
+  /**
+   * Downloader 打开后（无论谁启动的）随时可能扫描/烧录，它需要独占 COM。
+   * 工作台若还开着串口，工具就会永远停在「扫描中」——这时主动让出，
+   * 不要求用户拔插 USB。Downloader 退出后不会自动抢回，避免和工具反复抢。
+   */
+  async function releaseSerialForDownloader() {
+    const pids = listDownloaderPids()
+    if (!shouldReleaseSerialForDownloader(state.serial.open, state.flash.burning, pids)) return
+    stopSerialGuard()
+    const resume = state.serial.wantOpen || { port: state.serial.port, baud: state.serial.baud }
+    state.serial.resumeAfterFlash = resume
+    try {
+      const r = await serialHelper.command('close', {})
+      if (!r || r.ok !== true) {
+        pushLog('S', '让出串口失败：' + String((r && (r.msg || r.error)) || 'helper 未确认'))
+        startSerialGuard()
+        return
+      }
+    } catch (e) {
+      pushLog('S', '让出串口失败：' + String(e && e.message ? e.message : e))
+      startSerialGuard()
+      return
+    }
+    state.serial.open = false
+    pushLog('S', '检测到 Downloader 正在运行（PID ' + pids.join(',') + '），已让出串口 ' + resume.port +
+      '（否则它会一直「扫描中」；关闭工具后可再点「打开串口」）')
+    broadcast({ ev: 'serial-state', serial: state.serial })
+  }
+
+  function startSerialGuard() {
+    if (serialGuardTimer !== null) return
+    serialGuardTimer = setInterval(() => { void releaseSerialForDownloader() }, 1500)
+    if (typeof serialGuardTimer.unref === 'function') serialGuardTimer.unref()
+  }
+
+  async function resumeSerial(port, baud) {
+    if (!port) return
+    const startedAt = Date.now()
     // ★ Downloader 烧完会持续占着 COM 监控设备，必须先让它退出才能抢回。
     //   自动烧录不依赖它常驻——工作台自己监听 dcf，需要时会重新拉起它。
     try { flashHelper.line('quit') } catch { }
-    if (!port) return
-    const t0 = Date.now()
-    pushLog('S', '[恢复串口] 开始抢回 ' + port)
+    stopSerialGuard()
 
-    // ★★ 不再把 Downloader 关掉！
-    //   Downloader 常驻时会监听 dcf 文件变化（AutoStart），
-    //   一旦编译完自动烧录——这是用户的工作流。
-    //   我们一旦关它，这个功能就断了。
-    //   实测确认：Downloader 空闲时并不持有 COM，所以串口仍可被工作台打开。
-    //   只在它真要烧录的那一瞬才需要独占。
+    /* Give the bridge/Downloader a short graceful window, then force it. The old
+       code waited up to 2 s for `connected` plus 200 ms, then still retried the
+       port for up to 1.5 s: the user saw a 1549 ms dead window. */
+    const orphanPid = state.flash.pid
+    for (let i = 0; i < 6 && state.flash.connected; i += 1) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (state.flash.connected || (orphanPid && isProcessAlive(orphanPid))) {
+      try { if (flashHelper.proc) flashHelper.proc.kill() } catch (error) { void error }
+      if (orphanPid && isProcessAlive(orphanPid)) {
+        spawnSyncSafe('taskkill.exe', ['/PID', String(orphanPid), '/F'])
+      }
+      for (let i = 0; i < 20 && orphanPid && isProcessAlive(orphanPid); i += 1) {
+        await new Promise(r => setTimeout(r, 50))
+      }
+    }
+    for (let i = 0; i < 10 && state.flash.connected; i += 1) {
+      await new Promise(r => setTimeout(r, 50))
+    }
+    if (state.flash.connected || listDownloaderPids().length > 0) {
+      pushLog('S', 'Downloader 仍在运行，串口 ' + port + ' 先不抢回（避免它烧录时被工作台占用）')
+      return
+    }
+    const readyAt = Date.now()
+    const exitMs = readyAt - startedAt
+    pushLog('S', '[恢复串口] Downloader 已退出（' + exitMs + 'ms），开始抢回 ' + port)
 
     // helper 尚活着就直接用；死了才重建
     if (!serialHelper.alive) {
@@ -1233,27 +2099,33 @@ function freshestDcf(override) {
       await serialHelper.command('list', {}, 6000)
     }
 
-    // 快速轮询：每 60ms 试一次，最多 6 秒
+    // 快速轮询：每 30ms 试一次，最多 6 秒。单次 open 的 300ms 上限避免一次
+    // 被占用把整个空窗拖长；失败时 helper 会快速应答。
     const deadline = Date.now() + 6000
     let tries = 0
+    let lastError = ''
     while (Date.now() < deadline) {
       tries++
-      // 超时 600ms：失败时 helper 会快速返回，不能让一次试探堵住整个轮询
-      const r = await serialHelper.command('open', { port, baud }, 600)
+      const r = await serialHelper.command('open', { port, baud }, 300)
       if (r && r.ok) {
         state.serial.open = true
         state.serial.port = port
         state.serial.baud = baud
         state.serial.wantOpen = { port, baud }
-        const ms = Date.now() - t0
-        pushLog('S', '已自动恢复串口 ' + port + ' @' + baud + '（空窗 ' + ms + 'ms）')
+        const totalMs = Date.now() - startedAt
+        const openMs = Date.now() - readyAt
+        pushLog('S', '已自动恢复串口 ' + port + ' @' + baud +
+          '（工具退出 ' + exitMs + 'ms + 打开 ' + openMs + 'ms = 空窗 ' + totalMs + 'ms）')
+        startSerialGuard()
         broadcast({ ev: 'serial-state', serial: state.serial })
         return
       }
-      await new Promise(r => setTimeout(r, 50))
+      lastError = String((r && (r.msg || r.error)) || '')
+      await new Promise(r => setTimeout(r, 30))
     }
-    const ms = Date.now() - t0
-    pushLog('S', '串口 ' + port + ' 自动恢复失败（' + tries + ' 次尝试，' + ms + 'ms），请手动点「打开串口」')
+    const totalMs = Date.now() - startedAt
+    pushLog('S', '串口 ' + port + ' 自动恢复失败（' + tries + ' 次尝试，空窗 ' + totalMs +
+      'ms' + (lastError === '' ? '' : '，最后错误：' + lastError) + '），请手动点「打开串口」')
   }
 
   // ---- 烧录 helper（IPC 驱动官方 Downloader）----
@@ -1264,7 +2136,7 @@ function freshestDcf(override) {
   const flashHelper = new LineHelper(
     ipcExe || IPC_HELPER_CANDIDATES[0],
     [
-      '--exe', path.join(DEFAULT_DL_DIR, 'Downloader.exe'),
+      '--exe', downloaderExePath(),
       '--args', 'BackShowMode {hwnd}',
       '--no-hide',
     ],
@@ -1296,9 +2168,15 @@ function freshestDcf(override) {
           state.flash.connected = true
           state.flash.launching = false
           state.flash.busy = false
+          state.flash.staleChecks = 0
           state.flash.stage = '已连接，正在扫描设备…'
           state.flash.status = '已连接'
-          pushLog('S', `Downloader 已连接（握手 ${Date.now() - (state.flash.tConnect || Date.now())}ms）`)
+          if (state.flash.tConnect) {
+            pushLog('S', `Downloader 已连接（握手 ${Date.now() - state.flash.tConnect}ms）`)
+          } else {
+            pushLog('S', 'Downloader 已连接')
+          }
+          state.flash.tConnect = 0
         } else if (head === 'DevChange') {
           state.flash.online = String(f[1]) === '1'
           state.flash.com = f[2] || null
@@ -1314,6 +2192,11 @@ function freshestDcf(override) {
           // 时间戳：烧录前需要知道“状态机已经跑起来了”才敢发 StartDownload
           state.flash.lastDownStaAt = Date.now()
           if (f[4]) state.flash.mac = f[4]
+          /* 设备其实在线时 Downloader 不一定再发 DevChange（冷启动时序会漏）。
+             状态机走到这些状态就说明它在——否则界面一直显示“离线”，手动烧录也会被拦。 */
+          if (/扫描中|初始化|就绪|预校验|下载中|校验中|完成/.test(state.flash.status || '')) {
+            state.flash.online = true
+          }
 
           const st = state.flash.status
           // 「扫描中」卡住是实测最常见的失败模式（卡住时日志永远只有一行「扫描中」）。
@@ -1335,6 +2218,7 @@ function freshestDcf(override) {
               state.flash.progress = 10000
               break
             }
+            clearFlashTimers(flashTimers)
             state.flash.burning = false
             state.flash.progress = 10000
             state.flash.lastBurn = { ok: true, at: Date.now(), mac: state.flash.mac }
@@ -1350,6 +2234,7 @@ function freshestDcf(override) {
               pushLog('S', 'Downloader 保持开着（继续监听编译产物）')
             }
           } else if (/失败|错误|异常/.test(st)) {
+            clearFlashTimers(flashTimers)
             state.flash.burning = false
             state.flash.lastBurn = { ok: false, at: Date.now(), reason: st }
             pushLog('S', '✗ 烧录失败：' + st)
@@ -1365,18 +2250,25 @@ function freshestDcf(override) {
           /* ★ 取消「连上就被覆盖」：FileInfo 报的是 Downloader 自己 config 里记的
              dcf，切换过工作目录后那个值还是旧工程的。一连接就把它当成当前固件，
              用户看到的就是「切了目录，固件文件又变回去」。
-             规则：只有落在当前工作目录内才采纳，跨目录一律忽略。 */
-          const acceptDcf = isUnderScanRoot(newDcf, state.scanRoot)
+             规则：只有落在当前工作目录内、并且是主固件 app.dcf 才采纳。 */
+          const underScanRoot = isUnderScanRoot(newDcf, state.scanRoot)
+          const primaryFirmware = isPrimaryFirmwareDcf(newDcf)
+          const acceptDcf = underScanRoot && primaryFirmware
           if (acceptDcf) {
             state.flash.dcfPath = newDcf
+      state.flash.dcfSize = fileSizeOf(newDcf)
         /* 默认开启：Downloader 一连上就报它准备烧的 dcf，这是最常见的
            「开始监听」时机（用户可能只是打开 DSH 就编译）。 */
         if (state.watch.on === true && state.watch.timer === null && fs.existsSync(newDcf)) {
           setWatch(true, newDcf)
         }
-          } else {
+          } else if (underScanRoot !== true) {
             pushLog('S', '已忽略 Downloader 报的 dcf（不在当前工作目录下）：' + newDcf
               + (state.flash.dcfPath ? '；继续使用：' + state.flash.dcfPath : '；当前无可用 dcf'))
+          } else if (state.watch.lastIgnoredDcf !== newDcf) {
+            /* app_gpu.dcf 之类的分体固件：不跟，避免烧错。同一条只提示一次。 */
+            state.watch.lastIgnoredDcf = newDcf
+            pushLog('S', '已忽略非主固件 dcf（只自动烧录 app.dcf）：' + path.basename(newDcf))
           }
           // ★ 用户在 Downloader 里换了 dcf 时，正在监听的路径必须跟着换。
           //   否则自动烧录会一直盯着旧文件 —— 新 dcf 变了也不触发（实测踩过）。
@@ -1393,8 +2285,15 @@ function freshestDcf(override) {
                 clearTimeout(state.watch.pendingTimer)
                 state.watch.pendingTimer = null
               }
-              pushLog('S', '自动烧录已切换到新 dcf：' + path.basename(newDcf) +
-                (oldPath ? '（原来：' + path.basename(oldPath) + '）' : ''))
+              const lastSwitch = state.watch.lastSwitchLog
+              const duplicate = lastSwitch !== undefined && lastSwitch !== null
+                && lastSwitch.to === newDcf && lastSwitch.from === (oldPath || '')
+                && Date.now() - lastSwitch.at < 3000
+              if (duplicate !== true) {
+                state.watch.lastSwitchLog = { from: oldPath || '', to: newDcf, at: Date.now() }
+                pushLog('S', '自动烧录已切换到新 dcf：' + path.basename(newDcf) +
+                  (oldPath ? '（原来：' + path.basename(oldPath) + '）' : ''))
+              }
               broadcast({ ev: 'watch', watch: { on: true, path: newDcf } })
             } else {
               pushLog('S', '检测到新 dcf 但文件不存在，暂不切换：' + newDcf)
@@ -1440,9 +2339,15 @@ function freshestDcf(override) {
         //   既不推 FileInfo、也不写 config，只能从外部读它的下拉框。
         {
           const p2 = ev.path
-          if (p2 && !p2.startsWith('__')) {
+          if (p2 && !p2.startsWith('__') && isUnderScanRoot(p2, state.scanRoot)) {
             state.flash.dcfPath = p2
-            if (state.watch.on && state.watch.path !== p2) {
+      state.flash.dcfSize = fileSizeOf(p2)
+            if (state.watch.on && isPrimaryFirmwareDcf(p2) !== true) {
+              if (state.watch.lastIgnoredDcf !== p2) {
+                state.watch.lastIgnoredDcf = p2
+                pushLog('S', '已忽略非主固件 dcf（只自动烧录 app.dcf）：' + path.basename(p2))
+              }
+            } else if (state.watch.on && state.watch.path !== p2) {
               let st2 = null
               try { st2 = fs.statSync(p2) } catch { }
               if (st2) {
@@ -1461,9 +2366,11 @@ function freshestDcf(override) {
       case 'bye':
         state.flash.busy = false
         break
-      case 'exit':
+      case 'exit': {
         // helper 退出了：不管成功失败，都要把"连接中"放开，
         // 否则界面上永远停在「连接中…」
+        const orphanPid = state.flash.pid
+        clearFlashTimers(flashTimers)
         state.flash.busy = false
         state.flash.launching = false
         state.flash.pid = null
@@ -1473,7 +2380,21 @@ function freshestDcf(override) {
         state.flash.online = false
         pushLog('S', `[flash] helper 已退出（code=${ev.code}）`)
         broadcast({ ev: 'flash', state: state.flash })
+        /* Job Object normally kills the child; this is the safety net for the
+           case where it failed (observed as an orphaned Downloader holding COM).
+           Only the PID we recorded is killed — never a user-started instance. */
+        if (Number.isInteger(orphanPid) && orphanPid > 0) {
+          setTimeout(() => {
+            try {
+              if (listDownloaderPids().includes(orphanPid)) {
+                spawnSyncSafe('taskkill.exe', ['/PID', String(orphanPid), '/F'])
+                pushLog('S', '[flash] 已清理 helper 退出后残留的 Downloader（PID ' + orphanPid + '）')
+              }
+            } catch (error) { void error }
+          }, 400)
+        }
         break
+      }
       case 'error':
       case 'fatal':
         state.flash.busy = false
@@ -1487,6 +2408,48 @@ function freshestDcf(override) {
 
   // 注册 HTTP 路由。webServer 是可选服务，用 ctx.inject 包起来，
   // 缺了也只是少一层 UI，不会让整个插件停摆。
+  /* 插件卸载 / DSH 正常退出：把 Downloader 的 AutoStart 还给用户。 */
+  ctx.effect(() => () => {
+    clearTimeout(bootArmTimer)
+    clearInterval(flashLivenessTimer)
+    clearBootWatch()
+    stopSerialGuard()
+    if (state.watch.timer !== null) { clearInterval(state.watch.timer); state.watch.timer = null }
+    /* HMR/workbench reload does not restart the DSH process, so its child
+       helpers would otherwise survive beside the replacement plugin (two
+       bridges, COM conflicts). Close them explicitly on plugin disposal. */
+    try { flashHelper.line('quit') } catch (error) { void error }
+    try { serialHelper.line('quit') } catch (error) { void error }
+    try { restoreAutoStart() } catch { /* non-fatal */ }
+  }, 'downloader: restore AutoStart')
+
+  /* Auto-flash is on by default: restore monitoring across a DSH restart.
+     Deferred so the startup tree scan cannot delay DSH's first paint. */
+  const bootArmTimer = setTimeout(() => {
+    try { armWatchOnBoot() } catch (e) { pushLog('S', '自动烧录启动失败：' + String(e && e.message ? e.message : e)) }
+  }, 1500)
+  if (typeof bootArmTimer.unref === 'function') bootArmTimer.unref()
+
+  /* The IPC bridge can outlive the Downloader window. Poll only while the page
+     claims a connection, so a closed/killed tool cannot leave the UI stuck on
+     「烧录中」or make auto-flash send StartDownload into nothing. */
+  const flashLivenessTimer = setInterval(() => {
+    if (state.flash.connected !== true) { state.flash.staleChecks = 0; return }
+    try {
+      const pid = state.flash.pid
+      let alive = Number.isInteger(pid) && pid > 0 ? isProcessAlive(pid) : null
+      if (alive === null) {
+        /* No recorded PID (old bridge/recovered state): fall back to tasklist,
+           but still require two consecutive misses before killing anything. */
+        alive = listDownloaderPids().length > 0
+      }
+      if (alive === true) { state.flash.staleChecks = 0; return }
+      state.flash.staleChecks = (state.flash.staleChecks || 0) + 1
+      if (state.flash.staleChecks >= 2) resetStaleFlashConnection('运行状态轮询')
+    } catch (error) { void error }
+  }, 3000)
+  if (typeof flashLivenessTimer.unref === 'function') flashLivenessTimer.unref()
+
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(() => scoped.webServer.register({
       kind: 'prefix',
@@ -1494,7 +2457,14 @@ function freshestDcf(override) {
       handler: (req, res) => handleHttp(req, res, state, {
         scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog,
         sseClients, DEFAULT_DL_DIR, guardDcf: guessDcf, setWatch, doFlash, freshestDcf,
-        clearLogFile,
+        clearLogFile, startSerialGuard, stopSerialGuard, resetStaleFlashConnection,
+        noSleepStatus, applyNoSleep, burnOptionsStatus, applyBurnOptions, setNoSleep: (on) => {
+          const w = writeToolConfig({ noSleep: on === true })
+          if (w.ok !== true) return { error: w.error || 'write config failed' }
+          if (on === true) applyNoSleep()
+          return noSleepStatus()
+        },
+        clearFlashTimersNow: () => clearFlashTimers(flashTimers),
       }),
     }), 'downloader: routes')
   })
@@ -1591,7 +2561,7 @@ function freshestDcf(override) {
  * 写前先备份，且只改这一个键，不动其他配置。
  */
 function ensureComEnable() {
-  const cfgPath = path.join(DEFAULT_DL_DIR, 'Downloader.config')
+  const cfgPath = path.join(resolveDlDir(), 'Downloader.config')
   try {
     if (!fs.existsSync(cfgPath)) return false
     let cfg = fs.readFileSync(cfgPath, 'utf8')
@@ -1613,7 +2583,7 @@ function ensureComEnable() {
 async function handleHttp(req, res, state, api) {
   const url = new URL(req.url, 'http://localhost')
   const p = url.pathname.replace(/^\/downloader/, '') || '/'
-  const { scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog, sseClients, DEFAULT_DL_DIR, guardDcf, setWatch, doFlash, freshestDcf, clearLogFile } = api
+  const { scanLevel, gitStatus, serialHelper, flashHelper, broadcast, pushLog, sseClients, DEFAULT_DL_DIR, guardDcf, setWatch, doFlash, freshestDcf, clearLogFile, startSerialGuard, stopSerialGuard, resetStaleFlashConnection, noSleepStatus, applyNoSleep, burnOptionsStatus, applyBurnOptions, setNoSleep, clearFlashTimersNow } = api
 
   try {
     // ---- SSE：一条流推所有实时事件 ----
@@ -1718,6 +2688,7 @@ async function handleHttp(req, res, state, api) {
           // 记住用户意图：他想看串口。烧录会临时抢走，烧完要按这个意图还回去
           state.serial.wantOpen = { port: body.port, baud: body.baud || 1500000 }
           pushLog('S', `串口 ${body.port} @${state.serial.baud} 已打开`)
+          startSerialGuard()
           broadcast({ ev: 'serial-state', serial: state.serial })
         } else {
           const merged = state.serial.suppressed ? `（已合并 ${state.serial.suppressed} 条重复错误）` : ''
@@ -1731,13 +2702,23 @@ async function handleHttp(req, res, state, api) {
     }
 
     if (p === '/serial/close' && req.method === 'POST') {
-      serialHelper.start()
-      await serialHelper.command('close', {})
+      stopSerialGuard()
+      /* Closing is an explicit "I do not want the log port": forget the pending
+         wantOpen intent, otherwise the next flash silently reopens it. */
+      state.serial.wantOpen = null
+      state.serial.resumeAfterFlash = null
+      let r = { ok: true }
+      try {
+        if (!serialHelper.alive) serialHelper.start()
+        r = await serialHelper.command('close', {}, 3000)
+      } catch (e) {
+        r = { ok: false, error: String(e && e.message ? e.message : e) }
+      }
       state.serial.open = false
       state.serial.port = null
-      pushLog('S', '串口已关闭')
+      pushLog('S', r.ok === true ? '串口已关闭' : '串口已关闭（helper 未确认：' + String(r.error || r.msg || '未知') + '）')
       broadcast({ ev: 'serial-state', serial: state.serial })
-      return json(res, 200, { ok: true })
+      return json(res, r.ok === true ? 200 : 500, r)
     }
 
     if (p === '/serial/write' && req.method === 'POST') {
@@ -1903,84 +2884,117 @@ async function handleHttp(req, res, state, api) {
       //   不能放在 launch 之前的底部，否则 already:true 会提前 return。
       const fixed = ensureComEnable()
       if (fixed) pushLog('S', '已修正 Downloader 的 COMEnable=False → True（否则不扫串口）')
+      /* connected is bridge memory; if the window is gone, returning already:true
+         here was how a click ended up waiting forever for a tool that was not
+         there. Reset and launch a real one. */
+      if (resetStaleFlashConnection('连接检查')) {
+        await new Promise(r => setTimeout(r, 800))
+      }
       if (state.flash.connected && flashHelper.alive) {
         return json(res, 200, { ok: true, already: true })
       }
 
       // ★ 启动互斥：正在启动（或已 launched 但还没握手）时绝不再发一次 launch，
       //   否则 helper 会拉起第二个 Downloader（Windows 上就是“工具冲突”）。
-      if (!shouldLaunchFlash(state.flash, flashHelper.alive)) {
+      //   readBody/serial close 都有 await：锁必须在第一个 await 之前同步拿到，
+      //   否则两个点击都会通过 guard，各发一次 launch（已实测）。
+      if (!beginFlashLaunch(state.flash, flashHelper.alive)) {
         return json(res, 200, { ok: true, pending: true, message: 'Downloader 正在启动，请稍候' })
       }
-
-      // ★ 最常见的失败原因：用户自己开着 Downloader。
-      //   它占着串口、也不响应我们的 IPC，helper 新起的实例永远等不到 StartOK。
-      //   必须在启动前就拦住并说清原因，而不是让用户干等 12 秒看到"超时"。
-      const body = await readBody(req).catch(() => '{}')
-      let force = false
-      try { force = !!JSON.parse(body || '{}').force } catch { }
-      const foreign = findForeignDownloader()
-      if (foreign.length && !force) {
-        const pids = foreign.map(f => f.pid).join(', ')
-        pushLog('S', `检测到已有 Downloader 在运行（PID ${pids}），它会占用串口并阻止握手`)
-        return json(res, 409, {
-          error: 'already-running',
-          message: `已有一个 Downloader 在运行（PID ${pids}）。\n\n` +
-            '请先关闭它再点连接；或者直接用它（但那样工作台无法接管进度与日志）。',
-          pids: foreign.map(f => f.pid),
-        })
+      const releaseConnect = () => {
+        state.flash.launching = false
+        state.flash.launchAt = 0
+        state.flash.busy = false
       }
+      let started = false
+      try {
+        const body = await readBody(req).catch(() => '{}')
+        let force = false
+        try { force = !!JSON.parse(body || '{}').force } catch { }
 
-      // ★ 连接前必须让出串口：实测确认工作台占着 COM 时，
-      //   Downloader 的 DevChange 永远不会出现（它扫不到设备）。
-      //   记住原本开着的端口，烧完自动抢回。
-      // 只要用户曾经想看串口（wantOpen），就记住烧完要还回去。
-      // 不能只看当前是不是开着 —— 烧录前一步可能已经让出了。
-      if (state.serial.open || state.serial.wantOpen) {
-        state.serial.resumeAfterFlash = state.serial.wantOpen
-          || { port: state.serial.port, baud: state.serial.baud }
-        if (state.serial.open) {
-          await serialHelper.command('close', {})
-          state.serial.open = false
+        // ★ 最常见的失败原因：用户自己开着 Downloader。
+        //   它占着串口、也不响应我们的 IPC，helper 新起的实例永远等不到 StartOK。
+        //   必须在启动前就拦住并说清原因，而不是让用户干等 12 秒看到"超时"。
+        const foreign = findForeignDownloader([state.flash.pid])
+        if (foreign.length && !force) {
+          const pids = foreign.map(f => f.pid).join(', ')
+          pushLog('S', `检测到已有 Downloader 在运行（PID ${pids}），它会占用串口并阻止握手`)
+          releaseConnect()
+          return json(res, 409, {
+            error: 'already-running',
+            message: `已有一个 Downloader 在运行（PID ${pids}）。\n\n` +
+              '请先关闭它再点连接；或者直接用它（但那样工作台无法接管进度与日志）。',
+            pids: foreign.map(f => f.pid),
+          })
         }
-        pushLog('S', '串口 ' + state.serial.resumeAfterFlash.port + ' 已交给 Downloader（属于互斥资源）')
-        broadcast({ ev: 'serial-state', serial: state.serial })
-        await new Promise(r => setTimeout(r, 300))
+
+        // ★ 连接前必须让出串口：实测确认工作台占着 COM 时，
+        //   Downloader 的 DevChange 永远不会出现（它扫不到设备）。
+        //   记住原本开着的端口，烧完自动抢回。
+        // 只要用户曾经想看串口（wantOpen），就记住烧完要还回去。
+        // 不能只看当前是不是开着 —— 烧录前一步可能已经让出了。
+        if (state.serial.open || state.serial.wantOpen) {
+          state.serial.resumeAfterFlash = state.serial.wantOpen
+            || { port: state.serial.port, baud: state.serial.baud }
+          if (state.serial.open) {
+            stopSerialGuard()
+            const closed = await serialHelper.command('close', {}, 3000)
+            if (!closed || closed.ok !== true) {
+              startSerialGuard()
+              releaseConnect()
+              pushLog('S', '串口 ' + state.serial.resumeAfterFlash.port + ' 未能让出（' +
+                String((closed && (closed.msg || closed.error)) || 'helper 未确认') + '），已取消启动 Downloader')
+              return json(res, 409, {
+                error: 'serial-busy',
+                message: '串口还被占用，Downloader 会一直扫描。请先关闭串口或拔插后再连接。',
+              })
+            }
+            state.serial.open = false
+          }
+          pushLog('S', '串口 ' + state.serial.resumeAfterFlash.port + ' 已交给 Downloader（属于互斥资源）')
+          broadcast({ ev: 'serial-state', serial: state.serial })
+          await new Promise(r => setTimeout(r, 300))
+        }
+        // ★★ 实测根因：Downloader 启动后**不会主动扫描串口**，
+        //   直到你在它 GUI 里点一下“串口”才开始扫。
+        //   而“串口”开关的状态就是 config 里的 COMEnable：
+        //     COMEnable=False -> 不扫描 -> DevChange 永远不会出现 -> 外观就是“连不上”
+        //     COMEnable=True  -> 启动后 2~3 秒自动扫到设备（已实测）
+        //   所以每次启动前都把它保证成 True。
+        applyNoSleep()
+    if (!flashHelper.start()) {
+          releaseConnect()
+          return json(res, 500, { error: 'helper-start-failed', message: 'IPC helper 启动失败' })
+        }
+        state.flash.busy = true
+        state.flash.tConnect = Date.now()
+        state.flash.stage = '启动 Downloader…'
+        pushLog('S', '正在启动 Downloader（窗口可见）…')
+        broadcast({ ev: 'flash', state: state.flash })
+        flashHelper.line('launch')
+        started = true
+        // 看门狗：12 秒还没握手就认输并放开 busy。
+        // Downloader 冷启动实测 1.3-1.5s，握手总耗时约 2s；12s 是安全上限。
+        setTimeout(() => {
+          if (state.flash.busy && !state.flash.connected) {
+            state.flash.busy = false
+            state.flash.launching = false
+            state.flash.stage = ''
+            state.flash.status = '连接超时'
+            pushLog('S', '[flash] 连接超时：12 秒内没有收到 StartOK。' +
+              '可能 Downloader 已被占用，或 BackShowMode 参数在该版本上不生效。')
+            broadcast({ ev: 'flash', state: state.flash })
+          }
+        }, 12000)
+        return json(res, 200, { ok: true })
+      } finally {
+        if (!started) releaseConnect()
       }
-      // ★★ 实测根因：Downloader 启动后**不会主动扫描串口**，
-      //   直到你在它 GUI 里点一下“串口”才开始扫。
-      //   而“串口”开关的状态就是 config 里的 COMEnable：
-      //     COMEnable=False -> 不扫描 -> DevChange 永远不会出现 -> 外观就是“连不上”
-      //     COMEnable=True  -> 启动后 2~3 秒自动扫到设备（已实测）
-      //   所以每次启动前都把它保证成 True。
-      flashHelper.start()
-      state.flash.launching = true
-      state.flash.launchAt = Date.now()
-      state.flash.busy = true
-      state.flash.tConnect = Date.now()
-      state.flash.stage = '启动 Downloader…'
-      pushLog('S', '正在启动 Downloader（窗口可见）…')
-      broadcast({ ev: 'flash', state: state.flash })
-      flashHelper.line('launch')
-      // 看门狗：12 秒还没握手就认输并放开 busy。
-      // Downloader 冷启动实测 1.3-1.5s，握手总耗时约 2s；12s 是安全上限。
-      setTimeout(() => {
-        if (state.flash.busy && !state.flash.connected) {
-          state.flash.busy = false
-          state.flash.launching = false
-          state.flash.stage = ''
-          state.flash.status = '连接超时'
-          pushLog('S', '[flash] 连接超时：12 秒内没有收到 StartOK。' +
-            '可能 Downloader 已被占用，或 BackShowMode 参数在该版本上不生效。')
-          broadcast({ ev: 'flash', state: state.flash })
-        }
-      }, 12000)
-      return json(res, 200, { ok: true })
     }
 
     // 查有没有别处启动的 Downloader（前端在打开烧录页时先探一次）
     if (p === '/flash/foreign' && req.method === 'GET') {
-      return json(res, 200, { running: findForeignDownloader() })
+      return json(res, 200, { running: findForeignDownloader([state.flash.pid]) })
     }
 
     // ★ 环境自检：把「能连上但看不到设备」的几个已知原因一次查清。
@@ -1989,12 +3003,12 @@ async function handleHttp(req, res, state, api) {
     //   但握手/FileInfo 都正常——表现得像是插件坏了。
     if (p === '/flash/diagnose' && req.method === 'GET') {
       const out = { ok: true, checks: [] }
-      const cfgPath = path.join(DEFAULT_DL_DIR, 'Downloader.config')
+      const dlDir = resolveDlDir()
+      const cfgPath = path.join(dlDir, 'Downloader.config')
       const add = (name, ok, detail, fix) => out.checks.push({ name, ok, detail, fix })
 
-      add('Downloader 目录', fs.existsSync(DEFAULT_DL_DIR), DEFAULT_DL_DIR)
-      add('Downloader.exe', fs.existsSync(path.join(DEFAULT_DL_DIR, 'Downloader.exe')),
-        path.join(DEFAULT_DL_DIR, 'Downloader.exe'))
+      add('Downloader 目录', fs.existsSync(dlDir), dlDir)
+      add('Downloader.exe', fs.existsSync(downloaderExePath()), downloaderExePath())
       // ipcExe 是 apply() 里的局部变量，handleHttp 是模块级函数，访问不到。
       // 这里直接重新解析一次（文件存在性检查，开销可忽略）。
       const ipcOk = IPC_HELPER_CANDIDATES.find(x => fs.existsSync(x))
@@ -2034,7 +3048,7 @@ async function handleHttp(req, res, state, api) {
 
     // 一键修复已知的配置问题（目前只有 COMEnable）
     if (p === '/flash/fix-comenable' && req.method === 'POST') {
-      const cfgPath = path.join(DEFAULT_DL_DIR, 'Downloader.config')
+      const cfgPath = path.join(resolveDlDir(), 'Downloader.config')
       try {
         // 先备份
         const bak = cfgPath + '.bak-' + Date.now()
@@ -2053,7 +3067,7 @@ async function handleHttp(req, res, state, api) {
 
     // 结束别处启动的 Downloader（用户确认后调用）
     if (p === '/flash/kill-foreign' && req.method === 'POST') {
-      const list = findForeignDownloader()
+      const list = findForeignDownloader([state.flash.pid])
       const killed = []
       for (const f of list) {
         try {
@@ -2094,12 +3108,38 @@ async function handleHttp(req, res, state, api) {
       // 只能靠它自己记的 DownFile 槽位；这里把路径记下来给前端展示，
       // 并提示用户可用 Downloader 窗口里的"浏览"改。
       state.flash.dcfPath = body.path
+      state.flash.dcfSize = fileSizeOf(body.path)
       pushLog('S', `已记录目标固件：${body.path}（可在 Downloader 窗口里用「浏览」切换）`)
       broadcast({ ev: 'flash', state: state.flash })
       return json(res, 200, { ok: true, dcfPath: body.path })
     }
 
     // Downloader 的窗口是否已经出现（用户在任务栏应该能看到）
+    if (p === '/setting/no-sleep' && req.method === 'GET') {
+      return json(res, 200, noSleepStatus())
+    }
+
+    if (p === '/setting/no-sleep' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const result = setNoSleep(body !== null && body !== undefined && body.on === true)
+      if (result !== null && result !== undefined && result.error) {
+        return json(res, 500, { error: result.error })
+      }
+      pushLog('S', '自动不休眠：' + (result.auto === true ? '已开启' : '已关闭'))
+      return json(res, 200, result)
+    }
+    if (p === '/setting/burn' && req.method === 'GET') {
+      return json(res, 200, burnOptionsStatus())
+    }
+
+    if (p === '/setting/burn' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      const result = applyBurnOptions(body === null || body === undefined ? {} : body)
+      if (result !== null && result !== undefined && result.error) {
+        return json(res, 500, { error: result.error })
+      }
+      return json(res, 200, result)
+    }
     if (p === '/flash/windows' && req.method === 'GET') {
       flashHelper.start()
       flashHelper.line('windows')
@@ -2119,13 +3159,29 @@ async function handleHttp(req, res, state, api) {
       return json(res, r.ok ? 200 : 409, r)
     }
 
+    if (p === '/flash/erase' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req))
+      if (!body.confirm) return json(res, 400, { error: '需要确认' })
+      if (!state.flash.connected) return json(res, 409, { ok: false, error: 'not-connected' })
+      if (state.flash.burning) return json(res, 409, { ok: false, error: 'busy' })
+      const sent = flashHelper.line('erase')
+      if (!sent) return json(res, 409, { ok: false, error: 'helper-not-running' })
+      pushLog('S', '发送 StartErase（全片擦除）')
+      return json(res, 200, { ok: true })
+    }
+
     if (p === '/flash/stop' && req.method === 'POST') {
-      flashHelper.line('quit')
+      /* line() normally returns false on a dead bridge; keep the state reset in
+         all cases so the page can never stay "烧录中" after a disconnect. */
+      try { flashHelper.line('quit') } catch (error) { void error }
+      clearFlashTimersNow()
       state.flash.busy = false
       state.flash.launching = false
       state.flash.pid = null
       state.flash.burning = false
       state.flash.connected = false
+      state.flash.online = false
+      state.flash.progress = 0
       state.flash.stage = ''
       state.flash.status = '离线'
       pushLog('S', '已停止 Downloader')
@@ -2175,6 +3231,11 @@ async function handleHttp(req, res, state, api) {
       }
       const saved = writeToolConfig({ exe: next })
       if (saved.ok !== true) return json(res, 500, { error: saved.error })
+      /* The IPC helper was created with the old --exe argument; update it so the
+         next connect launches the file the user just selected. */
+      try {
+        flashHelper.args = ['--exe', downloaderExePath(), '--args', 'BackShowMode {hwnd}', '--no-hide']
+      } catch (error) { void error }
       const dir = resolveDlDir()
       pushLog('S', next === ''
         ? '已恢复默认的 Downloader 路径'
@@ -2221,9 +3282,11 @@ async function handleHttp(req, res, state, api) {
       const pick = freshestDcf()
       if (pick === null) {
         state.flash.dcfPath = null
+      state.flash.dcfSize = 0
         summary += '（新目录下还没有 dcf，等编译产物）'
       } else {
         state.flash.dcfPath = pick
+      state.flash.dcfSize = fileSizeOf(pick)
         const wrote = writeDownFile(pick)
         summary += ' → 固件 ' + path.basename(pick)
         summary += wrote.ok === true
@@ -2234,7 +3297,10 @@ async function handleHttp(req, res, state, api) {
       pushLog('S', summary)
       /* 自动烧录正在监听时，监听目标也必须跟着换，否则还盯着旧工程的 dcf。 */
       let watchPath = state.watch.path
-      if (state.watch.on === true && pick !== null && pick !== state.watch.path) {
+      if (state.watch.on === true && pick !== null && state.watch.timer === null) {
+        const armed = setWatch(true, pick)
+        if (armed.ok === true) watchPath = state.watch.path
+      } else if (state.watch.on === true && pick !== null && pick !== state.watch.path) {
         const st = fs.statSync(pick)
         state.watch.path = pick
         state.watch.lastMtime = st.mtimeMs
@@ -2275,12 +3341,13 @@ async function handleHttp(req, res, state, api) {
         broadcast({ ev: 'watch', watch: { on: true, path: newPath } })
       }
       state.flash.dcfPath = newPath
+      state.flash.dcfSize = fileSizeOf(newPath)
       return json(res, 200, { ok: true, applied: wasOn, path: newPath })
     }
 
     if (p === '/flash/config' && req.method === 'GET') {
       // 只读展示 Downloader.config 里的槽位信息（帮用户确认用哪个 dcf）
-      const cfgPath = path.join(DEFAULT_DL_DIR, 'Downloader.config')
+      const cfgPath = path.join(resolveDlDir(), 'Downloader.config')
       let slots = []
       try {
         const cfg = await fsp.readFile(cfgPath, 'utf8')
@@ -2288,7 +3355,8 @@ async function handleHttp(req, res, state, api) {
         let m
         while ((m = re.exec(cfg))) slots.push({ key: m[1], file: m[2] })
       } catch { }
-      return json(res, 200, { dir: DEFAULT_DL_DIR, exists: fs.existsSync(DEFAULT_DL_DIR), slots })
+      const dir = resolveDlDir()
+      return json(res, 200, { dir, exists: fs.existsSync(dir), slots })
     }
 
     return json(res, 404, { error: 'not found', path: p })
@@ -2314,17 +3382,21 @@ function spawnSyncSafe(cmd, args) {
   try { return execFileSync(cmd, args, { encoding: 'utf8', timeout: 2000 }) } catch { return '' }
 }
 
+/** Cheap exact PID probe: no `tasklist` spawn, no transient empty output. */
+export function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return Boolean(error && error.code === 'EPERM')
+  }
+}
 /**
- * 检测是否已有别处启动的 Downloader.exe。
- *
- * 这是"连不上"最常见的原因：用户自己双击打开了 Downloader（或上一次没关干净），
- * 它占着串口、也不会响应我们的 IPC 握手，于是 helper 新起的实例永远等不到 StartOK。
- *
- * 判据用 ParentProcessId 排除我们自己拉起的那个（父进程是 DownloaderIpcBridge.exe）。
- * ⚠️ 性能：一次 PowerShell 调用查完所有进程并直接判定，
- *    不要"每个进程再查一次父进程"——那样每次点连接要 2.4 秒。
+ * All Downloader.exe PIDs Windows currently reports (cheap: tasklist ~50 ms).
+ * This is the "actual running state" the auto-flash decision now uses.
  */
-function findForeignDownloader() {
+function listDownloaderPids() {
   // 用 tasklist 而不是 Get-CimInstance：后者单次 1.5 秒，前者约 50ms。
   // tasklist /FO CSV /NH 输出形如 "Downloader.exe","38512","Console","1","52,000 K"
   try {
@@ -2336,14 +3408,23 @@ function findForeignDownloader() {
       const m = /"([^"]*)","(\d+)"/.exec(line)
       if (m) pids.push(Number(m[2]))
     }
-    if (!pids.length) return []
-    // 只有在 helper 没握手成功时才需要这些；此时我们的 helper 还没拉起 Downloader，
-    // 所以此刻存在的 Downloader 一定是"别处启动的"。
-    // 已经 connected 的情形在调用方被提前 return 掉了。
-    return pids.map(pid => ({ pid, parent: null }))
+    return pids
   } catch {
     return []
   }
+}
+
+/**
+ * Downloader.exe processes that our bridge did NOT launch.
+ *
+ * Passing the bridge's own child PID matters: a helper that launched a
+ * Downloader but has not received StartOK yet must not treat that child as a
+ * foreign instance (that made the old code kill/relaunch its own process).
+ */
+function findForeignDownloader(exceptPids) {
+  const except = new Set((Array.isArray(exceptPids) ? exceptPids : [exceptPids])
+    .filter(pid => Number.isInteger(pid) && pid > 0))
+  return listDownloaderPids().filter(pid => !except.has(pid)).map(pid => ({ pid, parent: null }))
 }
 
 

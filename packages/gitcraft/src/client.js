@@ -28,6 +28,54 @@ window.__ModuleLoader__.load({
     const useCallback = React.useCallback
 
     const API_BASE = 'dsh-gitcraft/api'
+    /* Diffs are the expensive state of this pane and mounting it again (switch
+       to another workbench tab and back) used to throw the patch away and spawn
+       git a second time. Commit patches are immutable; working-tree patches get
+       a short TTL so re-entry is instant without hiding an edit for long. */
+    const PANE_DIFF_CACHE_LIMIT = 48
+    const PANE_DIFF_CACHE_MAX_CHARS = 8 * 1024 * 1024
+    const PANE_DIFF_COMMIT_TTL_MS = 10 * 60 * 1000
+    const PANE_DIFF_WORKTREE_TTL_MS = 5000
+    const paneDiffCache = new Map()
+    let paneDiffCacheChars = 0
+
+    function paneDiffKey(root, base, rev, path, whole) {
+      return String(root || '') + '\u0000' + String(base || '') + '\u0000'
+        + String(rev || '') + '\u0000' + String(path || '') + '\u0000' + (whole === true ? '1' : '0')
+    }
+
+    function readPaneDiff(key, ttlMs) {
+      const hit = paneDiffCache.get(key)
+      if (hit === undefined) return null
+      if (Date.now() - hit.at > ttlMs) {
+        paneDiffCache.delete(key)
+        paneDiffCacheChars -= hit.chars
+        return null
+      }
+      paneDiffCache.delete(key)
+      paneDiffCache.set(key, hit)
+      return hit.value
+    }
+
+    function rememberPaneDiff(key, value) {
+      const chars = (typeof value.patch === 'string' ? value.patch.length : 0)
+        + (Array.isArray(value.hunks) ? value.hunks.length * 80 : 0)
+      if (chars > PANE_DIFF_CACHE_MAX_CHARS) return
+      if (paneDiffCache.has(key)) {
+        paneDiffCacheChars -= paneDiffCache.get(key).chars
+        paneDiffCache.delete(key)
+      }
+      paneDiffCache.set(key, { at: Date.now(), value, chars })
+      paneDiffCacheChars += chars
+      while (paneDiffCache.size > 1
+        && (paneDiffCache.size > PANE_DIFF_CACHE_LIMIT || paneDiffCacheChars > PANE_DIFF_CACHE_MAX_CHARS)) {
+        const oldest = paneDiffCache.keys().next()
+        if (oldest.done === true) break
+        const stale = paneDiffCache.get(oldest.value)
+        if (stale !== undefined) paneDiffCacheChars -= stale.chars
+        paneDiffCache.delete(oldest.value)
+      }
+    }
     const TAB_ID = 'dsh-gitcraft:panel'
     const NATIVE_ID = 'gitcraft'
     const NATIVE_KIND = 'gitcraft'
@@ -936,6 +984,9 @@ window.__ModuleLoader__.load({
       function PaneHost() {
         /* Bumped by showDiff(force) so the fetch effect re-runs for the SAME target. */
         const [reloadNonce, setReloadNonce] = useState(0)
+        /* Set when showDiff hydrated from the pane cache; the fetch effect must
+         skip exactly that state update or the point of the cache is lost. */
+        const cacheHitKeyRef = useRef('')
         const [state, setState] = useState({ path: null, base: 'worktree', rev: null, whole: false, mode: initialMode, patch: '', hunks: [], loading: false, error: null, binary: false })
 
         useEffect(() => {
@@ -976,9 +1027,23 @@ window.__ModuleLoader__.load({
                after staging or discarding a hunk the same file/base still answers, but
                the content is different; force is how the host says so. */
             const force = options !== null && options !== undefined && options.force === true
+            if (force === true) cacheHitKeyRef.current = ''
+            const cacheRoot = scope !== null && scope !== undefined && typeof scope.repoRoot === 'string' ? scope.repoRoot : ''
+            const cacheKey = paneDiffKey(cacheRoot, base, rev, target, whole)
+            const cacheTtl = base === 'commit' ? PANE_DIFF_COMMIT_TTL_MS : PANE_DIFF_WORKTREE_TTL_MS
+            const cached = force === true ? null : readPaneDiff(cacheKey, cacheTtl)
+            if (cached !== null) cacheHitKeyRef.current = cacheKey
             setState((previous) => {
               if (force !== true
-                && previous.path === target && previous.base === base && previous.rev === rev && previous.whole === whole) return previous
+                && previous.path === target && previous.base === base && previous.rev === rev && previous.whole === whole
+                && previous.loading !== true && previous.error === null) return previous
+              if (cached !== null) {
+                return {
+                  path: target, base, rev, whole, mode: previous.mode,
+                  patch: cached.patch, hunks: cached.hunks,
+                  loading: false, error: null, binary: cached.binary === true,
+                }
+              }
               return {
                 path: target, base, rev, whole, mode: previous.mode,
                 patch: force === true ? previous.patch : '',
@@ -988,8 +1053,6 @@ window.__ModuleLoader__.load({
                 binary: false,
               }
             })
-            /* The fetch effect keys on target/base/rev/whole, so forcing the SAME target
-               would not re-run it. The nonce is what makes it run. */
             if (force === true) setReloadNonce((value) => value + 1)
           }
           /* Replay whatever the host asked for before we were ready. */
@@ -1020,8 +1083,14 @@ window.__ModuleLoader__.load({
         const pathForRequest = state.path
         const baseForRequest = state.base
         const revForRequest = state.rev
+        const wholeForRequest = state.whole === true
+        const requestCacheKey = paneDiffKey(repoRoot, baseForRequest, revForRequest, pathForRequest, wholeForRequest)
         useEffect(() => {
           if (pathForRequest === null) return undefined
+          if (cacheHitKeyRef.current === requestCacheKey) {
+            cacheHitKeyRef.current = ''
+            return undefined
+          }
           let cancelled = false
           /* whole sends no pathspec at all: that is what makes it the whole commit. */
           const payload = { base: baseForRequest }
@@ -1034,6 +1103,12 @@ window.__ModuleLoader__.load({
           /* An untracked file has no diff against HEAD - git diff prints nothing.
              The host has a dedicated method that renders it as an all-added patch. */
           call(baseForRequest === 'untracked' ? 'untrackedDiff' : 'diff', payload).then((data) => {
+            const patch = data !== null && data !== undefined && typeof data.patch === 'string' ? data.patch : ''
+            const hunks = data !== null && data !== undefined && Array.isArray(data.hunks) ? data.hunks : []
+            const binary = data !== null && data !== undefined && data.binary === true
+            /* Cache even when this pane was unmounted mid-request: switching away
+               and back must not throw away a patch that already arrived. */
+            rememberPaneDiff(requestCacheKey, { patch, hunks, binary })
             if (cancelled) return
             setState((previous) => (previous.path !== pathForRequest
               || previous.base !== baseForRequest
@@ -1041,11 +1116,11 @@ window.__ModuleLoader__.load({
               path: pathForRequest,
               base: baseForRequest,
               rev: revForRequest,
-              patch: data !== null && data !== undefined && typeof data.patch === 'string' ? data.patch : '',
-              hunks: data !== null && data !== undefined && Array.isArray(data.hunks) ? data.hunks : [],
+              patch,
+              hunks,
               loading: false,
               error: null,
-              binary: data !== null && data !== undefined && data.binary === true,
+              binary,
             }))
           }).catch((error) => {
             if (cancelled) return
@@ -1063,7 +1138,7 @@ window.__ModuleLoader__.load({
             }))
           })
           return () => { cancelled = true }
-        }, [pathForRequest, baseForRequest, revForRequest, t, repoRoot, reloadNonce])
+        }, [pathForRequest, baseForRequest, revForRequest, wholeForRequest, requestCacheKey, t, repoRoot, reloadNonce])
         /**
          * A request that never settles must not spin forever.
          *
@@ -3736,7 +3811,7 @@ window.__ModuleLoader__.load({
 .gwc-fileSearch{position:relative;display:flex;align-items:center;gap:6px;flex:1;min-width:0;padding:0 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#14161a)}
 .gwc-fileSearch:focus-within{border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .gwc-fileInput{flex:1;min-width:0;border:none;background:transparent;padding:5px 0;font-size:12px;color:inherit}
-.gwc-fileInput:focus{outline:none}
+.gwc-fileInput:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe)}
 .gwc-fileInput::-webkit-search-cancel-button{display:none}
 .gwc-fileClear{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);cursor:pointer;flex:none}
 .gwc-fileClear:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
@@ -3785,7 +3860,7 @@ window.__ModuleLoader__.load({
 .gwc-mode-compact .gwc-fileLogAuthor,.gwc-mode-compact .gwc-fileLogTime{display:none}
 .gwc-commitBox{flex:none;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));padding:6px 8px;display:flex;flex-direction:column;gap:5px;background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.02))}
 .gwc-commitInput{width:100%;resize:vertical;min-height:38px;max-height:140px;padding:5px 7px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;box-sizing:border-box}
-.gwc-commitInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.gwc-commitInput:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .gwc-commitRow{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .gwc-check{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .gwc-checkHint{color:var(--dsw-alias-label-tertiary,#8a8f98)}
@@ -3798,7 +3873,7 @@ window.__ModuleLoader__.load({
 .gwc-history{display:flex;flex-direction:column;min-height:0;flex:1}
 .gwc-historyBar{display:flex;gap:6px;align-items:center;padding:6px 8px}
 .gwc-input{flex:1;min-width:0;padding:4px 7px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:12px}
-.gwc-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.gwc-input:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 /* No scroll of its own: the pieces inside scroll separately, so reading the last
    changed file never pushes the commit subject or the action row out of view. */
 /* flex-basis 0 (not auto): with auto the column grew with its content, so
@@ -3908,7 +3983,7 @@ window.__ModuleLoader__.load({
 .gwc-lib-label{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .gwc-lib-inputRow{display:flex;gap:6px;align-items:center}
 .gwc-lib-input{flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:12px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
-.gwc-lib-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.gwc-lib-input:focus{outline:none;box-shadow:0 0 0 1px var(--dsw-alias-brand-primary,#4d6bfe);border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .gwc-lib-browseBtn{flex:none;min-width:34px;height:30px;padding:0 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:12px;cursor:pointer}
 .gwc-lib-browseBtn.is-text{min-width:auto}
 .gwc-lib-browseBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1))}

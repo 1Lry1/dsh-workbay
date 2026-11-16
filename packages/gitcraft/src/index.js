@@ -24,6 +24,10 @@ import path from 'node:path'
 import { mountJsonApi } from '@dsh-workbay/kit'
 
 export const name = 'dsh-gitcraft'
+
+/* Test-only surface: the caches are process memory with no files of their own,
+   so the only way to assert their bounds is to read them from here. */
+export const __test = { diffCacheStats, setDiffCacheBudget }
 export const inject = ['webServer']
 
 const ROUTE_PREFIX = '/dsh-gitcraft/api'
@@ -153,6 +157,11 @@ const GIT_GLOBAL_ARGS = [
   '-c', 'gc.auto=0',
   '-c', 'maintenance.auto=false',
   '-c', 'core.quotepath=false',
+  /* A user config of log.showSignature=true makes every log/show verify GPG
+     signatures (a process per commit, often seconds). The panel never renders
+     signature state, so switch it off for these plumbing reads. */
+  '-c', 'log.showSignature=false',
+  '-c', 'color.ui=false',
 ]
 
 /** spawn() env: no optional index locks, no interactive prompt, stable locale. */
@@ -807,11 +816,11 @@ function withRepoLock(key, work) {
 const WRITE_METHODS = new Set([
   'stage', 'unstage', 'discard', 'stageHunk', 'unstageHunk', 'discardHunk',
   'commit', 'amend', 'checkout', 'branchCreate', 'branchRename', 'branchDelete',
-  'branchUpstream', 'merge', 'mergeAbort', 'mergeContinue', 'rebase', 'rebaseAbort', 'rebaseContinue',
+  'branchUpstream', 'branchDeleteRemote', 'merge', 'mergeAbort', 'mergeContinue', 'rebase', 'rebaseAbort', 'rebaseContinue',
   'cherryPick', 'revert', 'reset', 'fetch', 'pull', 'push', 'pushTags',
   'stashPush', 'stashApply', 'stashPop', 'stashDrop', 'stashClear',
   'tagCreate', 'tagDelete', 'tagDeleteRemote', 'tagPush', 'tagReset', 'remoteAdd', 'remoteRemove',
-  'conflictResolve', 'cleanUntracked', 'init',
+  'conflictResolve', 'cleanUntracked', 'ignore', 'init',
 ])
 
 function lockKeyOf(payload) {
@@ -1071,8 +1080,8 @@ async function snapshotOf(root) {
       '--branch', '-z', '--untracked-files=all', '--no-renames',
       '--ignore-submodules=dirty',
     ], { timeoutMs: 30_000 }),
-    runGit(root, ['diff', '--cached', '--numstat', '-z', '--no-renames'], { timeoutMs: 30_000 }),
-    runGit(root, ['diff', '--numstat', '-z', '--no-renames'], { timeoutMs: 30_000 }),
+    runGit(root, ['diff', '--cached', '--numstat', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color'], { timeoutMs: 30_000 }),
+    runGit(root, ['diff', '--numstat', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color'], { timeoutMs: 30_000 }),
   ])
   if (statusRaw.code !== 0) {
     throw new PanelError('status-failed', statusRaw.stderr.trim() || 'git status failed', 409)
@@ -1123,6 +1132,115 @@ async function snapshotOf(root) {
   }
 }
 
+/* ============================== diff cache ============================== */
+
+/*
+ * A git diff / git show spawn costs ~400 ms on a cold Windows profile, and
+ * the pane asks for patches constantly: re-selecting a file, switching tabs,
+ * reopening the drawer, walking a commit's file list. Commit patches are
+ * immutable; working-tree ones are keyed by the watcher revision, so a change
+ * simply makes the old entry unreachable — no invalidation step to forget.
+ */
+const DIFF_CACHE_LIMIT = 32
+/* Hard ceiling on the patch text this cache may hold, regardless of count. The
+   pane never needs more than the handful of patches it just showed, and a
+   session walking big commit patches must not grow the host process unbounded. */
+const DIFF_CACHE_MAX_BYTES = 32 * 1024 * 1024
+const COMMIT_DIFF_TTL_MS = 5 * 60 * 1000
+const WORKTREE_DIFF_TTL_MS = 8000
+const diffCache = new Map()
+const diffInflight = new Map()
+/* Commit metadata is immutable: the hash IS its content. Re-selecting a commit
+   used to spawn two `git show` processes every time (the source-control page
+   fetches detail on every click), so cache the small result and share an
+   in-flight request between a hover prefetch and the click. */
+const COMMIT_DETAIL_CACHE_LIMIT = 200
+const commitDetailCache = new Map()
+const commitDetailInflight = new Map()
+/* Running total of the patch text held above; kept in step by rememberDiff /
+   removeDiffEntry / invalidateDiffs. */
+let diffCacheBytes = 0
+let diffCacheMaxBytes = DIFF_CACHE_MAX_BYTES
+let diffCacheMaxEntriesOverride = 0
+
+function diffCacheKey(root, base, rev, filePath, context) {
+  if (base === 'commit') return 'commit:' + rev + '\u0000' + root + '\u0000' + (filePath === null ? '' : filePath) + '\u0000' + context
+  /* Working-tree patches depend on the INDEX and on the file itself. Both are
+     cheap stat() calls, so "the user edited the file and re-selected it" never
+     serves a stale patch even when no watcher is running. */
+  let stamp = 'rev:' + watcherRevisionOf(root)
+  try {
+    const gitDir = gitDirOf(root)
+    if (gitDir.dir !== '') stamp += '|idx:' + statSync(path.join(gitDir.dir, 'index')).mtimeMs
+  } catch (error) { void error }
+  if (filePath !== null && filePath !== '') {
+    try {
+      const stat = statSync(path.join(root, filePath))
+      stamp += '|f:' + stat.mtimeMs + ':' + stat.size
+    } catch (error) { void error }
+  }
+  return stamp + '\u0000' + root + '\u0000' + base + '\u0000' + (filePath === null ? '' : filePath) + '\u0000' + context
+}
+
+function readDiffCache(key, ttlMs) {
+  const hit = diffCache.get(key)
+  if (hit === undefined) return null
+  if (Date.now() - hit.at > ttlMs) {
+    diffCache.delete(key)
+    return null
+  }
+  /* LRU touch. */
+  diffCache.delete(key)
+  diffCache.set(key, hit)
+  return hit.value
+}
+
+function rememberDiff(key, value) {
+  const weight = diffWeightOf(value)
+  if (diffCache.has(key)) removeDiffEntry(key)
+  diffCache.set(key, { at: Date.now(), value, weight })
+  diffCacheBytes += weight
+  /* Two ceilings: entry count (many tiny patches) and total size (a few huge
+     ones). The size budget is a hard cap on what this cache can hold, so a
+     session that walks enormous commit patches cannot grow without bound. */
+  const maxEntries = diffCacheMaxEntriesOverride > 0 ? diffCacheMaxEntriesOverride : DIFF_CACHE_LIMIT
+  while (diffCache.size > 1 && (diffCache.size > maxEntries || diffCacheBytes > diffCacheMaxBytes)) {
+    const oldest = diffCache.keys().next()
+    if (oldest.done === true) break
+    removeDiffEntry(oldest.value)
+  }
+}
+
+/* V8 stores JS strings as 1–2 bytes per char; counting 2 bytes per code unit is a
+   safe upper bound for the budget without measuring every patch twice. */
+function diffWeightOf(value) {
+  const patch = value !== null && value !== undefined && typeof value.patch === 'string' ? value.patch : ''
+  return patch.length * 2
+}
+
+function removeDiffEntry(key) {
+  const entry = diffCache.get(key)
+  if (entry === undefined) return
+  diffCache.delete(key)
+  diffCacheBytes -= entry.weight
+  if (diffCacheBytes < 0) diffCacheBytes = 0
+}
+
+function invalidateDiffs() {
+  diffCache.clear()
+  diffCacheBytes = 0
+}
+
+/** Diagnostics for tests: what the cache currently holds. */
+function diffCacheStats() {
+  return { entries: diffCache.size, bytes: diffCacheBytes, maxBytes: diffCacheMaxBytes, maxEntries: DIFF_CACHE_LIMIT }
+}
+
+/** Test-only knob so the byte ceiling can be exercised without 32 MB of files. */
+function setDiffCacheBudget(bytes, entries) {
+  if (Number.isFinite(bytes) && bytes >= 0) diffCacheMaxBytes = bytes
+  if (Number.isFinite(entries) && entries >= 1) diffCacheMaxEntriesOverride = Math.floor(entries)
+}
 /* ============================== snapshot cache ============================== */
 
 /* The panel polls on a timer AND asks for a snapshot after its own actions, so a
@@ -1131,6 +1249,7 @@ async function snapshotOf(root) {
    call. Writes never go through here (they call `snapshotOf` directly) and they
    drop the cache when they finish, so a mutation is never reported stale. */
 const SNAPSHOT_TTL_MS = 400
+const SNAPSHOT_REVISION_TTL_MS = 5000
 /* One retained snapshot per repository viewed: the panel only ever watches one
    at a time, and this keeps a long session from holding every repository's
    file list in memory. */
@@ -1154,8 +1273,13 @@ function readSnapshotOf(root) {
   if (cached !== undefined) {
     if (cached.pending !== undefined) return cached.pending
     if (Date.now() - cached.at < SNAPSHOT_TTL_MS) return Promise.resolve(cached.value)
+    /* The watcher already told us whether anything changed: if its revision is
+       the one this snapshot was taken at, the answer is still current and a
+       second git round-trip (~400 ms per spawn on Windows) buys nothing. */
+    if (cached.value !== null && cached.revision === watcherRevisionOf(root)
+      && Date.now() - cached.at < SNAPSHOT_REVISION_TTL_MS) return Promise.resolve(cached.value)
   }
-  const entry = { at: 0, value: null, pending: undefined }
+  const entry = { at: 0, value: null, pending: undefined, revision: 0 }
   rememberSnapshot(root, entry)
   /* Identity-checked when settling: a write may have replaced or dropped this
      entry meanwhile, and a stale result must not be cached. */
@@ -1163,6 +1287,7 @@ function readSnapshotOf(root) {
     if (snapshotCache.get(root) === entry) {
       entry.at = Date.now()
       entry.value = value
+      entry.revision = watcherRevisionOf(root)
       entry.pending = undefined
     }
     return value
@@ -1949,8 +2074,13 @@ const METHODS = {
       payload.limit ?? 60, payload.skip ?? 0, payload.ref ?? '',
       payload.search ?? '', payload.author ?? '', payload.path ?? '',
     ]))
-    const hit = cachedList(key)
-    if (hit !== undefined) return hit
+    /* Source-control has no /watch long-poll, so an external commit would leave
+       the watcher revision at 0 and the cache stale forever. An explicit refresh
+       must bypass the list cache. */
+    if (payload.refresh !== true) {
+      const hit = cachedList(key)
+      if (hit !== undefined) return hit
+    }
     return rememberList(key, await logOf(root, payload))
   },
 
@@ -1958,22 +2088,51 @@ const METHODS = {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const revision = watcherRevisionOf(root)
     const key = listCacheKey('branches', root, revision, '')
-    const hit = cachedList(key)
-    if (hit !== undefined) return hit
+    if (payload.refresh !== true) {
+      const hit = cachedList(key)
+      if (hit !== undefined) return hit
+    }
     return rememberList(key, await branchesOf(root))
   },
 
   async commitDetail(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const rev = requireRef(payload.rev, 'rev')
+    /* Only an object name is immutable. A symbolic rev (HEAD, a branch) can
+       point at a different commit one call later; caching it under the literal
+       string returned stale detail after an amend/commit. */
+    const cacheable = /^[0-9a-f]{7,64}$/i.test(rev)
+    const cacheKey = cacheable ? root + '\u0000' + rev : ''
+    if (cacheable) {
+      const cached = commitDetailCache.get(cacheKey)
+      if (cached !== undefined) {
+        /* LRU touch. */
+        commitDetailCache.delete(cacheKey)
+        commitDetailCache.set(cacheKey, cached)
+        return cached
+      }
+      const pending = commitDetailInflight.get(cacheKey)
+      if (pending !== undefined) return pending
+    }
     const format = ['%H', '%h', '%an', '%ae', '%at', '%cn', '%ce', '%ct', '%P', '%s', '%B'].join('%x1f')
-    const res = await runGit(root, ['show', '-s', `--pretty=format:${format}%x1e`, '--end-of-options', rev], { timeoutMs: 30_000 })
-    if (res.code !== 0) throw new PanelError('commit-failed', res.stderr.trim() || 'git show failed', 409)
-    const fields = res.stdout.split('\u001f')
-    const names = await runGit(root, ['show', '--name-status', '--format=', '-z', '--end-of-options', rev], { timeoutMs: 30_000 })
-    const files = []
-    if (names.code === 0) {
-      const parts = names.stdout.split('\u0000').filter((entry) => entry !== '')
+    const request = (async () => {
+      /* ONE `git show` instead of two. The old code ran `git show -s` for the
+         message and then another `git show --name-status`; on Windows each
+         process costs ~120-250 ms. `--name-status -z` plus a pretty format emits
+         both in one stream: header up to \x1e, then NUL-separated status/path. */
+      const res = await runGit(root, [
+        'show', '--name-status', '-z',
+        '--no-ext-diff', '--no-textconv', '--no-color',
+        `--pretty=format:${format}%x1e`,
+        '--end-of-options', rev,
+      ], { timeoutMs: 30_000 })
+      if (res.code !== 0) throw new PanelError('commit-failed', res.stderr.trim() || 'git show failed', 409)
+      const split = res.stdout.indexOf('\u001e')
+      const header = split < 0 ? res.stdout : res.stdout.slice(0, split)
+      const statusText = split < 0 ? '' : res.stdout.slice(split + 1).replace(/^\r?\n/, '')
+      const fields = header.split('\u001f')
+      const files = []
+      const parts = statusText.split('\u0000').filter((entry) => entry !== '')
       for (let i = 0; i < parts.length; i += 1) {
         const status = parts[i]
         if (/^[A-Z]\d*$/.test(status) === false) continue
@@ -1985,43 +2144,82 @@ const METHODS = {
         else i += 1
         files.push({ status: status[0], path: normalizeSeparators(target === undefined ? filePath : target) })
       }
-    }
-    return {
-      hash: fields[0],
-      short: fields[1],
-      authorName: fields[2],
-      authorEmail: fields[3],
-      authorTime: Number(fields[4]) * 1000 || 0,
-      committerName: fields[5],
-      committerEmail: fields[6],
-      commitTime: Number(fields[7]) * 1000 || 0,
-      parents: fields[8] === '' ? [] : fields[8].split(' '),
-      subject: fields[9],
-      /* `%B` is the raw commit message: it STARTS with the subject line and ends
-         with the format's `%x1e` record separator.
-           - leaving the separator in renders an invisible control character and
-             breaks the "body equals subject" check;
-           - leaving the subject in makes a body-less commit echo its own title.
-         So: strip the separator, then drop the subject prefix when present. */
-      body: cleanCommitBody(fields[10], fields[9]),
-      files,
+      const value = {
+        hash: fields[0],
+        short: fields[1],
+        authorName: fields[2],
+        authorEmail: fields[3],
+        authorTime: Number(fields[4]) * 1000 || 0,
+        committerName: fields[5],
+        committerEmail: fields[6],
+        commitTime: Number(fields[7]) * 1000 || 0,
+        parents: fields[8] === '' ? [] : fields[8].split(' '),
+        subject: fields[9],
+        /* `%B` is the raw commit message: it STARTS with the subject line and
+           ends with the format's record separator. cleanCommitBody strips the
+           separator and the subject prefix. */
+        body: cleanCommitBody(fields[10], fields[9]),
+        files,
+      }
+      if (commitDetailCache.size >= COMMIT_DETAIL_CACHE_LIMIT) {
+        const oldest = commitDetailCache.keys().next()
+        if (oldest.done !== true) commitDetailCache.delete(oldest.value)
+      }
+      const fullKey = root + '\u0000' + value.hash
+      if (commitDetailCache.size >= COMMIT_DETAIL_CACHE_LIMIT) {
+        const oldest = commitDetailCache.keys().next()
+        if (oldest.done !== true) commitDetailCache.delete(oldest.value)
+      }
+      commitDetailCache.set(fullKey, value)
+      if (cacheable && cacheKey !== fullKey) commitDetailCache.set(cacheKey, value)
+      return value
+    })()
+    if (cacheable) commitDetailInflight.set(cacheKey, request)
+    try {
+      return await request
+    } finally {
+      if (cacheable) commitDetailInflight.delete(cacheKey)
     }
   },
-
   async diff(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const base = payload.base === 'staged' ? 'staged' : payload.base === 'commit' ? 'commit' : 'worktree'
     const filePath = payload.path === undefined ? null : String(payload.path)
     const context = Math.min(200, Math.max(0, Number(payload.context) || 3))
+    const rev = base === 'commit' ? requireRef(payload.rev, 'rev') : ''
+    /* One diff spawn costs ~400 ms on Windows; the panel asks for the same patch
+       again on re-select / tab switch / drawer reopen. Commit patches are
+       immutable, worktree ones are keyed by the watcher revision, so a cached
+       answer is never stale — it simply becomes unreachable after a change. */
+    const cacheKey = diffCacheKey(root, base, rev, filePath, context)
+    const ttl = base === 'commit' ? COMMIT_DIFF_TTL_MS : WORKTREE_DIFF_TTL_MS
+    const cached = readDiffCache(cacheKey, ttl)
+    if (cached !== null) return cached
+    const pending = diffInflight.get(cacheKey)
+    if (pending !== undefined) return pending
     let args
-    if (base === 'staged') args = ['diff', '--cached', `--unified=${context}`]
-    else if (base === 'commit') args = ['show', '--format=', '--first-parent', `--unified=${context}`, '--end-of-options', requireRef(payload.rev, 'rev')]
-    else args = ['diff', `--unified=${context}`]
+    /* --no-ext-diff / --no-textconv: a user-configured external diff or textconv
+       driver (git-lfs, docx converters, …) would spawn MORE processes per file.
+       --no-color: the pane parses plain text. */
+    const guard = ['--no-ext-diff', '--no-textconv', '--no-color']
+    if (base === 'staged') args = ['diff', '--cached', `--unified=${context}`, ...guard]
+    else if (base === 'commit') args = ['show', '--format=', '--first-parent', `--unified=${context}`, ...guard, '--end-of-options', rev]
+    else args = ['diff', `--unified=${context}`, ...guard]
     if (filePath !== null && filePath !== '') args.push('--', filePath)
-    const res = await runGit(root, args, { timeoutMs: 60_000 })
-    if (res.code !== 0) throw new PanelError('diff-failed', res.stderr.trim() || 'git diff failed', 409)
-    const text = clipDiff(res.stdout)
-    return { patch: text, hunks: splitDiff(text).map(({ patch, ...rest }) => rest) }
+    const request = (async () => {
+      const res = await runGit(root, args, { timeoutMs: 60_000 })
+      if (res.code !== 0) throw new PanelError('diff-failed', res.stderr.trim() || 'git diff failed', 409)
+      const text = clipDiff(res.stdout)
+      const value = { patch: text, hunks: splitDiff(text).map(({ patch, ...rest }) => rest) }
+      rememberDiff(cacheKey, value)
+      return value
+    })()
+    diffInflight.set(cacheKey, request)
+    try {
+      return await request
+    } finally {
+      diffInflight.delete(cacheKey)
+    }
   },
 
   /** Untracked files have no diff; synthesize one so the UI can still render. */
@@ -2313,6 +2511,18 @@ const METHODS = {
     return snapshotOf(root)
   },
 
+
+  async branchDeleteRemote(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const remote = requireRef(payload.remote, 'remote')
+    const branch = requireRef(payload.branch, 'branch')
+    const result = await runGit(root, ['push', '--delete', '--end-of-options', remote, branch], { timeoutMs: hostConfig.networkTimeoutMs })
+    if (result.code !== 0) {
+      throw new PanelError('remote-delete-failed', (result.stderr + result.stdout).trim() || 'git push --delete failed', 409)
+    }
+    return snapshotOf(root)
+  },
+
   async branchUpstream(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const name = requireRef(payload.name, 'name')
@@ -2532,6 +2742,7 @@ const METHODS = {
       ? requireRef(payload.branch, 'branch')
       : null
     const args = ['push']
+    if (boolOf(payload.setUpstream) && remote !== null) args.push('-u')
     if (remote !== null) args.push('--end-of-options', remote)
     if (!(remote === null) && branch !== null) args.push(branch)
     if (remote === null && branch !== null) args.push(branch)
@@ -2792,11 +3003,26 @@ const METHODS = {
     if (result.code !== 0) throw new PanelError('blame-failed', result.stderr.trim() || 'git blame failed', 409)
     const lines = []
     const lines2 = result.stdout.split('\n')
+    /* `--porcelain` prints the author/summary block only the FIRST time a commit
+       appears in the output. The same commit can reappear in a LATER block (a file
+       whose lines were touched by an older commit between two newer ones), and
+       reusing the previous line's author there pairs the wrong person with the
+       hash. Remember metadata per hash and attach it to every line of that commit. */
+    const metaByHash = new Map()
     let current = null
     for (const line of lines2) {
       if (/^[0-9a-f]{40} /.test(line)) {
         const [hash, origLine, finalLine] = line.split(' ')
-        current = { hash, origLine: Number(origLine), finalLine: Number(finalLine), author: '', authorTime: 0, summary: '', content: '' }
+        const known = metaByHash.get(hash)
+        current = {
+          hash,
+          origLine: Number(origLine),
+          finalLine: Number(finalLine),
+          author: known === undefined ? '' : known.author,
+          authorTime: known === undefined ? 0 : known.authorTime,
+          summary: known === undefined ? '' : known.summary,
+          content: '',
+        }
         continue
       }
       if (current === null) continue
@@ -2805,8 +3031,22 @@ const METHODS = {
       else if (line.startsWith('summary ')) current.summary = line.slice(8)
       else if (line.startsWith('\t')) {
         current.content = line.slice(1)
+        if (current.author !== '') {
+          metaByHash.set(current.hash, { author: current.author, authorTime: current.authorTime, summary: current.summary })
+        }
         lines.push(current)
         current = null
+      }
+    }
+    /* Every line must name its author; a line whose hash was seen before inherits
+       that commit's metadata, never the neighbouring line's. */
+    for (const line of lines) {
+      if (line.author !== '') continue
+      const known = metaByHash.get(line.hash)
+      if (known !== undefined) {
+        line.author = known.author
+        line.authorTime = known.authorTime
+        line.summary = known.summary
       }
     }
     return { lines }
@@ -2924,6 +3164,51 @@ const METHODS = {
     return snapshotOf(root)
   },
 
+  /**
+   * Stop tracking a path: append an anchored pattern to the repository's root
+   * .gitignore and, when the path is already in the index, remove it from the
+   * index only (`git rm --cached`). The working-tree file is never deleted.
+   *
+   * For an already-tracked file this stages a deletion plus the .gitignore edit;
+   * the caller must commit those for future changes to stay untracked. History is
+   * not rewritten (and must not be).
+   */
+  async ignore(payload) {
+    const root = await repoRootOf(await cwdOfPayload(payload), payload)
+    const raw = requirePaths([payload.path])[0]
+    const rel = normalizeSeparators(raw).replace(/^\.\/+/, '').replace(/\/+$/, '')
+    if (rel === '' || rel === '.') throw badRequest('path is required')
+    const directory = boolOf(payload.directory)
+    /* Escape glob characters so a literal filename is ignored, then anchor it to
+       the repository root. A bare `build` pattern would also hide nested dirs. */
+    const literal = rel.replace(/([*?\[\]\\])/g, '\\$1')
+    const pattern = '/' + literal + (directory ? '/' : '')
+    const ignorePath = path.join(root, '.gitignore')
+    let text = ''
+    try { text = readFileSync(ignorePath, 'utf8') } catch { text = '' }
+    const lines = text === '' ? [] : text.split(/\r?\n/)
+    if (lines.some((line) => line.trim() === pattern) === false) {
+      const prefix = text === '' || text.endsWith('\n') ? text : text + '\n'
+      writeFileSync(ignorePath, prefix + pattern + '\n', 'utf8')
+    }
+    /* `ls-files` is the authoritative answer for a directory too: asking for
+       `<dir>/` lists every tracked descendant. */
+    const probe = directory ? rel.replace(/\/+$/, '') + '/' : rel
+    const listed = await runGit(root, ['ls-files', '--', probe], { timeoutMs: 30_000 })
+    const tracked = listed.code === 0 && listed.stdout.trim() !== ''
+    if (tracked) {
+      const removed = await runGit(root, ['rm', '--cached', '-r', '--ignore-unmatch', '--', rel], { timeoutMs: 60_000 })
+      if (removed.code !== 0) {
+        throw new PanelError('ignore-failed', removed.stderr.trim() || 'git rm --cached failed', 409)
+      }
+    }
+    return {
+      path: rel,
+      pattern,
+      tracked,
+      snapshot: await snapshotOf(root),
+    }
+  },
   async cleanUntracked(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     if (!boolOf(payload.confirm)) throw new PanelError('confirm-required', 'clean needs confirm: true', 409)
@@ -3025,6 +3310,8 @@ export function apply(ctx, config) {
             return await invoke()
           } finally {
             invalidateSnapshots()
+            /* Patches cached before the write no longer describe the worktree. */
+            invalidateDiffs()
             /* A write may move refs without the filesystem watcher having fired
                yet (a commit writes .git/ files, which the watcher may or may not
                report, and a fetch can land during the same tick). Drop the list

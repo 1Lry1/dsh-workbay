@@ -7,7 +7,6 @@
 
 ![面板](docs/panel.png)
 
-![仓库选择器](docs/picker.png)
 
 ## 为什么是自研
 
@@ -205,9 +204,26 @@ catch (error) { reject(new PanelError('git-missing', 'cannot start git: ' + mess
 两处缓存都**按 watcher revision 做代际**，不是按时间：
 
 - `rootCache`：`目录 → 仓库根`，TTL 30 s。**否定结果也缓存**（3 s），否则仓库选择器逐个探非仓库目录时每次都要 spawn，浏览像卡死。`init` 会显式清空它。
-- `listCache`：提交列表 / 分支列表，key 里带 `watcherRevisionOf(root)`。文件一变 watcher 就 `revision += 1`，旧 key 自然不可达 —— **不需要任何"记得调用失效"的代码**。写操作仍显式 `invalidateLists()`，因为 `commit` 写 `.git/` 时 watcher 事件可能还没到。
+- `listCache`：提交列表 / 分支列表，key 里带 `watcherRevisionOf(root)`。文件一变 watcher 就 `revision += 1`，旧 key 自然不可达 —— **不需要任何"记得调用失效"的代码**。写操作仍显式 `invalidateLists()`，因为 `commit` 写 `.git/` 时 watcher 事件可能还没到。调用方没有跑 `/watch`（例如源码管理页）时可传 `refresh: true` 强制跳过缓存，否则 watcher revision 永远是 0，外部提交后刷新也会读到旧列表。
 
 > p95 仍偏高（`log` 318 ms）是**进程内第一次**读取的代价；缓存命中后才是 p50 的 4 ms。首屏避不开一次 spawn，这是 git 的物理下限。
+
+### 历史详情与 diff：一个进程 + 命中缓存
+
+查看提交详情原来要跑两次 `git show`（一次 `-s` 取说明，一次 `--name-status` 取文件）。
+在同样的 Windows 机器上，单次 spawn 约 90–250 ms，所以这一跳经常是 400 ms 以上。
+现在合并成**一条** `git show --name-status -z --pretty=format:…%x1e`：说明和文件列表从同一流里解析。
+
+提交哈希是不可变内容，因此 `commitDetail` 增加了 200 条 LRU 缓存和同请求合并；重复点同一提交
+（以及悬停预取）不再起 git。实测同一仓库（demo，100 条历史）：
+
+| 操作 | 改前 | 改后（冷） | 改后（缓存命中） |
+|---|---|---|---|
+| 提交详情 | 378–422 ms | **97 ms** | **3 ms** |
+| 提交 diff | 295 ms | **119 ms** | **3 ms** |
+
+源码管理页在悬停提交行/变更行时会提前发 `commitDetail` / `diff` 请求（140–160 ms 防抖），
+用户真正点击时通常已经是 diff 缓存命中。日志本身仍按 `limit` 分页，不拉 `--numstat`。
 
 ## 「有时候获取时报错」的真因
 
@@ -330,9 +346,9 @@ git log --numstat --format=%H --no-walk=unsorted <hashes...>   # 拿到每次的
 命令行等价：
 
 ```bash
-git push origin AB579X_LVGL_CPU_BATE_20261103
+git push origin release-demo
 # 或显式写全引用，避免与同名分支歧义：
-git push origin refs/tags/AB579X_LVGL_CPU_BATE_20261103
+git push origin refs/tags/release-demo
 ```
 
 ### 为什么必须问远程

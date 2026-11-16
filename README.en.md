@@ -18,8 +18,11 @@ packages/
 ├─ terminal/    dsh-workbay-terminal  page: real ConPTY terminal with tabs (xterm.js, sessions survive page switches)
 ├─ gitcraft/    dsh-gitcraft          page: SourceTree-grade Git panel (58 RPCs)
 ├─ downloader/  dsh-downloader        page: Bluetooth chip flashing + 1.5 Mbps serial log
+├─ source-control/  dsh-workbay-source-control  page: one git-status tree + source/diff panes + commit box (composed page)
+├─ memmap/      dsh-workbench-memmap  page: firmware memory-map analysis (bundled script + map.txt → regions/objects/baseline diff + embedded HTML report)
+├─ absolute-file-references/  dsh-absolute-file-references  `@` picker rewrite: a picked file/folder inserts an absolute path (no page, no route)
 ├─ kit/         @dsh-workbay/kit      shared host helpers: same-origin fence / JSON body / RPC envelope
-└─ suite/       dsh-workbay-suite     the shipped single plugin: vendors the five bundles + one merged client bundle
+└─ suite/       dsh-workbay-suite     the shipped single plugin: vendors the eight bundles + one merged client bundle
 ```
 
 ```
@@ -111,7 +114,7 @@ Update later with `pnpm run update` (see below). If `dsh plugin add` one-liners 
 Profile directory: `C:\Users\<user>\.dsh\profiles\<profile>` (on this machine: `desktop`).
 
 **Option A — one plugin (recommended: the plugin list shows a single entry)**: install
-`dsh-workbay-suite`, which physically vendors the five bundles (`vendor/` + generated
+`dsh-workbay-suite`, which physically vendors the eight bundles (`vendor/` + generated
 host/client).
 
 ```jsonc
@@ -132,27 +135,35 @@ pnpm install            # or: dsh plugin --profile desktop add file:<repo>/packa
 pnpm run verify:profile # prove the installed copy is complete and has no extra workbay packages
 ```
 
-**Option B — five independent bundles (development: the plugin list shows five)**: in `package.json`:
+**Option B — independent bundles (development: the plugin list shows several rows)**: in `package.json`:
 
 ```jsonc
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
-    "dsh-workbay-dock", "dsh-workbay-files", "dsh-workbay-terminal", "dsh-gitcraft", "dsh-downloader"
+    "dsh-workbay-dock", "dsh-workbay-files", "dsh-workbay-terminal",
+    "dsh-gitcraft", "dsh-downloader", "dsh-workbay-source-control", "dsh-workbench-memmap"
   ] } },
   "dependencies": {
-    "dsh-workbay-dock":     "file:<repo>/packages/dock",
-    "dsh-workbay-files":    "file:<repo>/packages/files",
-    "dsh-workbay-terminal": "file:<repo>/packages/terminal",
-    "dsh-gitcraft":         "file:<repo>/packages/gitcraft",
-    "dsh-downloader":       "file:<repo>/packages/downloader",
-    "@dsh-workbay/kit":     "file:<repo>/packages/kit"
+    "dsh-workbay-dock":            "file:<repo>/packages/dock",
+    "dsh-workbay-files":           "file:<repo>/packages/files",
+    "dsh-workbay-terminal":        "file:<repo>/packages/terminal",
+    "dsh-gitcraft":                "file:<repo>/packages/gitcraft",
+    "dsh-downloader":              "file:<repo>/packages/downloader",
+    "dsh-workbay-source-control":  "file:<repo>/packages/source-control",
+    "dsh-workbench-memmap":        "file:<repo>/packages/memmap",
+    "@dsh-workbay/kit":            "file:<repo>/packages/kit"
   }
 }
 ```
 
 > Never mix the two layouts: a loader row inserted twice registers the prefix routes
 > twice and the whole plugin tree fails to start. `pnpm run verify:profile` refuses it.
+>
+> `dsh-absolute-file-references` (the `@` picker inserts absolute paths) ships **only as
+> part of the suite**: it owns no page and no route, so installing it alone just adds
+> another plugin row. Install it standalone only while debugging the `@` picker — see
+> [packages/absolute-file-references/README.md](packages/absolute-file-references/README.md).
 
 After installing, **restart DSH**; a "Workbench" entry appears in the left sidebar.
 

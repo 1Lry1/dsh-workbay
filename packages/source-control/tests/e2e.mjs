@@ -85,10 +85,17 @@ try {
   git(['config', 'user.name', 'E2E'], gitRepo)
   writeFileSync(path.join(gitRepo, 'alpha.ts'), 'export const a = 1\n')
   writeFileSync(path.join(gitRepo, 'beta.ts'), 'export const b = 2\n')
+  /* Tracked now, deleted after the commit: the files tab must still show the D record. */
+  writeFileSync(path.join(gitRepo, 'gone.ts'), 'export const gone = 0\n')
   mkdirSync(path.join(gitRepo, 'src'), { recursive: true })
   writeFileSync(path.join(gitRepo, 'src', 'deep.ts'), 'export const d = 3\n')
   git(['add', '-A'], gitRepo)
   git(['commit', '-q', '-m', 'initial'], gitRepo)
+  rmSync(path.join(gitRepo, 'gone.ts'))
+
+  /* A remote makes the branches page show its web address and remote rows. */
+  git(['remote', 'add', 'origin', 'https://gitea.idoocn.com:30443/linf/demo.git'], gitRepo)
+  git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], gitRepo)
 
   /* one modified + one untracked: two different badges, and a diff that must show */
   writeFileSync(path.join(gitRepo, 'alpha.ts'), 'export const a = 42\nexport const extra = 1\n')
@@ -255,6 +262,16 @@ function mountShell() {
     return res && res.result ? res.result.value : undefined
   }
 
+  /** Wait until the page really reached a state (slow CI/first paint under load). */
+  const waitFor = async (expression, timeoutMs = 10000) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if ((await evaluate('Boolean(' + expression + ')')) === true) return true
+      await sleep(250)
+    }
+    return false
+  }
+
   await send('Runtime.enable')
   await sleep(1800)
 
@@ -267,7 +284,8 @@ function mountShell() {
   /* ---- mount ---- */
   const mounted = JSON.parse(await evaluate('JSON.stringify(mountShell())'))
   check('the shell mounts', mounted.ok === true, JSON.stringify(mounted))
-  await sleep(1500)
+  await waitFor("document.querySelectorAll('.scw-rowName').length > 0")
+  await sleep(150)
 
   const dom = JSON.parse(await evaluate(`JSON.stringify((function () {
     var q = function (s) { return document.querySelector(s) }
@@ -347,6 +365,30 @@ function mountShell() {
   const staged = git(['diff', '--cached', '--name-only'], gitRepo).trim()
   check('the row action stages the file through the real git host', staged.indexOf('alpha.ts') >= 0, 'staged: ' + JSON.stringify(staged))
 
+  /* A failed commit must NOT clear the message box (the user has to retry after
+     fixing the cause). Force a real git failure with a transient index lock. */
+  writeFileSync(path.join(gitRepo, '.git', 'index.lock'), '')
+  await evaluate(`(function () {
+    var ta = document.querySelector('.scw-commitInput')
+    if (!ta) return
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    setter.call(ta, 'e2e: message that must survive a failed commit')
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await sleep(300)
+  await evaluate(`(function () {
+    var btn = [].slice.call(document.querySelectorAll('.scw-btn')).filter(function (b) { return /提交|Commit/.test(b.textContent) })[0]
+    if (btn && !btn.disabled) btn.click()
+  })()`)
+  await sleep(1800)
+  const failedCommit = JSON.parse(await evaluate(`JSON.stringify({
+    value: document.querySelector('.scw-commitInput') ? document.querySelector('.scw-commitInput').value : null,
+    error: document.querySelector('.scw-bar.is-error') ? document.querySelector('.scw-bar.is-error').textContent : null,
+  })`))
+  check('a failed commit keeps the message for retry',
+    failedCommit.value === 'e2e: message that must survive a failed commit' && failedCommit.error !== null, failedCommit)
+  rmSync(path.join(gitRepo, '.git', 'index.lock'), { force: true })
+
   /* ---- commit ---- */
   await evaluate(`(function () {
     var ta = document.querySelector('.scw-commitInput')
@@ -394,10 +436,35 @@ function mountShell() {
     Array.isArray(changesDom.groups) && changesDom.groups.length > 0, changesDom.groups)
   check('the untracked file appears with a U badge in 变更',
     Array.isArray(changesDom.letters) && changesDom.letters.indexOf('U') >= 0, changesDom.letters)
+  check('变更 groups by change type: deleted and added',
+    changesDom.groups.some(function (s) { return /删除|Deleted/.test(s) })
+    && changesDom.groups.some(function (s) { return /新增|Added/.test(s) }), changesDom.groups)
+
+  /* A type group collapses and expands from its header. */
+  await evaluate(`(function () {
+    var header = [].slice.call(document.querySelectorAll('.scw-group')).filter(function (g) {
+      return /删除|Deleted/.test(g.textContent)
+    })[0]
+    if (header) header.click()
+  })()`)
+  await sleep(350)
+  const collapsedGroups = JSON.parse(await evaluate(`JSON.stringify({
+    rows: document.querySelectorAll('.scw-changeList .scw-rowName').length,
+    collapsed: document.querySelectorAll('.scw-group.is-collapsed').length,
+  })`))
+  check('clicking a change-type header collapses its rows',
+    collapsedGroups.collapsed >= 1 && collapsedGroups.rows < changesDom.rows.length, collapsedGroups)
+  await evaluate(`(function () {
+    var header = document.querySelector('.scw-group.is-collapsed')
+    if (header) header.click()
+  })()`)
+  await sleep(350)
+  const expandedRows = await evaluate('document.querySelectorAll(".scw-changeList .scw-rowName").length')
+  check('clicking it again expands the rows back', expandedRows === changesDom.rows.length, expandedRows)
 
   /* ---- 历史 ---- */
   await clickMode('历史')
-  await sleep(1800)
+  await waitFor("document.querySelectorAll('.scw-commitRow').length >= 2")
   const historyDom = JSON.parse(await evaluate(`JSON.stringify({
     commits: [].slice.call(document.querySelectorAll('.scw-commitSubject')).map(function(n){return n.textContent}),
     graphs: document.querySelectorAll('.scw-commitRow .scw-graph').length,
@@ -412,13 +479,43 @@ function mountShell() {
     Array.isArray(historyDom.titles) && historyDom.titles.filter(function (x) { return /^[0-9a-f]{40}/.test(x) }).length >= 2,
     (historyDom.titles || []).slice(0, 2))
 
+  /* Right-click a history row: normal commit operations live here too. */
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-commitRow')
+    if (!row) return 'no-row'
+    var rect = row.getBoundingClientRect()
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 20, clientY: rect.top + 10 }))
+    return 'ok'
+  })()`)
+  await sleep(450)
+  const historyMenu = JSON.parse(await evaluate(`JSON.stringify({
+    open: document.querySelectorAll('.scw-dialog').length > 0,
+    title: document.querySelector('.scw-dialogHead') ? document.querySelector('.scw-dialogHead').textContent : '',
+    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+  })`))
+  check('a history row right-click opens the commit menu', historyMenu.open === true && String(historyMenu.title).length > 0, historyMenu)
+  check('the commit menu offers view / copy / branch / cherry-pick / reset',
+    historyMenu.items.some(function (s) { return /查看详情|View details/.test(s) })
+    && historyMenu.items.some(function (s) { return /复制短哈希|Copy short hash/.test(s) })
+    && historyMenu.items.some(function (s) { return /新建分支|New branch/.test(s) })
+    && historyMenu.items.some(function (s) { return /拣选|cherry|Cherry/.test(s) })
+    && historyMenu.items.some(function (s) { return /复位|重置|Reset/.test(s) }), historyMenu.items)
+  check('the commit menu opens the commit in a browser (remote configured)',
+    historyMenu.items.some(function (s) { return /在浏览器打开|Open in browser/.test(s) }), historyMenu.items)
+  await evaluate(`(function () {
+    var dialog = document.querySelector('.scw-dialog')
+    if (dialog) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await sleep(300)
+
+
   /* ---- 历史: commit detail ---- */
   await evaluate(`(function () {
     var rows = [].slice.call(document.querySelectorAll('.scw-commitRow'))
     var target = rows.filter(function (r) { return r.textContent.indexOf('initial') >= 0 })[0]
     if (target) target.click()
   })()`)
-  await sleep(1800)
+  await waitFor("document.querySelector('.scw-commitPatch') !== null || document.querySelector('.scw-commitDetail') !== null")
   const detailDom = JSON.parse(await evaluate(`JSON.stringify({
     present: document.querySelector('.scw-commitPatch') !== null || document.querySelector('.scw-commitDetail') !== null,
     subject: document.querySelector('.scw-commitSubject.is-large') ? document.querySelector('.scw-commitSubject.is-large').textContent : null,
@@ -432,7 +529,7 @@ function mountShell() {
     var back = document.querySelector('.scw-commitPatch .scw-back')
     if (back) back.click()
   })()`)
-  await sleep(1800)
+  await waitFor("document.querySelector('.scw-commitDetail') !== null")
   const listDom = JSON.parse(await evaluate(`JSON.stringify({
     present: document.querySelector('.scw-commitDetail') !== null,
     files: [].slice.call(document.querySelectorAll('.scw-commitFileName')).map(function (n) { return n.textContent }),
@@ -440,14 +537,92 @@ function mountShell() {
   check('Back from the patch shows the commit file list',
     listDom.present === true && Array.isArray(listDom.files) && listDom.files.length > 0, listDom)
 
+  /* A commit made OUTSIDE the workbench (IDE/CLI) must appear after 刷新.
+     gitcraft caches the log by watcher revision; the source-control page does
+     not run that long-poll watcher, so the cache used to stay at revision 0. */
+  writeFileSync(path.join(gitRepo, 'refresh-probe.ts'), 'export const probe = 1\n')
+  git(['add', 'refresh-probe.ts'], gitRepo)
+  git(['commit', '-q', '-m', 'refresh-probe'], gitRepo)
+  const refreshClicked = await evaluate(`(function () {
+    var buttons = [].slice.call(document.querySelectorAll('button'))
+    var btn = buttons.filter(function (b) {
+      return /刷新|Refresh/.test(b.title || '') || /刷新|Refresh/.test(b.getAttribute('aria-label') || '')
+    })[0]
+    if (!btn) return 'missing'
+    btn.click()
+    return 'ok'
+  })()`)
+  const refreshed = await waitFor("document.body.innerText.indexOf('refresh-probe') >= 0", 12000)
+  check('刷新 reloads history after an external commit', refreshClicked === 'ok' && refreshed === true,
+    { refreshClicked, refreshed })
+
   /* ---- 分支 ---- */
   await clickMode('分支')
-  await sleep(1800)
+  await waitFor("document.querySelector('.scw-branchRow') !== null")
   const branchDom = JSON.parse(await evaluate(`JSON.stringify({
     branches: [].slice.call(document.querySelectorAll('.scw-branchName')).map(function(n){return n.textContent}),
     head: document.querySelectorAll('.scw-branchRow.is-head').length,
   })`))
   check('the 分支 mode lists the branch and marks HEAD', Array.isArray(branchDom.branches) && branchDom.branches.length >= 1 && branchDom.head === 1, branchDom)
+
+  /* Remote web address (converted from https://….git) + right-click menus. */
+  let branchUi = { url: null, remoteGroups: 0 }
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    branchUi = JSON.parse(await evaluate(`JSON.stringify({
+      url: document.querySelector('.scw-remoteUrl') ? document.querySelector('.scw-remoteUrl').textContent : null,
+      remoteGroups: document.querySelectorAll('.scw-remoteGroup').length,
+    })`))
+    if (branchUi.url !== null) break
+    await sleep(250)
+  }
+  check('the branches page shows the remote web address',
+    branchUi.remoteGroups >= 1 && /^https:\/\/gitea\.idoocn\.com\.?/.test(String(branchUi.url)), branchUi)
+
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-branchRow')
+    if (!row) return 'no-row'
+    var rect = row.getBoundingClientRect()
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 20, clientY: rect.top + 10 }))
+    return 'ok'
+  })()`)
+  await sleep(450)
+  const branchMenu = JSON.parse(await evaluate(`JSON.stringify({
+    open: document.querySelectorAll('.scw-dialog').length > 0,
+    title: document.querySelector('.scw-dialogHead') ? document.querySelector('.scw-dialogHead').textContent : '',
+    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+  })`))
+  check('a branch row right-click opens its menu', branchMenu.open === true && String(branchMenu.title).length > 0, branchMenu)
+  check('the branch menu offers copy / open in browser / rename',
+    branchMenu.items.some(function (s) { return /复制名称|Copy name/.test(s) })
+    && branchMenu.items.some(function (s) { return /在浏览器打开|Open in browser/.test(s) })
+    && branchMenu.items.some(function (s) { return /重命名|Rename/.test(s) }), branchMenu.items)
+  await evaluate(`(function () {
+    var dialog = document.querySelector('.scw-dialog')
+    if (dialog) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await sleep(300)
+
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-remoteGroup')
+    if (!row) return 'no-row'
+    var rect = row.getBoundingClientRect()
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 20, clientY: rect.top + 10 }))
+    return 'ok'
+  })()`)
+  await sleep(450)
+  const remoteMenu = JSON.parse(await evaluate(`JSON.stringify({
+    open: document.querySelectorAll('.scw-dialog').length > 0,
+    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+  })`))
+  check('the remote group menu offers copy URL and fetch',
+    remoteMenu.open === true && remoteMenu.items.some(function (s) { return /复制远程地址|Copy remote URL/.test(s) })
+    && remoteMenu.items.some(function (s) { return /获取此远程|Fetch this remote/.test(s) }), remoteMenu.items)
+  await evaluate(`(function () {
+    var dialog = document.querySelector('.scw-dialog')
+    if (dialog) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await sleep(300)
+
 
   /* ---- 贮藏 (empty here, but the panel must render honestly) ---- */
   await clickMode('贮藏')
@@ -463,6 +638,42 @@ function mountShell() {
   await sleep(900)
   const filesDom = JSON.parse(await evaluate('JSON.stringify([].slice.call(document.querySelectorAll(".scw-treePane .scw-rowName")).map(function(n){return n.textContent}))'))
   check('the 文件 mode comes back to the tree', Array.isArray(filesDom) && filesDom.length > 0, filesDom)
+
+  /* ---- 文件: "changes only" must include DELETED files (no disk entry) ---- */
+  await evaluate(`(function () {
+    var btn = [].slice.call(document.querySelectorAll('.scw-toolIcon')).filter(function (b) {
+      return /只看变更|Changes only/.test(b.title || '')
+    })[0]
+    if (btn) btn.click()
+    return btn ? 'ok' : 'missing'
+  })()`)
+  await waitFor("document.querySelector('.scw-row.is-missing') !== null")
+  const deletedFilter = JSON.parse(await evaluate(`JSON.stringify({
+    rows: [].slice.call(document.querySelectorAll('.scw-row.is-missing')).map(function (n) { return n.textContent }),
+    letters: [].slice.call(document.querySelectorAll('.scw-row.is-missing .scw-letter')).map(function (n) { return n.textContent }),
+  })`))
+  check('changes-only lists the deleted file as a D record',
+    deletedFilter.rows.some(function (s) { return /gone\.ts/.test(s) }) && deletedFilter.letters.indexOf('D') >= 0, JSON.stringify(deletedFilter))
+  await evaluate(`(function () {
+    var row = [].slice.call(document.querySelectorAll('.scw-row.is-missing')).filter(function (r) { return /gone\.ts/.test(r.textContent) })[0]
+    if (row) row.click()
+  })()`)
+  await waitFor("document.querySelectorAll('.gwc-row').length > 0")
+  const deletedDiff = JSON.parse(await evaluate(`JSON.stringify({
+    rows: document.querySelectorAll('.gwc-row').length,
+    text: document.querySelector('.scw-paneHost') ? document.querySelector('.scw-paneHost').innerText.slice(0, 200) : '',
+  })`))
+  check('clicking the deleted file opens its deletion patch',
+    deletedDiff.rows > 0 && (deletedDiff.text.indexOf('gone.ts') >= 0 || deletedDiff.text.indexOf('deleted') >= 0 || deletedDiff.text.indexOf('@@') >= 0), deletedDiff)
+
+  /* Back to all files for the remaining file-tree checks. */
+  await evaluate(`(function () {
+    var btn = [].slice.call(document.querySelectorAll('.scw-toolIcon')).filter(function (b) {
+      return /显示全部文件|Show all files/.test(b.title || '')
+    })[0]
+    if (btn) btn.click()
+  })()`)
+  await sleep(400)
 
   /* ============================== search ============================== */
 
@@ -499,6 +710,20 @@ function mountShell() {
   })`))
   check('searching by content finds the line inside the file',
     contentSearch.matchRows > 0 && contentSearch.texts.join(' ').indexOf('extra') >= 0, contentSearch)
+
+  /* Clicking a content hit must move the editor to that line, not line 1. */
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-matchRow')
+    if (row) row.click()
+  })()`)
+  await waitFor("document.querySelector('.cm-activeLine') !== null")
+  const jumped = JSON.parse(await evaluate(`JSON.stringify({
+    active: document.querySelector('.cm-activeLine') ? document.querySelector('.cm-activeLine').textContent : '',
+    gutter: document.querySelector('.cm-activeLineGutter') ? document.querySelector('.cm-activeLineGutter').textContent : '',
+    errors: window.__ERRORS__,
+  })`))
+  check('clicking a content hit opens the file at the matching line',
+    String(jumped.active).indexOf('extra') >= 0 || String(jumped.gutter).trim() === '2', jumped)
 
   /* Esc returns to browsing: the search box is the innermost scope. */
   await evaluate(`(function () {
@@ -545,6 +770,76 @@ function mountShell() {
 
   await evaluate(`(function () { var el = document.querySelector('.scw-searchInput'); if (el) el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })()`)
   await sleep(700)
+
+  /* ---- right-click row menu (replaces the old hover @ button) ---- */
+  await evaluate(`(function () {
+    var rows = [].slice.call(document.querySelectorAll('.scw-row'))
+    var row = rows.filter(function (r) { return r.textContent.indexOf('alpha.ts') >= 0 && r.className.indexOf('is-dir') < 0 })[0]
+    if (!row) return 'no-row'
+    var rect = row.getBoundingClientRect()
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: rect.left + 20, clientY: rect.top + 10,
+    }))
+    return 'ok'
+  })()`)
+  await sleep(500)
+  const rowMenu = JSON.parse(await evaluate(`JSON.stringify({
+    open: document.querySelectorAll('.scw-dialog').length > 0,
+    title: document.querySelector('.scw-dialogHead') ? document.querySelector('.scw-dialogHead').textContent : '',
+    body: document.querySelector('.scw-dialogBody') ? document.querySelector('.scw-dialogBody').textContent : '',
+    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+    atButtons: [].slice.call(document.querySelectorAll('.scw-row .scw-rowBtn')).filter(function (n) { return n.textContent === '@' }).length,
+  })`))
+  check('right-click opens the file menu', rowMenu.open === true && /alpha\.ts/.test(rowMenu.title), rowMenu)
+  check('the row menu offers add-to-chat, reveal, ignore and delete',
+    rowMenu.items.some(function (s) { return /加入对话|Add to chat/.test(s) })
+    && rowMenu.items.some(function (s) { return /打开文件所在目录|Reveal/.test(s) })
+    && rowMenu.items.some(function (s) { return /添加忽略|Add to \.gitignore/.test(s) })
+    && rowMenu.items.some(function (s) { return /删除|Delete/.test(s) }), rowMenu.items)
+  check('the row menu body is the absolute host path', /^[A-Za-z]:[\\/]/.test(rowMenu.body), rowMenu.body)
+  check('the hover @ button is gone', rowMenu.atButtons === 0, rowMenu.atButtons)
+  await evaluate(`(function () {
+    var dialog = document.querySelector('.scw-dialog')
+    if (dialog) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await sleep(300)
+
+  /* Undo-commit: reset the branch to the first commit and restore the removed
+     commit's message into the box (VS Code behaviour). */
+  await clickMode('历史')
+  await waitFor("document.querySelectorAll('.scw-commitRow').length >= 2")
+  await evaluate(`(function () {
+    var rows = [].slice.call(document.querySelectorAll('.scw-commitRow'))
+    var target = rows.filter(function (r) { return r.textContent.indexOf('initial') >= 0 })[0]
+    if (!target) return 'no-target'
+    var rect = target.getBoundingClientRect()
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 20, clientY: rect.top + 10 }))
+    return 'ok'
+  })()`)
+  await sleep(450)
+  await evaluate(`(function () {
+    var item = [].slice.call(document.querySelectorAll('.scw-menuItem')).filter(function (n) {
+      return /^复位$|^Reset$/.test((n.textContent || '').trim())
+    })[0]
+    if (item) item.click()
+  })()`)
+  await sleep(350)
+  const resetPicked = await evaluate(`(function () {
+    var item = [].slice.call(document.querySelectorAll('.scw-menuItem')).filter(function (n) {
+      return /软复位|Soft/.test(n.textContent)
+    })[0]
+    if (!item) return 'missing'
+    item.click()
+    return 'ok'
+  })()`)
+  await sleep(3000)
+  const undone = JSON.parse(await evaluate(`JSON.stringify({
+    message: document.querySelector('.scw-commitInput') ? document.querySelector('.scw-commitInput').value : null,
+  })`))
+  const resetHead = git(['log', '-1', '--format=%s'], gitRepo).trim()
+  check('a soft reset restores the removed commit message into the commit box',
+    resetPicked === 'ok' && resetHead === 'initial' && undone.message === 'refresh-probe',
+    JSON.stringify({ resetPicked, resetHead, undone }))
 
   const finalErrors = JSON.parse(await evaluate('JSON.stringify(window.__ERRORS__)'))
   check('no console errors across the whole flow', Array.isArray(finalErrors) && finalErrors.length === 0, JSON.stringify(finalErrors))

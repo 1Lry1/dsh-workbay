@@ -1181,6 +1181,36 @@ test('pty-mode session engine: raw keys, Ctrl+L, debounced + clamped resize', { 
   assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'unmount must not call api/stop')
 })
 
+test('pty flow control: pause at high water and resume when xterm reports parse progress', { timeout: 15000 }, async () => {
+  const world = makeSessionWorld('pty')
+  world.mount()
+  await sleep(40)
+  const stream = world.eventSources[0]
+  const handle = world.handles[0]
+  stream.onmessage({ data: JSON.stringify({ type: 'hello', id: 's1', mode: 'pty', shell: 'pwsh', cwd: 'C:/w', flow: true }) })
+  await sleep(20)
+
+  /* Make the fake xterm defer its callback, like a real slow parse would. */
+  const callbacks = []
+  handle.write = (text, callback) => {
+    handle.writes.push(String(text))
+    callbacks.push({ text: String(text), callback })
+  }
+  stream.onmessage({ data: JSON.stringify({ type: 'out', data: 'x'.repeat(120000) }) })
+  await sleep(30)
+  const paused = world.fetchCalls.filter((call) => call.method === 'flow').pop()
+  assert.equal(paused.payload.paused, true, 'PTY must pause above the high-water mark')
+  assert.equal(callbacks.length, 1)
+
+  callbacks[0].callback()
+  await sleep(30)
+  const resumed = world.fetchCalls.filter((call) => call.method === 'flow').pop()
+  assert.equal(resumed.payload.paused, false, 'PTY must resume once the backlog drains')
+
+  world.cleanup()
+  await sleep(30)
+})
+
 /* ============================== tab persistence §3.1 ============================== */
 
 const ROOT_KEY = 'dsh-workbay.root.v1'
@@ -1594,4 +1624,9 @@ test('node --check accepts the page bundle and the xterm chunk source', () => {
     const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' })
     assert.equal(result.status, 0, file + ': ' + result.stderr)
   }
+})
+test('the xterm chunk forwards the write callback used by flow control', () => {
+  const chunk = readFileSync(chunkSourcePath, 'utf8')
+  assert.match(chunk, /terminal\.write\(data, callback\)/)
+  assert.match(chunk, /terminal\.writeln\(data, callback\)/)
 })

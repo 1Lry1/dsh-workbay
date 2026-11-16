@@ -136,7 +136,7 @@ const branchesBody = `<div class="gwc-branches">
   </div>
   <div class="gwc-group">
     <div class="gwc-groupHead"><span class="gwc-groupTitle">标签</span></div>
-    ${refRow({ name: 'AB579X_LVGL_CPU_BATE_20261103', unpublished: true, showsPublish: true })}
+    ${refRow({ name: 'release-demo', unpublished: true, showsPublish: true })}
     ${refRow({ name: 'v1.0.0', showsPublish: false })}
   </div>
 </div>`

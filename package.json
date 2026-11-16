@@ -16,6 +16,8 @@
     "test:gitcraft": "pnpm --filter dsh-gitcraft run test",
     "test:files": "pnpm --filter dsh-workbay-files run test",
     "test:terminal": "pnpm --filter dsh-workbay-terminal run test",
+    "test:memmap": "pnpm --filter dsh-workbench-memmap run test",
+    "test:refs": "pnpm --filter dsh-absolute-file-references run test",
     "install:profile": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-profile.ps1",
     "update": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1",
     "update:fast": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-from-github.ps1 -SkipTests",
@@ -47,6 +49,7 @@
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^6.0.0",
     "esbuild": "^0.28.2"
   }

@@ -82,7 +82,22 @@ const FLOW_LOW_WATER = 5000
       'tab.restoredCount': '已恢复 {n} 个会话',
 
       'status.shell': 'Shell',
+      'status.restored': '已恢复 {n} 个终端会话',
       'status.cwd': '目录',
+      'toolbar.new': '新建',
+      'toolbar.clear': '清屏',
+      'toolbar.restart': '重启',
+      'toolbar.search': '搜索',
+      'search.placeholder': '在终端输出中搜索…',
+      'search.prev': '上一个',
+      'search.next': '下一个',
+      'toolbar.split': '分屏',
+      'toolbar.unsplit': '取消分屏',
+      'split.needTwo': '至少需要两个会话才能分屏',
+      'toolbar.close': '关闭',
+      'side.sessions': '会话',
+      'side.connection': '连接',
+      'side.sessionId': '会话 ID',
       'status.mode': '模式',
       'status.session': '会话',
       'status.tabs': '标签',
@@ -144,7 +159,22 @@ const FLOW_LOW_WATER = 5000
       'tab.restoredCount': 'Restored {n} session(s)',
 
       'status.shell': 'Shell',
+      'status.restored': 'Restored {n} session(s)',
       'status.cwd': 'CWD',
+      'toolbar.new': 'New',
+      'toolbar.clear': 'Clear',
+      'toolbar.restart': 'Restart',
+      'toolbar.search': 'Search',
+      'search.placeholder': 'Search the terminal output…',
+      'search.prev': 'Previous',
+      'search.next': 'Next',
+      'toolbar.split': 'Split',
+      'toolbar.unsplit': 'Unsplit',
+      'split.needTwo': 'Two sessions are needed to split',
+      'toolbar.close': 'Close',
+      'side.sessions': 'Sessions',
+      'side.connection': 'Connection',
+      'side.sessionId': 'Session id',
       'status.mode': 'Mode',
       'status.session': 'Session',
       'status.tabs': 'Tabs',
@@ -1109,6 +1139,15 @@ const FLOW_LOW_WATER = 5000
       const onTitleRef = useRef(onTitle)
       const actionsRef = useRef(null)
 
+      /* Unregister on unmount so the toolbar never calls into a disposed xterm. */
+      useEffect(() => {
+        if (typeof props.onHandle !== 'function') return undefined
+        return () => {
+          try { props.onHandle(tabKey, null) } catch (error) { void error }
+          if (typeof props.onActions === 'function') { try { props.onActions(tabKey, null) } catch (error) { void error } }
+        }
+      }, [])
+
       tRef.current = t
       activeRef.current = active
       themeRef.current = theme
@@ -1156,6 +1195,8 @@ const FLOW_LOW_WATER = 5000
           flowEnabled: false,
           pendingChars: 0,
           flowPaused: false,
+          pauseWatchdog: null,
+          pausePending: 0,
           exited: false,
           restoredNoticeShown: false,
           gotHello: false,
@@ -1169,6 +1210,13 @@ const FLOW_LOW_WATER = 5000
           setView(next)
           const callback = onStatusRef.current
           if (typeof callback === 'function') callback(tabKey, patch)
+        }
+
+        function clearPauseWatchdog() {
+          if (core.pauseWatchdog !== null) {
+            clearTimeout(core.pauseWatchdog)
+            core.pauseWatchdog = null
+          }
         }
 
         function sendFlow(paused) {
@@ -1193,18 +1241,35 @@ const FLOW_LOW_WATER = 5000
             core.pendingChars = Math.max(0, core.pendingChars - text.length)
             if (core.flowPaused === true && core.pendingChars <= FLOW_LOW_WATER) {
               core.flowPaused = false
+              clearPauseWatchdog()
               sendFlow(false)
             }
           })
           if (core.flowPaused !== true && core.pendingChars > FLOW_HIGH_WATER) {
             core.flowPaused = true
+            core.pausePending = core.pendingChars
             sendFlow(true)
+            /* Safety net: if the renderer never reports parse progress (old
+               cached chunk without the write callback, or a wedged parser), the
+               PTY would stay paused forever. Force one resume after 8s. */
+            if (core.pauseWatchdog === null) {
+              core.pauseWatchdog = setTimeout(function () {
+                core.pauseWatchdog = null
+                if (core.flowPaused !== true) return
+                if (core.pendingChars >= core.pausePending) {
+                  core.flowPaused = false
+                  core.pendingChars = 0
+                  sendFlow(false)
+                }
+              }, 8000)
+            }
           }
         }
 
         function closeStream() {
           const source = core.es
           core.es = null
+          clearPauseWatchdog()
           core.flowEnabled = false
           core.pendingChars = 0
           core.flowPaused = false
@@ -1623,6 +1688,9 @@ const FLOW_LOW_WATER = 5000
             },
           })
           handleRef.current = handle
+          if (typeof props.onHandle === 'function') {
+            try { props.onHandle(tabKey, handle) } catch (error) { void error }
+          }
           return handle
         }
 
@@ -1698,6 +1766,9 @@ const FLOW_LOW_WATER = 5000
           restart: () => { void restartSession() },
           start: () => { void startSession() },
           paste: (text) => pasteText(text),
+        }
+        if (typeof props.onActions === 'function') {
+          try { props.onActions(tabKey, actionsRef.current) } catch (error) { void error }
         }
 
         /* ---- clipboard / keyboard ---- */
@@ -1857,12 +1928,52 @@ const FLOW_LOW_WATER = 5000
 
     function TerminalPage(props) {
       const t = props.t
+      /* The shell resolves the layout from the PANEL width; at t3/t4 the reference
+         puts a session/connection column beside the terminal. */
+      const wideLayout = props !== null && props !== undefined && (props.tier === 't3' || props.tier === 't4')
+      /* Toolbar commands (清屏 …) need the live xterm handle, which lives inside
+         each TerminalTab. Tabs register themselves here instead of the page
+         reaching into their guts. */
+      const handlesRef = useRef({})
+      const registerHandle = useCallback((key, handle) => {
+        if (key === '' || key === undefined || key === null) return
+        if (handle === null || handle === undefined) delete handlesRef.current[key]
+        else handlesRef.current[key] = handle
+      }, [])
+      /* 每个 tab 的 imperative 动作（重启…）由 tab 自己注册，页面只负责调用。 */
+      const actionsMapRef = useRef({})
+      const registerActions = useCallback((key, actions) => {
+        if (key === '' || key === undefined || key === null) return
+        if (actions === null || actions === undefined) delete actionsMapRef.current[key]
+        else actionsMapRef.current[key] = actions
+      }, [])
       const [root, setRoot] = useState(readRoot)
       const [tabState, setTabState] = useState({ tabs: [], activeKey: '' })
+      /* 分屏：'' = 关闭；否则是第二个 pane 的 tab key。 */
+      const [splitKey, setSplitKey] = useState('')
+      /* 搜索条：只在打开时占一行，输入即搜（xterm search addon）。 */
+      const [searchOpen, setSearchOpen] = useState(false)
+      const [searchQuery, setSearchQuery] = useState('')
+      /* Esc 逐级返回：搜索条 → 分屏 → 交还外壳（关闭工作台）。 */
+      useEffect(() => {
+        const dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBAY__ : undefined
+        if (dock === undefined || dock === null || typeof dock.setBackHandler !== 'function') return undefined
+        dock.setBackHandler('terminal', () => {
+          if (searchOpen === true) { setSearchOpen(false); return true }
+          if (splitKey !== '') { setSplitKey(''); return true }
+          return false
+        })
+        return () => {
+          if (typeof dock.setBackHandler === 'function') dock.setBackHandler('terminal', null)
+        }
+      }, [searchOpen, splitKey])
       const [renamingKey, setRenamingKey] = useState('')
       const [renameDraft, setRenameDraft] = useState('')
       const [restoredCount, setRestoredCount] = useState(0)
       const [capHint, setCapHint] = useState('')
+      /* 提示条有两种语气：警告（标签上限等）和普通信息（恢复了几会话）。
+         以前恢复提示借用了警告样式，又绕过了自动消失的计时器，于是一直挂在顶部。 */
+      const [capHintTone, setCapHintTone] = useState('warn')
       const [restoring, setRestoring] = useState(true)
       const counterRef = useRef(0)
       const tabsRef = useRef(tabState.tabs)
@@ -1888,13 +1999,14 @@ const FLOW_LOW_WATER = 5000
       }
       const persister = persisterRef.current
 
-      const showCapHint = useCallback((message) => {
+      const showCapHint = useCallback((message, tone) => {
         setCapHint(message)
+        setCapHintTone(tone === 'info' ? 'info' : 'warn')
         if (capHintTimerRef.current !== null) clearTimeout(capHintTimerRef.current)
         capHintTimerRef.current = setTimeout(() => {
           capHintTimerRef.current = null
           setCapHint('')
-        }, 4000)
+        }, tone === 'info' ? 5000 : 4000)
       }, [])
 
       /** Turn one restore-plan row into the UI tab model. */
@@ -1949,6 +2061,9 @@ const FLOW_LOW_WATER = 5000
           const tabs = plan.tabs.map((planned) => tabFromPlan(planned))
           setTabState({ tabs, activeKey: tabs.length > 0 ? tabs[0].key : '' })
           setRestoredCount(plan.attachedCount)
+          /* 状态栏已合并到外壳，但「恢复了几个会话」属于一次性反馈，用顶部提示条
+             说一声就消失，比常驻一行更合适。 */
+          if (plan.attachedCount > 0) showCapHint(t('status.restored', { n: plan.attachedCount }), 'info')
           autoOpenRef.current = tabs.length === 0
           setRestoring(false)
         }
@@ -2035,6 +2150,7 @@ const FLOW_LOW_WATER = 5000
 
       const closeTab = useCallback((key) => {
         autoOpenRef.current = false
+        setSplitKey((current) => (current === key ? '' : current))
         const tab = tabsRef.current.find((entry) => entry.key === key)
         setRenamingKey((current) => (current === key ? '' : current))
         setTabState((current) => reduceTabs(current, { type: 'close', key }))
@@ -2056,10 +2172,15 @@ const FLOW_LOW_WATER = 5000
         if (typeof title !== 'string') return
         const clean = title.replace(/[\r\n\t]/g, ' ').trim().slice(0, 64)
         if (clean === '') return
+        /* A shell's OSC title is often the FULL EXE PATH ("C:\\Program Files\\
+           PowerShell\\7\\pwsh.exe"), which squeezes the tab down to "C:\\Program
+           Files\\PowerS…". Keep the last segment and drop .exe: "pwsh". */
+        const base = clean.split(/[/\\]/).filter((part) => part !== '').pop() ?? clean
+        const short = base.replace(/\.exe$/i, '')
         setTabState((current) => {
           const tab = current.tabs.find((entry) => entry.key === key)
           if (tab === undefined || tab.renamed === true) return current
-          return reduceTabs(current, { type: 'patch', key, patch: { title: clean } })
+          return reduceTabs(current, { type: 'patch', key, patch: { title: short === '' ? clean : short } })
         })
       }, [])
 
@@ -2097,9 +2218,132 @@ const FLOW_LOW_WATER = 5000
         return tabState.tabs.length > 0 ? tabState.tabs[0] : null
       }, [tabState, activeKey])
 
+      /* Publish a one-liner for the workbench status bar. The shell owns the bar;
+         only this page knows how many sessions are alive and in which phase.
+         Everything the old in-page status bar showed lives here now — one bar,
+         not two. Guarded so the standalone panel (no dock) keeps working. */
+      useEffect(() => {
+        const dock = typeof window === 'object' && window !== null
+          ? (window.__DSH_WORKBAY__ ?? window.__DSH_WORKBENCH__)
+          : undefined
+        if (dock === undefined || dock === null) return
+        const phase = activeTab === null || activeTab === undefined ? 'idle' : activeTab.phase
+        const label = phase === 'running' ? '运行中' : phase === 'starting' ? '启动中' : phase === 'exited' ? '已退出' : '空闲'
+        const count = tabState.tabs.length
+        const shellName = activeTab !== null && activeTab !== undefined && typeof activeTab.shell === 'string' ? activeTab.shell : ''
+        const mode = activeTab !== null && activeTab !== undefined && activeTab.mode === 'pty' ? 'PTY' : 'command'
+        const cwd = activeTab !== null && activeTab !== undefined && typeof activeTab.cwd === 'string' ? activeTab.cwd : ''
+        const cwdTail = cwd === '' ? '' : cwd.split(/[/\\]/).filter((part) => part !== '').pop()
+        const parts = count === 0
+          ? ['无会话']
+          : [count + ' 会话', label, shellName, mode, cwdTail].filter((part) => part !== '')
+        const line = parts.join(' · ')
+        /* Per-page so a running shell stays visible while the user reads code. */
+        if (typeof dock.setStatus === 'function') dock.setStatus('terminal', line)
+        else if (typeof dock.setContext === 'function') dock.setContext({ status: line })
+      }, [tabState, activeTab])
+
       if (root === '' && tabState.tabs.length === 0) {
         return E('div', { className: 'dswt-root' }, E(RootEmpty, { t, onRecheck: () => setRoot(readRoot()) }))
       }
+
+      const runSearch = (direction, value) => {
+        const handle = handlesRef.current[activeKey]
+        const term = typeof value === 'string' ? value : searchQuery
+        if (handle === null || handle === undefined || term === '') return
+        const options = { caseSensitive: false, regex: false, wholeWord: false }
+        try {
+          if (direction === 'prev' && typeof handle.findPrevious === 'function') handle.findPrevious(term, options)
+          else if (typeof handle.findNext === 'function') handle.findNext(term, options)
+        } catch (error) { void error }
+      }
+
+      /* Toolbar: the actions that are the SAME for every session, so they do not
+         belong inside each tab. Per-tab actions (rename/close) stay on the tab. */
+      const toolbar = E('div', { className: 'dswt-toolbar' },
+        E('button', { type: 'button', className: 'dswt-toolBtn is-primary', disabled: root === '', onClick: addTab }, t('toolbar.new')),
+        E('button', {
+          type: 'button',
+          className: 'dswt-toolBtn',
+          disabled: activeTab === null,
+          title: t('toolbar.clear'),
+          onClick: () => {
+            const handle = handlesRef.current[activeKey]
+            if (handle === null || handle === undefined || typeof handle.write !== 'function') return
+            try { handle.write('\u001b[2J\u001b[H') } catch (error) { void error }
+          },
+        }, t('toolbar.clear')),
+        E('button', {
+          type: 'button',
+          className: 'dswt-toolBtn',
+          disabled: activeKey === '',
+          title: t('toolbar.restart'),
+          onClick: () => {
+            const actions = actionsMapRef.current[activeKey]
+            if (actions !== null && actions !== undefined && typeof actions.restart === 'function') {
+              try { actions.restart() } catch (error) { void error }
+            }
+          },
+        }, t('toolbar.restart')),
+        E('button', {
+          type: 'button',
+          className: 'dswt-toolBtn',
+          disabled: activeKey === '',
+          title: t('toolbar.close'),
+          onClick: () => { if (activeKey !== '') closeTab(activeKey) },
+        }, t('toolbar.close')),
+        E('button', {
+          type: 'button',
+          className: 'dswt-toolBtn' + (searchOpen ? ' is-on' : ''),
+          disabled: activeKey === '',
+          title: t('toolbar.search'),
+          onClick: () => {
+            setSearchOpen((open) => {
+              const next = !open
+              if (!next) {
+                const handle = handlesRef.current[activeKey]
+                if (handle !== null && handle !== undefined && typeof handle.clearSearch === 'function') { try { handle.clearSearch() } catch (error) { void error } }
+              }
+              return next
+            })
+          },
+        }, t('toolbar.search')),
+        E('button', {
+          type: 'button',
+          className: 'dswt-toolBtn' + (splitKey !== '' ? ' is-on' : ''),
+          disabled: tabState.tabs.length < 2,
+          title: splitKey === '' ? t('toolbar.split') : t('toolbar.unsplit'),
+          onClick: () => {
+            if (splitKey !== '') { setSplitKey(''); return }
+            const other = tabState.tabs.find((tab) => tab.key !== activeKey)
+            if (other === undefined || other === null) { showCapHint(t('split.needTwo')); return }
+            setSplitKey(other.key)
+          },
+        }, splitKey === '' ? t('toolbar.split') : t('toolbar.unsplit')),
+        E('span', { className: 'dswt-toolSpacer' }),
+        E('span', { className: 'dswt-modeBadge ' + (activeTab !== null && activeTab.mode === 'pty' ? 'is-pty' : 'is-command') },
+          activeTab !== null && activeTab.mode === 'pty' ? t('status.pty') : t('status.nonPty')))
+
+      /* Right column (t3/t4): the session list plus the connection facts that the
+         panel used to bury in the status bar. */
+      const sidePanel = wideLayout === true
+        ? E('aside', { className: 'dswt-side' },
+          E('div', { className: 'dswt-sideHead' }, t('side.sessions')),
+          tabState.tabs.map((tab) => E('div', {
+            key: tab.key,
+            className: 'dswt-sideRow' + (tab.key === activeKey ? ' is-active' : ''),
+            title: tab.title,
+            onClick: () => activateTab(tab.key),
+          },
+          E('span', { className: 'dswt-sideDot is-' + tab.phase }),
+          E('span', { className: 'dswt-sideName' }, tab.title),
+          E('span', { className: 'dswt-sideMeta' }, tab.mode === 'pty' ? 'PTY' : 'cmd'))),
+          E('div', { className: 'dswt-sideHead' }, t('side.connection')),
+          E('div', { className: 'dswt-sideKv' }, E('span', null, t('status.cwd')), E('b', { title: activeTab === null ? '' : activeTab.cwd }, activeTab === null || activeTab.cwd === '' ? '—' : activeTab.cwd)),
+          E('div', { className: 'dswt-sideKv' }, E('span', null, t('status.shell')), E('b', null, activeTab === null || activeTab.shell === '' ? '—' : activeTab.shell)),
+          E('div', { className: 'dswt-sideKv' }, E('span', null, t('status.mode')), E('b', null, activeTab === null ? '—' : (activeTab.mode === 'pty' ? 'PTY' : 'command'))),
+          E('div', { className: 'dswt-sideKv' }, E('span', null, t('side.sessionId')), E('b', { title: activeTab === null ? '' : String(activeTab.sessionId || '') }, activeTab === null || activeTab.sessionId === '' ? '—' : String(activeTab.sessionId).slice(0, 12))))
+        : null
 
       return E('div', { className: 'dswt-root' },
         E(TabBar, {
@@ -2116,10 +2360,30 @@ const FLOW_LOW_WATER = 5000
           onRenameCommit: commitRename,
           onRenameCancel: cancelRename,
         }),
+        toolbar,
+        searchOpen
+          ? E('div', { className: 'dswt-searchRow' },
+            E('input', {
+              className: 'dswt-searchInput',
+              type: 'text',
+              value: searchQuery,
+              placeholder: t('search.placeholder'),
+              onChange: (event) => { setSearchQuery(event.target.value); runSearch('next', event.target.value) },
+              onKeyDown: (event) => {
+                if (event.key === 'Enter') { event.preventDefault(); runSearch(event.shiftKey ? 'prev' : 'next') }
+                if (event.key === 'Escape') { setSearchOpen(false) }
+              },
+            }),
+            E('button', { type: 'button', className: 'dswt-toolBtn', onClick: () => runSearch('prev') }, t('search.prev')),
+            E('button', { type: 'button', className: 'dswt-toolBtn', onClick: () => runSearch('next') }, t('search.next')),
+            E('button', { type: 'button', className: 'dswt-toolBtn', onClick: () => { setSearchOpen(false); const handle = handlesRef.current[activeKey]; if (handle && typeof handle.clearSearch === 'function') { try { handle.clearSearch() } catch (error) { void error } } } }, t('toolbar.close')))
+          : null,
         capHint === ''
           ? null
-          : E('div', { className: 'dswt-capHint', role: 'status' }, capHint),
-        E('div', { className: 'dswt-body' },
+          : E('div', { className: 'dswt-capHint' + (capHintTone === 'info' ? ' is-info' : ''), role: 'status' }, capHint),
+        E('div', { className: 'dswt-main' + (wideLayout === true ? ' is-wide' : '') },
+          E('div', { className: 'dswt-mainCol' },
+            E('div', { className: 'dswt-body' + (splitKey !== '' ? ' is-split' : '') },
           tabState.tabs.length === 0
             ? E('div', { className: 'dswt-empty dswt-emptyTabs' },
               E('div', { className: 'dswt-emptyIcon' }, E(Icon, { name: 'terminal', size: 26 })),
@@ -2131,7 +2395,7 @@ const FLOW_LOW_WATER = 5000
               t,
               tabKey: tab.key,
               root: tab.root,
-              active: tab.key === activeKey,
+              active: splitKey !== '' ? (tab.key === activeKey || tab.key === splitKey) : tab.key === activeKey,
               theme,
               onStatus: handleStatus,
               onTitle: handleTitle,
@@ -2144,21 +2408,47 @@ const FLOW_LOW_WATER = 5000
               restoreSession: tab.restoreSession !== null && tab.restoreSession !== undefined ? tab.restoreSession : null,
               restartable: tab.restartable !== false,
               restoreNotice: typeof tab.restoreNotice === 'string' ? tab.restoreNotice : '',
-            }))),
-        E(StatusBar, {
-          t,
-          tab: activeTab,
-          tabCount: tabState.tabs.length,
-          restoredCount,
-        }))
+              onHandle: registerHandle,
+              onActions: registerActions,
+            })))),
+          sidePanel))
     }
 
     /* ============================== styles ============================== */
 
     const CSS = `
-.dswt-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px}
+/* ---- toolbar / side column (reference layout) ---- */
+.dswt-toolbar{display:flex;align-items:center;gap:4px;flex:none;height:34px;padding:0 6px;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.dswt-toolBtn{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+.dswt-toolBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
+.dswt-toolBtn.is-primary{background:var(--dsw-alias-button-primary-fill,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
+.dswt-toolBtn:disabled{opacity:.4;cursor:default}
+.dswt-toolSpacer{flex:1 1 auto}
+/* 分屏：两个 pane 并排，各自仍是独立 xterm */
+.dswt-body.is-split{flex-direction:row;gap:1px;background:var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.dswt-body.is-split>.dswt-panel{flex:1 1 0;min-width:0}
+.dswt-toolBtn.is-on{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.16));color:var(--dsw-alias-label-primary,#fff)}.dswt-searchRow{display:flex;align-items:center;gap:4px;flex:none;height:32px;padding:0 8px;background:var(--dsw-alias-bg-layer-1,#1b1e24);border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.dswt-searchInput{flex:1 1 auto;min-width:0;height:24px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
+.dswt-searchInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}.dswt-main{display:flex;flex:1 1 auto;min-height:0;min-width:0}
+/* 关键：主列在任何档位都必须拉伸。只给 .is-wide 加规则会让窄档下的 mainCol 收缩到内容宽度，xterm fit 出 1 列，终端变成竖排单字。 */
+.dswt-mainCol{flex:1 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column}
+.dswt-side{display:flex;flex-direction:column;width:260px;flex:none;min-height:0;overflow:auto;border-left:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24)}
+.dswt-sideHead{flex:none;padding:7px 11px;font-size:10.5px;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.dswt-sideRow{display:flex;align-items:center;gap:8px;padding:6px 11px;cursor:pointer;font-size:11.5px;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.dswt-sideRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
+.dswt-sideRow.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.16));color:var(--dsw-alias-label-primary,#fff)}
+.dswt-sideDot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--dsw-alias-label-tertiary,#8a8f98)}
+.dswt-sideDot.is-running{background:var(--dsw-alias-state-success-primary,#3fb950)}
+.dswt-sideDot.is-starting{background:var(--dsw-alias-state-warn-primary,#e2a03f)}
+.dswt-sideDot.is-error{background:var(--dsw-alias-state-error-primary,#ff6b6b)}
+.dswt-sideName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dswt-sideMeta{margin-left:auto;font-size:9.5px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-family:ui-monospace,Consolas,monospace}
+.dswt-sideKv{display:flex;justify-content:space-between;gap:10px;padding:3px 11px;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.dswt-sideKv b{font-weight:400;color:var(--dsw-alias-label-secondary,#b6bac1);font-family:ui-monospace,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dswt-root{display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px}
 .dswt-tabbar{display:flex;align-items:stretch;flex:none;min-height:31px;max-height:31px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24);scrollbar-width:thin}
 .dswt-capHint{flex:none;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-state-warn-secondary,rgba(226,160,63,.12));color:var(--dsw-alias-state-warn-primary,#e2a03f);font-size:11px;line-height:1.5}
+/* 普通信息（例如「已恢复 N 个终端会话」）不该用警告色，也不该一直停留。 */
+.dswt-capHint.is-info{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d6bfe) 14%,transparent);color:var(--dsw-alias-label-secondary,#b6bac1)}
 .dswt-restoredCount .dswt-statusValue{color:var(--dsw-alias-state-success-primary,#3fb950)}
 .dswt-restoredCount .dswt-statusValue::before{content:'\\2713 '}
 .dswt-tab{display:flex;align-items:center;gap:5px;flex:none;max-width:190px;padding:0 8px;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer;user-select:none}
@@ -2211,6 +2501,23 @@ const FLOW_LOW_WATER = 5000
 .dswt-emptyTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dswt-emptyHint{max-width:360px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 @media (max-width:520px){.dswt-statusItem{max-width:34%}.dswt-tabLabel{max-width:90px}}
+
+/* ===== readability baseline ===== */
+.dswt-root{font-size:13px}
+.dswt-tabbar{min-height:34px;max-height:34px}
+.dswt-tab{font-size:12px;height:34px;padding:0 10px}
+.dswt-toolbar{height:38px;gap:6px}
+.dswt-toolBtn{font-size:12px;height:26px;padding:0 10px}
+.dswt-searchRow{height:36px}
+.dswt-searchInput{font-size:12px;height:26px}
+.dswt-statusbar{font-size:11px;min-height:26px;gap:12px}
+.dswt-side{width:280px}
+.dswt-sideHead{font-size:11px;padding:8px 12px}
+.dswt-sideRow{font-size:12px;padding:7px 12px}
+.dswt-sideKv{font-size:11.5px}
+.dswt-sideMeta{font-size:10.5px}
+.dswt-capHint{font-size:12px}
+
 `
 
     /* ============================== registration ============================== */
@@ -2245,7 +2552,12 @@ const FLOW_LOW_WATER = 5000
             title: t('page.terminal'),
             order: 40,
             icon: (size) => E(Icon, { name: 'terminal', size: size === undefined ? 16 : size }),
-            component: () => E(LocaleLive, { ctx, t }),
+            component: (pageProps) => E(LocaleLive, {
+              ctx,
+              t,
+              tier: pageProps === undefined ? undefined : pageProps.tier,
+              layout: pageProps === undefined ? undefined : pageProps.layout,
+            }),
           })
           ctx.effect(() => (typeof off === 'function' ? off : () => {}), 'dsh-workbay-terminal: workbench page')
           return true
@@ -2274,7 +2586,7 @@ const FLOW_LOW_WATER = 5000
         return typeof unsubscribe === 'function' ? unsubscribe : undefined
       }, [props.ctx])
       void tick
-      return E(TerminalPage, { t: props.t })
+      return E(TerminalPage, { t: props.t, tier: props.tier, layout: props.layout })
     }
 
     /*

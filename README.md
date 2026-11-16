@@ -7,7 +7,7 @@
 
 **中文** | [English](README.en.md)
 
-DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固定面板，文件、Git、终端、硬件烧录四个页面并排使用，与具体会话无关。
+DeepSeek Harness（DSH）的**工作台**：侧栏一个入口，右侧一块固定面板，文件、Git、终端、硬件烧录、内存分析五个页面并排使用，与具体会话无关。
 
 这个仓库把能力收敛成一个 **pnpm workspace**：
 
@@ -19,8 +19,10 @@ packages/
 ├─ terminal/        dsh-workbay-terminal        页面：真终端（ConPTY）+ 多 tab（xterm.js，切页保持会话）
 ├─ gitcraft/        dsh-gitcraft                页面：SourceTree 级 Git 面板（62 个 RPC）
 ├─ downloader/      dsh-downloader              页面：蓝牙芯片烧录 + 1.5 Mbps 串口日志
+├─ memmap/          dsh-workbench-memmap        页面：固件内存分布分析（自带分析脚本 + map.txt → 区域/变量/基线对比 + 内嵌 HTML 报告）
+├─ absolute-file-references/  dsh-absolute-file-references  `@` 选择器改写：选中的文件/文件夹插入绝对路径（无页面、无路由）
 ├─ kit/             @dsh-workbay/kit            共享 host 工具：同源围栏 / JSON 体 / RPC 信封
-└─ suite/           dsh-workbay-suite           单插件形态：vendor 六个 bundle + 合并 client，插件列表只显示一个
+└─ suite/           dsh-workbay-suite           单插件形态：vendor 八个 bundle + 合并 client，插件列表只显示一个
 ```
 
 **源码管理页是组合页**：它自己不做文件系统也不做 git，而是把 `files` 的编辑器面板和
@@ -32,7 +34,7 @@ packages/
 左侧栏 [工作台] ──点击──▶ 右侧停靠面板
                           ┌────────────────────────────────────────┐
                           │ 工作台  已停靠右侧              ⤢ ⇥    │
-                          │ [文件] [终端] [GitCraft] [Downloader]  │
+                          │ [文件] [终端] [GitCraft] [内存分析] … │
                           │                                        │
                           │         当前页面内容（与会话并排）       │
                           └────────────────────────────────────────┘
@@ -60,7 +62,7 @@ packages/
 window.__DSH_WORKBAY__.registerPage({
   id: 'myplugin',          // 必填，非空
   title: '我的页面',
-  order: 40,               // 升序，GitCraft=20，Downloader=30
+  order: 40,               // 升序：文件=10，源码=15，内存分析=25，Downloader=30
   icon: (size) => <Icon size={size} />,
   component: ({ t, dock }) => <MyPanel />,
 })
@@ -117,7 +119,7 @@ pnpm install
 profile 目录：`C:\Users\<user>\.dsh\profiles\<profile>`（本机是 `desktop`）。
 
 **方式 A —— 单插件（推荐：插件列表只显示一个）**：装 `dsh-workbay-suite`，
-它是把 5 个 bundle 物理收进来的单包（`vendor/` + 合并的 host/client）。
+它是把 8 个 bundle 物理收进来的单包（`vendor/` + 合并的 host/client）。
 
 ```jsonc
 {
@@ -137,28 +139,35 @@ pnpm install            # 或 dsh plugin --profile desktop add file:<repo>/packa
 pnpm run verify:profile # 校验安装副本完整、且没有多余的 workbay 包
 ```
 
-**方式 B —— 五个独立 bundle（开发用，插件列表显示 5 个）**：`package.json` 里
+**方式 B —— 独立 bundle（开发用，插件列表显示多行）**：`package.json` 里
 
 ```jsonc
 {
   "dsh": { "profile": { "bundles": [
     "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app",
     "dsh-workbay-dock", "dsh-workbay-files", "dsh-workbay-terminal",
-    "dsh-gitcraft", "dsh-downloader"
+    "dsh-gitcraft", "dsh-downloader", "dsh-workbay-source-control",
+    "dsh-workbench-memmap"
   ] } },
   "dependencies": {
-    "dsh-workbay-dock":     "file:<repo>/packages/dock",
-    "dsh-workbay-files":    "file:<repo>/packages/files",
-    "dsh-workbay-terminal": "file:<repo>/packages/terminal",
-    "dsh-gitcraft":         "file:<repo>/packages/gitcraft",
-    "dsh-downloader":       "file:<repo>/packages/downloader",
-    "@dsh-workbay/kit":     "file:<repo>/packages/kit"
+    "dsh-workbay-dock":            "file:<repo>/packages/dock",
+    "dsh-workbay-files":           "file:<repo>/packages/files",
+    "dsh-workbay-terminal":        "file:<repo>/packages/terminal",
+    "dsh-gitcraft":                "file:<repo>/packages/gitcraft",
+    "dsh-downloader":              "file:<repo>/packages/downloader",
+    "dsh-workbay-source-control":  "file:<repo>/packages/source-control",
+    "dsh-workbench-memmap":        "file:<repo>/packages/memmap",
+    "@dsh-workbay/kit":            "file:<repo>/packages/kit"
   }
 }
 ```
 
 > 两种方式**不要混用**：同一条 loader 行插两次会让前缀路由重复注册，整棵插件树起不来。
 > `pnpm run verify:profile` 会拦住这种配置。
+>
+> `dsh-absolute-file-references`（`@` 选择器插入绝对路径）**只以 suite 的一部分发布**：
+> 它没有页面也没有路由，单独装只会在插件列表多一行。要单独调试 `@` 选择器时才装它，
+> 配置见 [packages/absolute-file-references/README.md](packages/absolute-file-references/README.md)。
 
 装完**重启 DSH**，左侧栏出现「工作台」。
 

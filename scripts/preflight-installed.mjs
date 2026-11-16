@@ -148,7 +148,7 @@ if (existsSync(clientPath) === false) {
 }
 const { readFileSync } = await import('node:fs')
 const clientText = readFileSync(clientPath, 'utf8')
-const pageIds = ['files', 'gitcraft', 'source-control', 'terminal', 'downloader']
+const pageIds = ['files', 'gitcraft', 'source-control', 'terminal', 'downloader', 'memmap']
 const missingPages = pageIds.filter((id) => {
   /* The client registers via registerPage({ id: 'x' … }); check the quoted ids. */
   return clientText.includes("id: '" + id + "'") === false && clientText.includes('id: "' + id + '"') === false
@@ -158,6 +158,21 @@ for (const id of pageIds) {
   console.log((missingPages.includes(id) ? 'FAIL  ' : 'ok    ') + 'client bundle registers page "' + id + '"')
 }
 if (missingPages.length > 0) process.exit(1)
+
+/* ---------- 5b. the @ picker rewrite travels in the bundle, not as a row ---------- */
+const vendored = path.join(suiteDir, 'vendor', 'absolute-file-references')
+for (const file of ['package.json', 'index.js', 'client.js']) {
+  if (existsSync(path.join(vendored, file)) === false) {
+    console.error('FAIL  vendor/absolute-file-references/' + file + ' is missing — the @ picker would stay relative')
+    process.exit(1)
+  }
+}
+if (clientText.includes('__workbayAbsoluteRefs') === false) {
+  console.error('FAIL  merged client.js does not carry the @ picker wrapper (stale copy)')
+  process.exit(1)
+}
+console.log('')
+console.log('ok    merged client carries the absolute-@-reference wrapper')
 
 /* ---------- 6. the fence must not have broken the kit import ---------- */
 const kitPath = path.join(suiteDir, 'vendor', 'kit', 'src', 'host.js')

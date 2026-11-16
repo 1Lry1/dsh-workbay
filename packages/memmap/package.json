@@ -1,0 +1,60 @@
+{
+  "name": "dsh-workbench-memmap",
+  "version": "0.1.0",
+  "description": "Memory-map analysis page for the DSH workbench: detects the memmap_report.py tool and the build's map.txt, runs the analysis, and shows the result (storage totals, region usage, deltas, full HTML report) inside the workbench. | DSH 插件：工作台内存分析页，自动发现 SDK 的 memmap_report 工具与 map.txt，运行分析并在工作台内展示结果。",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "tools",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/host.test.mjs tests/client.test.mjs"
+  },
+  "dependencies": {
+    "@dsh-workbay/kit": "file:../kit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory-map",
+    "memmap",
+    "firmware",
+    "linker-map",
+    "workbench"
+  ]
+}

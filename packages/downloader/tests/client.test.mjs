@@ -41,6 +41,23 @@ function loadClient() {
   return { registrations, module }
 }
 
+test('split layout keeps the log the larger share and clamps the drag', () => {
+  const { module } = loadClient()
+  const api = module.__test
+  assert.equal(api.LEFT_WIDTH_KEY, 'dsh-workbay.downloader.leftw.v1')
+  assert.equal(api.defaultLeftWidth('t3'), 360)
+  assert.equal(api.defaultLeftWidth('t4'), 420)
+  assert.equal(api.defaultLeftWidth(undefined), 360)
+
+  /* main width 1200 -> CSS ceiling 45% = 540 */
+  assert.equal(api.clampLeftWidth(360, 1200), 360)
+  assert.equal(api.clampLeftWidth(700, 1200), 540)
+  assert.equal(api.clampLeftWidth(10, 1200), 280)
+  assert.equal(api.clampLeftWidth('x', 1200), 360)
+  /* A narrow page still leaves the log >= 55%. */
+  assert.equal(api.clampLeftWidth(560, 800), Math.floor(800 * 0.45))
+  assert.equal(api.clampLeftWidth(560, 0), 560)
+})
 test('the client registers exactly one module and exports apply(ctx)', () => {
   const { registrations, module } = loadClient()
   assert.equal(registrations.length, 1)
@@ -54,7 +71,7 @@ test('single and batched log events feed one buffer rendered through a virtual w
   assert.match(source, /e\.ev === 'logs'/)
   assert.match(source, /CLIENT_MAX_LOGS = 300000/)
   // the log view is virtualized by fixed row height; the 800-row cap is gone
-  assert.match(source, /ROW_HEIGHT = 18/)
+  assert.match(source, /ROW_HEIGHT = 20/)
   assert.match(source, /const range = virtualRange\(/)
   assert.doesNotMatch(source, /RENDER_LIMIT/)
 })

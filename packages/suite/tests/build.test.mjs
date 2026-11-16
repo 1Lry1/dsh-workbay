@@ -32,7 +32,7 @@ test('build generates the host, client, patch and vendored packages', () => {
   for (const file of [hostPath, clientPath, path.join(suiteDir, 'cordis.patch.yml')]) {
     assert.equal(existsSync(file), true, 'missing generated file: ' + file)
   }
-  for (const name of ['dock', 'files', 'terminal', 'gitcraft', 'downloader', 'source-control', 'kit']) {
+  for (const name of ['dock', 'files', 'terminal', 'gitcraft', 'downloader', 'source-control', 'memmap', 'absolute-file-references', 'kit']) {
     assert.equal(existsSync(path.join(suiteDir, 'vendor', name, 'package.json')), true, 'missing vendored ' + name)
   }
   /* The helpers travel with their packages. */
@@ -92,7 +92,16 @@ test('the generated client registers one module under the package name', () => {
   })
   assert.equal(plugin.name, 'dsh-workbay-suite')
   assert.equal(typeof plugin.apply, 'function')
+  /* The union of every vendored client half's `inject`. It must stay EMPTY:
+     DSH only activates a row once every injected service exists, so a half that
+     declared `inputTriggers`/`sessions` here would hold the whole workbench in
+     `pending` on boot. dsh-absolute-file-references waits for those two
+     services itself (ctx.inject) instead — see its README. */
   assert.deepEqual([...plugin.inject], [])
+  /* The @ picker rewrite travels in this one bundle (not as a separate row). */
+  const merged = readFileSync(clientPath, 'utf8')
+  assert.ok(merged.includes("id: 'dsh-absolute-file-references'"), 'the @ picker rewrite is vendored into the suite')
+  assert.ok(merged.includes('__workbayAbsoluteRefs'), 'the @ picker wrapper is present')
 })
 
 test('the merged host mounts every bundle exactly once on a fake ctx', async () => {

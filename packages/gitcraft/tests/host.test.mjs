@@ -231,6 +231,47 @@ test('diff returns hunks the client can render', async () => {
   assert.ok(out.data.hunks[0].added >= 1)
 })
 
+test('the diff cache never serves a stale working-tree patch', async () => {
+  /* The cache is keyed by the file's mtime/size and the index mtime, so an edit
+     must be visible immediately even when no watcher is running. */
+  writeFileSync(path.join(repo, 'a.txt'), 'one\nFIRST VERSION\n')
+  const first = await call('diff', { cwd: repo, path: 'a.txt', base: 'worktree' })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  assert.match(first.data.patch, /FIRST VERSION/)
+
+  writeFileSync(path.join(repo, 'a.txt'), 'one\nSECOND VERSION\nplus an extra line\n')
+  const second = await call('diff', { cwd: repo, path: 'a.txt', base: 'worktree' })
+  assert.equal(second.ok, true, JSON.stringify(second))
+  assert.match(second.data.patch, /SECOND VERSION/)
+  assert.doesNotMatch(second.data.patch, /FIRST VERSION/)
+
+  /* Repeat the SAME request: it may come from the cache, and the answer must be
+     identical to the fresh one. */
+  const again = await call('diff', { cwd: repo, path: 'a.txt', base: 'worktree' })
+  assert.equal(again.data.patch, second.data.patch)
+  sh(repo, ['checkout', '--', 'a.txt'])
+})
+
+test('the diff cache honours its byte budget', async () => {
+  /* The cache lives in process memory; a tiny budget here proves the eviction
+     loop actually runs, without generating 32 MB of patches. Each iteration
+     rewrites the same tracked file with a different size, so every request is a
+     NEW cache key (>1 KB of patch) and the budget must evict the older ones. */
+  const original = plugin.__test.diffCacheStats()
+  plugin.__test.setDiffCacheBudget(1024)
+  for (let round = 0; round < 4; round += 1) {
+    writeFileSync(path.join(repo, 'a.txt'), 'one\n' + ('line ' + round + '\n').repeat(200))
+    const out = await call('diff', { cwd: repo, path: 'a.txt', base: 'worktree' })
+    assert.equal(out.ok, true, JSON.stringify(out))
+    assert.ok(out.data.patch.length > 1024, 'the patch is bigger than the whole budget')
+  }
+  const squeezed = plugin.__test.diffCacheStats()
+  assert.ok(squeezed.entries <= 1, 'a tiny byte budget keeps at most one patch: ' + JSON.stringify(squeezed))
+  assert.ok(squeezed.bytes <= 200 * 1024, 'the held patch is bounded: ' + JSON.stringify(squeezed))
+  plugin.__test.setDiffCacheBudget(original.maxBytes)
+  sh(repo, ['checkout', '--', 'a.txt'])
+})
+
 test('stageHunk stages only the selected hunk of a multi-hunk file', async () => {
   // Two well-separated edits => two hunks.
   const lines = []
@@ -351,6 +392,7 @@ test('branchCreate / checkout / branchRename / branchDelete round-trip', async (
   const branches = await call('branches', { cwd: repo })
   assert.equal(branches.data.branches.some((entry) => entry.name === 'feature/y'), false)
 })
+
 
 test('protected branch deletion needs an explicit confirmation', async () => {
   const out = await call('branchDelete', { cwd: repo, name: 'main' })
@@ -916,6 +958,40 @@ test('tagPush publishes exactly one tag and leaves a sibling local', async () =>
   assert.equal(state.data.published['two-tag'], undefined, JSON.stringify(state.data.published))
 })
 
+test('blame pairs every line with ITS commit author, even when a commit reappears', async () => {
+  /* `--porcelain` prints a commit's author block only ONCE; if the same old commit
+     owns lines on both sides of a newer edit, a naive parser inherits the middle
+     author for the trailing block. This is the "作者和哈希值对不上" bug. */
+  const file = 'blame-mix.txt'
+  writeFileSync(path.join(repo, file), 'one\ntwo\nthree\nfour\n')
+  sh(repo, ['add', file])
+  sh(repo, ['-c', 'user.name=Base Author', '-c', 'user.email=base@example.com', 'commit', '-q', '-m', 'base: add mix file'])
+  writeFileSync(path.join(repo, file), 'one\nTWO CHANGED\nTHREE CHANGED\nfour\n')
+  sh(repo, ['add', file])
+  sh(repo, ['-c', 'user.name=Middle Author', '-c', 'user.email=middle@example.com', 'commit', '-q', '-m', 'middle: change two lines'])
+
+  const out = await call('blame', { cwd: repo, path: file })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  const rows = out.data.lines
+  assert.equal(rows.length, 4)
+  for (const row of rows) assert.ok(String(row.author).trim() !== '', 'every line names an author')
+
+  const byHash = new Map()
+  for (const row of rows) {
+    const hash = String(row.hash)
+    if (byHash.has(hash)) assert.equal(byHash.get(hash), row.author, 'the same commit must always name the same author')
+    else byHash.set(hash, row.author)
+  }
+  /* The untouched first and last lines belong to the SAME old commit, and that
+     commit appears non-contiguously in the output. */
+  assert.equal(rows[0].hash, rows[3].hash)
+  assert.equal(rows[0].author, 'Base Author')
+  assert.equal(rows[3].author, 'Base Author')
+  assert.equal(rows[1].author, 'Middle Author')
+  rmSync(path.join(repo, file), { force: true })
+  sh(repo, ['add', '-A'])
+  sh(repo, ['-c', 'user.name=Base Author', '-c', 'user.email=base@example.com', 'commit', '-q', '-m', 'cleanup: drop blame mix file'])
+})
 test('blame, fileHistory and reflog return rows', async () => {
   const blame = await call('blame', { cwd: repo, path: 'a.txt' })
   assert.equal(blame.ok, true, JSON.stringify(blame))
@@ -982,6 +1058,25 @@ test('cleanUntracked needs confirmation and then removes untracked files', async
   assert.equal(existsSync(path.join(repo, 'junk.txt')), false)
 })
 
+test('ignore adds an anchored root .gitignore rule and untracks without deleting', async () => {
+  writeFileSync(path.join(repo, 'ignored-probe.txt'), 'tracked probe\n')
+  sh(repo, ['add', 'ignored-probe.txt'])
+  sh(repo, ['commit', '-q', '-m', 'test: ignored probe'])
+
+  const tracked = await call('ignore', { cwd: repo, path: 'ignored-probe.txt' })
+  assert.equal(tracked.ok, true, JSON.stringify(tracked).slice(0, 400))
+  assert.equal(tracked.data.tracked, true)
+  assert.equal(existsSync(path.join(repo, 'ignored-probe.txt')), true, 'the working file must survive')
+  assert.equal(sh(repo, ['ls-files', '--', 'ignored-probe.txt']).trim(), '', 'the path must leave the index')
+  assert.match(readText(path.join(repo, '.gitignore')), /^\/ignored-probe\.txt$/m)
+
+  writeFileSync(path.join(repo, 'scratch-ignore.tmp'), 'scratch\n')
+  const untracked = await call('ignore', { cwd: repo, path: 'scratch-ignore.tmp' })
+  assert.equal(untracked.ok, true, JSON.stringify(untracked).slice(0, 400))
+  assert.equal(untracked.data.tracked, false)
+  const ignored = sh(repo, ['check-ignore', '-q', '--', 'scratch-ignore.tmp'])
+  assert.equal(ignored, '')
+})
 test('unknown method and non-POST are rejected', async () => {
   const unknown = await call('nope', { cwd: repo })
   assert.equal(unknown.status, 404)
@@ -1029,7 +1124,7 @@ test('every method that mutates refs or the index is serialised per repository',
     'commit', 'amend', 'cherryPick', 'revert', 'reset', 'checkout',
     'branchCreate', 'branchDelete', 'merge', 'rebase', 'fetch', 'pull', 'push',
     'pushTags', 'tagCreate', 'tagDelete', 'tagDeleteRemote', 'tagPush', 'tagReset',
-    'stashPush', 'stashDrop', 'conflictResolve', 'cleanUntracked',
+    'stashPush', 'stashDrop', 'conflictResolve', 'cleanUntracked', 'ignore',
   ]
   const missing = MUST_BE_LOCKED.filter((name) => !listed.has(name))
   assert.deepEqual(missing, [], 'these mutators are not routed through the repo lock: ' + missing.join(', '))

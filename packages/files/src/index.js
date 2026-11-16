@@ -37,6 +37,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1038,6 +1039,49 @@ const METHODS = {
       throw asFailure('stat-failed', 'cannot stat path', error)
     }
     return { entry: entryFromStats(root, lexical, stats) }
+  },
+
+  /**
+   * Open the OS file manager at one entry: select a file, or open a directory.
+   * Read-only; the target must still resolve inside the served root.
+   */
+  async reveal(payload) {
+    const root = rootPathOf(payload)
+    const rel = normalizeRel(payload.rel === undefined || payload.rel === null ? '' : payload.rel)
+    const abs = resolveInside(root, rel)
+    let stats
+    try {
+      stats = statSync(abs)
+    } catch (error) {
+      const code = error !== null && typeof error === 'object' ? error.code : undefined
+      if (code === 'ENOENT') throw notFound('path')
+      throw asFailure('reveal-failed', 'cannot inspect path', error)
+    }
+    try {
+      const isDir = stats.isDirectory()
+      let command
+      let args
+      if (process.platform === 'win32') {
+        command = 'explorer.exe'
+        args = isDir ? [abs] : ['/select,' + abs]
+      } else if (process.platform === 'darwin') {
+        command = 'open'
+        args = isDir ? [abs] : ['-R', abs]
+      } else {
+        command = 'xdg-open'
+        args = [isDir ? abs : path.dirname(abs)]
+      }
+      /* ★ windowsHide MUST stay false here. Windows inherits it as STARTF_USESHOWWINDOW
+         /SW_HIDE, so Explorer created its window with visible=false — the exact
+         "menu does nothing" bug. Verified by enumerating CabinetWClass windows:
+         windowsHide:true -> new window visible=false; without it -> visible=true.
+         `detached` keeps the window alive after this HTTP request returns. */
+      const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+      child.unref()
+    } catch (error) {
+      throw asFailure('reveal-failed', 'cannot open the file manager', error)
+    }
+    return { path: jsonPath(abs), directory: stats.isDirectory() }
   },
 
   async mkdir(payload) {

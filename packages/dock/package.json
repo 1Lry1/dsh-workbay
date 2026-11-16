@@ -10,6 +10,18 @@
     "./client": "./src/client.js",
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "test": "node --test tests/client.test.mjs tests/restart.test.mjs",
+    "test:back": "node tests/back-stack.e2e.mjs",
+    "test:tree": "node tests/files-tree.e2e.mjs",
+    "test:branches": "node tests/branches.e2e.mjs",
+    "test:blame": "node tests/blame-colors.e2e.mjs",
+    "test:memmap": "node tests/memmap.e2e.mjs",
+    "test:overlap": "node tests/dock-overlap.e2e.mjs",
+    "test:monkey": "node tests/monkey.e2e.mjs 500",
+    "test:visual": "node tests/visual-golden.mjs",
+    "visual:update": "node tests/visual-golden.mjs --update"
+  },
   "files": [
     "icon.svg",
     "src/index.js",

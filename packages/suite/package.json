@@ -2,7 +2,7 @@
   "name": "dsh-workbay-suite",
   "version": "0.2.0",
   "private": true,
-  "description": "The DSH workbench as ONE installable plugin: vendors the dock, files, terminal, gitcraft and downloader bundles, mounts every host half from a single apply(), and ships all client halves in one client bundle.",
+  "description": "The DSH workbench as ONE installable plugin: vendors the dock, files, terminal, gitcraft, downloader, source-control, memmap and absolute-file-reference bundles, mounts every host half from a single apply(), and ships all client halves in one client bundle.",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",

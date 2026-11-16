@@ -26,7 +26,7 @@
  *         WORKBAY_REACT_DIR  directory containing node_modules/react + react-dom
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -143,12 +143,16 @@ function bootBundles() {
   }
   return out
 }
-function mountPage() {
+function mountPage(tier) {
   const dock = window.__DSH_WORKBAY__
   const page = dock.get('downloader')
   if (!page) return { error: 'page not registered; have ' + dock.list().map((p) => p.id).join(',') }
-  const root = window.ReactDOM.createRoot(document.getElementById('root'))
-  root.render(window.React.createElement(page.component, { t: (k) => k, dock }))
+  if (window.__PAGE_ROOT__ === undefined) {
+    window.__PAGE_ROOT__ = window.ReactDOM.createRoot(document.getElementById('root'))
+  }
+  const props = { t: (k) => k, dock }
+  if (tier) props.tier = tier
+  window.__PAGE_ROOT__.render(window.React.createElement(page.component, props))
   return { ok: true }
 }
 </script>
@@ -239,13 +243,37 @@ function mountPage() {
      the page blank with "Page crashed" and an empty root. */
   check('the page paints without crashing', rendered.root === true && rendered.alive === true && rendered.crashed === false, rendered)
   check('no runtime errors were raised while rendering', rendered.errors.length === 0, rendered.errors)
-  check('the tool-path button is present', Array.isArray(rendered.labels) && rendered.labels.some(function (x) { return x.indexOf('工具路径') >= 0 }), rendered.labels)
+  /* The tool control lives in the 工具/设备 card (it used to be a bare 「工具路径」 button).
+     In the compact layout the card starts collapsed, so expand it before looking. */
+  const toolButtonSelector = `(function () {
+    var TOOL = ['设置工具…', '更换', '设置工具']
+    function find() {
+      return [].slice.call(document.querySelectorAll('.abw-btn')).filter(function (n) {
+        var text = n.textContent.trim()
+        return TOOL.some(function (t) { return text === t })
+      })[0]
+    }
+    var b = find()
+    if (!b) {
+      var card = document.querySelector('.abw-line.is-card')
+      if (card) card.click()
+      b = find()
+    }
+    return b
+  })()`
+  await ev(toolButtonSelector)
+  await sleep(400)
+  const toolButtons = JSON.parse(await ev(`JSON.stringify([].slice.call(document.querySelectorAll('.abw-btn')).map(function (n) { return n.textContent.trim() }))`))
+  check('the tool-path button is present', toolButtons.some(function (x) { return ['设置工具…', '更换', '设置工具'].indexOf(x) >= 0 }), toolButtons)
 
   /* ---- the button opens an INLINE dialog ----
      window.prompt would do nothing at all here (Electron does not implement it, and
      headless Chromium returns immediately). The page must draw its own dialog. */
   await ev(`(function () {
-    var b = [].slice.call(document.querySelectorAll('.abw-btn')).filter(function (n) { return n.textContent.indexOf('工具路径') >= 0 })[0]
+    var TOOL = ['设置工具…', '更换', '设置工具']
+    var b = [].slice.call(document.querySelectorAll('.abw-btn')).filter(function (n) {
+      return TOOL.indexOf(n.textContent.trim()) >= 0
+    })[0]
     if (b) b.click()
   })()`)
   await sleep(700)
@@ -270,6 +298,57 @@ function mountPage() {
   })`))
   check('cancelling closes the dialog and does not crash the page',
     afterCancel.inputs === 0 && afterCancel.crashed === false, afterCancel)
+
+  /* ---- T3 split layout: the log must get the larger share ---- */
+  await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(200)
+  await ev("mountPage('t3')")
+  await sleep(700)
+  const measureSplit = () => ev(`(function(){
+    var left = document.querySelector('.abw-left')
+    var right = document.querySelector('.abw-right')
+    var log = document.querySelector('.abw-log')
+    var main = document.querySelector('.abw-main')
+    return JSON.stringify({
+      left: left ? Math.round(left.getBoundingClientRect().width) : 0,
+      right: right ? Math.round(right.getBoundingClientRect().width) : 0,
+      log: log ? Math.round(log.getBoundingClientRect().width) : 0,
+      main: main ? Math.round(main.getBoundingClientRect().width) : 0,
+      splitter: document.querySelectorAll('.abw-splitter').length,
+    })
+  })()`)
+  const split = JSON.parse(await measureSplit())
+  check('T3 two-column: settings column is the smaller one', split.left > 0 && split.right > split.left * 1.5, JSON.stringify(split))
+  check('T3 two-column: the log pane is wide enough to read (>= 550px)', split.log >= 550, JSON.stringify(split))
+  check('T3 two-column: a draggable splitter is rendered', split.splitter === 1, JSON.stringify(split))
+
+  const dragged = await ev(`(function(){
+    var s = document.querySelector('.abw-splitter')
+    if (!s) return 'missing'
+    var r = s.getBoundingClientRect()
+    var opts = { bubbles: true, cancelable: true, pointerId: 1, clientY: r.top + 30 }
+    s.dispatchEvent(new PointerEvent('pointerdown', Object.assign({ clientX: r.left + 2 }, opts)))
+    window.dispatchEvent(new PointerEvent('pointermove', Object.assign({ clientX: r.left + 82 }, opts)))
+    window.dispatchEvent(new PointerEvent('pointerup', Object.assign({ clientX: r.left + 82 }, opts)))
+    return 'dragged'
+  })()`)
+  await sleep(500)
+  const afterDrag = JSON.parse(await measureSplit())
+  check('dragging the splitter widens the settings column', dragged === 'dragged' && afterDrag.left >= split.left + 40, dragged + ' ' + JSON.stringify(afterDrag))
+  check('settings never exceed 45% of the page (log keeps >= 55%)', afterDrag.left <= Math.round(afterDrag.main * 0.46), JSON.stringify(afterDrag))
+
+  /* Put it back to the default so later runs/humans see the intended ratio. */
+  await ev("(function(){var s=document.querySelector('.abw-splitter'); if(s) s.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); return 'reset'})()")
+  await sleep(300)
+  const reset = JSON.parse(await measureSplit())
+  check('double-click restores the default ratio', reset.left < afterDrag.left, JSON.stringify(reset))
+
+  /* Screenshot of the T3 split for visual review. */
+  const outDir = process.env.WBDL_OUT ?? path.join(tmpdir(), 'wbd-split-' + process.pid)
+  mkdirSync(outDir, { recursive: true })
+  const shot = await send('Page.captureScreenshot', { format: 'png' })
+  if (shot.result && shot.result.data) writeFileSync(path.join(outDir, 'downloader-split-t3.png'), Buffer.from(shot.result.data, 'base64'))
+  console.log('artifacts: ' + outDir)
 
   const finalErrors = JSON.parse(await ev('JSON.stringify(window.__ERRORS__)'))
   check('no console errors across the whole flow', finalErrors.length === 0, finalErrors)

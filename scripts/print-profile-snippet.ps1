@@ -28,7 +28,7 @@ if (-not (Test-Path (Join-Path $repoRoot 'packages\dock\package.json'))) {
 }
 
 $posix = $repoRoot.Replace('\', '/')
-# One plugin entry: the suite vendors the five bundles (pnpm run build generates
+# One plugin entry: the suite vendors every bundle (pnpm run build generates
 # vendor/ + client.js). The standalone packages stay in the repo for development,
 # but they must NOT appear in this profile or the plugin list shows them again.
 $bundles = @('dsh-workbay-suite')

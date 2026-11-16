@@ -96,5 +96,16 @@ await time('status', 'status', scope)
 await time('log (first page)', 'log', { ...scope, limit: 50 })
 await time('branches', 'branches', scope)
 
+/* Diffs: the other half of the panel's hot path. A cold per-file diff costs a
+   full spawn on Windows, so the cache must be visible in the numbers. */
+const firstChange = first.data.changes.filter((entry) => entry.untracked !== true)[0]
+const dirtyPath = firstChange !== undefined ? firstChange.path : 'src/mod0/file0.ts'
+const head = first.data.head
+await time('diff: one modified file', 'diff', { ...scope, base: 'worktree', path: dirtyPath })
+await time('diff: same file (cache hit)', 'diff', { ...scope, base: 'worktree', path: dirtyPath })
+await time('diff: commit (whole)', 'diff', { ...scope, base: 'commit', rev: head })
+await time('diff: commit (cache hit)', 'diff', { ...scope, base: 'commit', rev: head })
+await time('diff: staged', 'diff', { ...scope, base: 'staged', path: dirtyPath })
+
 await new Promise((r) => server.close(r))
 try { rmSync(sandbox, { recursive: true, force: true }) } catch { }

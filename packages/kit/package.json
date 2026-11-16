@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/host.js",
     "./host": "./src/host.js",
+    "./ui": "./src/ui.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -18,7 +19,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test tests/host.test.mjs"
+    "test": "node --test tests/host.test.mjs tests/ui.test.mjs"
   },
   "keywords": [
     "dsh",

@@ -1,0 +1,45 @@
+{
+  "name": "dsh-absolute-file-references",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Make the DSH @ file picker insert absolute host paths while keeping the readable file-name chip (bundled into dsh-workbay-suite).",
+  "type": "module",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-reference"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/client.test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "reference",
+    "absolute-path"
+  ]
+}

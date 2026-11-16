@@ -1,0 +1,17 @@
+# dsh-workbench-memmap bundle patch.
+#
+# Installed through the official CLI:
+#
+#   dsh plugin --profile desktop add file:<repo>/packages/memmap
+#
+# Manual mount equivalent (profile cordis.patch.yml):
+#
+#   - insert:
+#       - id: memmap
+#
+# Only the Node half loads through this row (the /dsh-workbench-memmap/api
+# routes and the run detector). The web client half is served through
+# exports["./client"] and mounted by the browser boot graph; there it registers
+# the 内存分析 page into the workbench dock.
+- insert:
+    - id: memmap

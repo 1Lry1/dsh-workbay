@@ -37,9 +37,12 @@ Windows 的 COM 口独占，所以：
 | 你打开串口看日志 | 工作台 |
 | 点「连接 Downloader」 | 自动让给 Downloader |
 | 点「开始烧录」 | 确保已让出 |
-| **烧录完成** | **自动抢回，约 8ms 空窗** |
+| **Downloader.exe 正在运行**（无论谁启动） | **工作台 1.5 秒内主动让出** |
+| **烧录完成** | 仅当 Downloader 已退出才自动抢回；仍在运行则保持让出 |
 
 烧完会主动让 Downloader 退出，这样你随时能直接开串口，不用先点「断开」。
+如果 Downloader 工具仍开着（例如你自己启动它、准备在工具里点烧录），工作台不会再抢 COM；
+关闭工具后点「打开串口」即可恢复板卡日志。这样不会出现工具一直卡在「扫描中」、只能拔插 USB 的情况。
 
 ### 自动修正 COMEnable
 
@@ -49,14 +52,19 @@ Windows 的 COM 口独占，所以：
 
 ### 自动重试
 
-Downloader 在「扫描中」阶段会**静默丢弃** `StartDownload`。插件发命令后若 3 秒内无响应，自动重发，最多 5 次。
+Downloader 在「扫描中」阶段会**静默丢弃** `StartDownload`。插件发命令后若 10 秒（自动）/10 秒（手动）内无响应，
+只重发 **1 次**，避免连续重发导致多次「扫描中」。
 
 ### 烧录启动互斥（避免工具冲突）
 
-`/flash/start` 有 `launching` 标记：从发出 `launch` 到收到 `launched`/`StartOK` 之间，
+`/flash/start` 有同步的 `launching` 锁：从发出 `launch` 到收到 `launched`/`StartOK` 之间，
 再点「连接」（或自动烧录同时触发）只会返回 `{ ok:true, pending:true }`，**不会**再发第二条
-`launch`。Windows 上两次 `launch` 会让 helper 起两个 Downloader 实例，直接报工具冲突。
-互斥标记在 helper 退出、连接成功、点「断开」时复位。
+`launch`。锁在**第一个 `await` 之前**获取（读 body、让出串口都可能挂起）；否则两个并发请求
+会同时通过旧的「检查 launching」分支，各发一条 `launch`——Windows 上就是两个 Downloader
+实例、工具冲突。互斥标记在 helper 退出、连接成功、点「断开」时复位。
+
+**自动烧录现在也按 Windows 实际进程状态决策**（见下文「按真实运行状态」），
+不再只看内存里的 `launching` 标记。
 
 ### 打开串口失败只打一行
 
@@ -72,12 +80,41 @@ Downloader 在「扫描中」阶段会**静默丢弃** `StartDownload`。插件�
 
 工作台自己监听编译产物 `app.dcf`，文件一变（= 编译完成）就自动烧录。
 
+**默认开启，并在 DSH 重启后自动恢复**：启动约 1.5 秒后用持久化的 `scanRoot` 扫描
+`app.dcf` 并启动监听；当时还没有构建产物就每 15 秒找一次（最多 10 分钟），
+或者等工作区/Downloader 报来路径时立即接管。
+
+工作区路径保存在 `~/.dsh/workbay/logs/tool-path.json` 的 `scanRoot`，DSH 重启后直接读取；
+只有「源码管理」页切换工作区时才会更新（相同路径重复上报直接 `unchanged`，不重写、不重扫）。
+
 点工具栏的 **○ 自动烧录** 开启，变成 **◉ 自动烧录** 即生效。
 
 ### 为什么不用 Downloader 自带的 AutoStart
 
 Downloader 的 `AutoStart=True` 需要在它 GUI 里**手动点一次按钮**才激活，而且一旦被关掉就断了。
-工作台烧完会关闭 Downloader 来还你串口（日志优先），所以那个机制用不了。
+工作台现在在运行期间**临时接管** `AutoStart`（先写标记再改 False，停止自动烧录/退出 DSH 时恢复），
+由工作台统一发一次 `StartDownload`，避免工具自己再烧一遍造成两次「扫描中」。
+详见「接管 AutoStart」一节的日志与恢复标记。
+
+### 手动打开的 Downloader 不会被自动结束
+
+每次自动烧录前，插件用 `tasklist` 取**真实的 Downloader.exe PID**，再结合 bridge 记录的
+子进程 PID 分三种情况：
+
+| 实际进程情况 | 行为 |
+|---|---|
+| 没有任何 Downloader | 正常启动一个（`launch`） |
+| 只有工作台启动的那个（PID 与 bridge 记录一致） | **复用**，只等握手，绝不重复启动 |
+| 任何手动打开的实例 | **只观察，不结束**：自动烧录跳过并记日志；连接按钮提示你先关闭工具 |
+
+- 每 5 秒的进程核对只写日志，不 `taskkill`；
+- 自动烧录遇到手动 Downloader 直接跳过，不会为了烧录结束它；
+- “连接 Downloader”也不再自动清理已运行实例，只返回 `already-running` 并提示；
+- 只有 bridge 自己留下的孤儿 Downloader（Job Object 失效兜底）会按**记录过的 PID**清理；
+- 同一个文件变化只跑**一次**自动烧录：上一次触发未结束时，后续重复的 watch 事件直接忽略。
+
+> 手动打开的实例无法在事后注入 bridge 窗口句柄（`BackShowMode {hwnd}` 只在启动时生效），
+> 所以工作台不能“无缝接管”它；正确做法是保留你的进程，由你关闭工具或直接在工具里烧录。
 
 ### 你在 Downloader 里切 dcf，它会自动跟随
 
@@ -122,6 +159,40 @@ Downloader 的 `AutoStart=True` 需要在它 GUI 里**手动点一次按钮**才
 ```
 
 不会干等 5 分钟，25 秒内没响应就明确中止并告诉你怎么做。
+
+### 烧录配置下拉（前测 / 擦除 / 下载 / 扩展 / 速度）
+
+Downloader 页的「开始烧录」右侧有一个小三角，展开就是烧录配置菜单。工具条不再放独立的
+「擦除」和「自动烧录」按钮：擦除是菜单里的 `StartEraseMode`，自动烧录是菜单里的
+工作台监听开关。菜单直接读写 `Downloader.config` 中**厂商实际持久化**的键：
+
+| 菜单项 | 配置键 |
+|---|---|
+| 前测 | `StartPreTestMode` |
+| 擦除 | `StartEraseMode` |
+| 下载 | `StartDownMode` |
+| 扩展 | `StartExtendMode` |
+| 高速 / 标速 / 低速 | `SpeedMode` |
+
+改动写入 `Downloader.config`，**下次启动 Downloader 生效**；如果当前已连接，
+菜单提示断开重连。Downloader 自带菜单里的「只校验 / 后测 / 保持 / 自动 / 省晶振校准」
+在当前 3.6 配置里没有对应的持久化键，它们是工具侧的即时操作，工作台不伪造这些开关。
+### 不休眠选项（AI 连续烧录）
+
+Downloader 页工具条里有 **「不休眠」** 复选框。它每 2 秒读取一次当前
+`app.dcf` 同级的 `Settings/watch.setting`，**勾选状态和文字都跟随文件里的
+`sys_sleep_time`**：
+
+- 勾选时：立即把 `sys_sleep_time` 写成 `0`（固件定义里 `0` 就是不休眠），
+  并把选择持久化到工具配置；每次自动/手动烧录**启动 Downloader 前**再检查一次。
+  编译重新生成 `watch.setting` 后也会被重新写回 `0`，避免 AI 循环到下一轮时板子已经休眠；
+- **取消勾选不修改 setting**，只停止“烧录前自动保持”；文字仍显示文件当前状态；
+- 手动改 `watch.setting` 后，最多 2 秒页面会自动更新勾选和文字；
+- 文件还没生成时只保存选择，等 `Output/bin/Settings/watch.setting` 出现后自动应用。
+
+设置路径不是写死的绝对路径：从当前 DCF 所在目录推导
+`Settings/watch.setting`（兼容 `settings/` 和与 DCF 同级），所以切换工程/输出目录后
+会跟随新的 DCF。只改这一个 XML key，保留文件其余内容和 BOM/换行格式。
 
 ## 日志
 

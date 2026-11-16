@@ -134,6 +134,12 @@ Esc 清空并保留焦点。
 - **`Config` schema**：本包不动态引入 `@deepseek-ai/schemastery`，只按契约读取两个
   配置键并用安全默认值兜底；host 缺失/配置写错不会影响路由加载。
 
+## 会话引用
+
+标题栏的 `@` 按钮已移除：文件级的「加入对话 / 复制路径 / 打开所在目录 / 删除…」
+统一放在**源码管理页文件树的右键菜单**里（见该页 README）。本页保留
+`absolutePathOf` / `insertIntoComposer` 两个纯工具（有单测），供后续在此页加右键菜单时复用。
+
 ## 测试
 
 ```powershell

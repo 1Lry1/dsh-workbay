@@ -92,6 +92,35 @@ const PAGE_CACHE = {
   stash: idle('stash'),
 }
 const PAGE_CACHE_MAX_AGE_MS = 10 * 60 * 1000
+/* Commit metadata is immutable, so re-selecting a commit should not show a
+   spinner again. The host also caches it; this client cache additionally lets a
+   hover prefetch hand the result straight to the click handler. */
+const COMMIT_DETAIL_CACHE_LIMIT = 120
+const COMMIT_DETAIL_CACHE = new Map()
+
+function commitDetailKey(root, hash) {
+  return String(root || '') + '\u0000' + String(hash || '')
+}
+
+function readCommitDetailCache(root, hash) {
+  const key = commitDetailKey(root, hash)
+  const hit = COMMIT_DETAIL_CACHE.get(key)
+  if (hit === undefined) return null
+  COMMIT_DETAIL_CACHE.delete(key)
+  COMMIT_DETAIL_CACHE.set(key, hit)
+  return hit
+}
+
+function rememberCommitDetail(root, hash, detail) {
+  const key = commitDetailKey(root, hash)
+  COMMIT_DETAIL_CACHE.delete(key)
+  COMMIT_DETAIL_CACHE.set(key, detail)
+  while (COMMIT_DETAIL_CACHE.size > COMMIT_DETAIL_CACHE_LIMIT) {
+    const oldest = COMMIT_DETAIL_CACHE.keys().next()
+    if (oldest.done === true) break
+    COMMIT_DETAIL_CACHE.delete(oldest.value)
+  }
+}
 
 function readPageCache() {
   const stored = (() => {
@@ -147,7 +176,7 @@ const NARROW_PANE_W = 225
     const TREE_MAX_W = 360
     const TREE_DEFAULT_W = 280
 
-    const TREE_ROW_HEIGHT = 22
+    const TREE_ROW_HEIGHT = 28
     const TREE_OVERSCAN = 8
 
     /* ============================== i18n ============================== */
@@ -163,6 +192,12 @@ const NARROW_PANE_W = 225
       'head.onlyChangesOff': '显示全部文件',
       'group.changes': '变更',
       'group.files': '文件',
+      'group.modified': '修改',
+      'group.deleted': '删除',
+      'group.added': '新增',
+      'group.renamed': '重命名',
+      'group.collapse': '收起分组',
+      'group.expand': '展开分组',
       'group.staged': '已暂存',
       'group.unstaged': '更改',
       'group.untracked': '未跟踪',
@@ -174,11 +209,17 @@ const NARROW_PANE_W = 225
       'commit.amend': '修补上次提交',
       'commit.nothing': '没有可提交的更改',
       'empty.noRoot': '还没有选择工作区',
+      'root.clear': '取消工作区',
+      'root.clearTitle': '取消当前工作区？',
+      'root.clearHint': '只解除绑定，不会删除磁盘上的任何文件；之后可以随时重新选择目录。',
+      'root.clearConfirm': '取消工作区',
       'empty.chooseRoot': '选择工作区',
       'empty.noRepo': '这个目录不是 Git 仓库',
       'empty.noRepoHint': '在仓库根目录下打开这个页面，或先初始化一个仓库。',
       'empty.noFile': '从左侧选择一个文件',
       'empty.noFileHint': '改动会在这里显示源码或 diff。',
+      'empty.noFileHintDrawer': '选中文件后 diff 会从右侧浮出；切到双栏/三栏可并排查看。',
+      'empty.noBranch': '（无分支）',
       'empty.clean': '工作区是干净的',
       'state.loading': '正在加载…',
       'state.failed': '加载失败',
@@ -187,6 +228,14 @@ const NARROW_PANE_W = 225
       'action.stage': '暂存',
       'action.unstage': '取消暂存',
       'action.addToChat': '加入对话',
+      'row.copyAbsolute': '复制绝对路径',
+      'row.copyRelative': '复制相对路径',
+      'row.reveal': '打开文件所在目录',
+      'row.revealDir': '打开目录',
+      'row.openEditor': '在编辑器中打开',
+      'row.refresh': '刷新',
+      'row.copied': '已复制：',
+      'row.copyFailed': '复制失败',
       'chat.unavailable': '当前没有可写入的对话输入框（请在会话里再试）',
       'action.discard': '丢弃更改',
       'action.open': '打开',
@@ -224,6 +273,31 @@ const NARROW_PANE_W = 225
       'branches.remote': '远程分支',
       'branches.tags': '标签',
       'branches.legend': '● 当前分支 · ↑↓ 领先/落后上游 · 点本地分支切换',
+      'branches.filterPlaceholder': '过滤分支…',
+      'branch.more': '更多分支操作',
+      'branch.copyName': '复制名称',
+      'branch.copyRemoteUrl': '复制远程地址',
+      'branch.openWeb': '在浏览器打开',
+      'branch.fetchRemote': '获取此远程',
+      'branch.moreBody': '这些操作只影响这个分支。',
+      'branch.rename': '重命名',
+      'branch.renameTitle': '重命名分支',
+      'branch.renameBody': '只改本地名字，不会动远端。',
+      'branch.upstream': '设置上游',
+      'branch.upstreamTitle': '设置上游分支',
+      'branch.upstreamBody': '留空则解除上游跟踪。',
+      'branch.upstreamLabel': '上游（如 origin/main）',
+      'branch.push': '推送分支',
+      'branch.deleteRemoteTitle': '删除远程分支',
+      'branch.deleteRemoteBody': '会在远端仓库执行 push --delete，不可撤销。',
+      'branch.forceDeleteTitle': '强制删除未合并分支',
+      'branch.forceDeleteBody': '该分支的提交没有全部合并，强制删除会丢掉它们（-D）。',
+      'branch.forceDelete': '强制删除',
+      'merge.default': '默认合并',
+      'merge.defaultHint': '能快进就快进，否则生成合并提交',
+      'merge.noFf': '不快进（--no-ff）',
+      'merge.squash': '压缩合并（squash）',
+      'merge.squashHint': '改动进暂存区，不生成提交',
       'branches.localHint': '本地分支：可以切换、合并、变基、删除',
       'branches.remoteHint': '远程分支：服务器上的镜像，只读；要切换请先建本地分支',
       'branches.tagHint': '标签：指向某个提交的固定标记，通常用来标记版本',
@@ -248,12 +322,23 @@ const NARROW_PANE_W = 225
       'commit.back': '返回提交',
       'commit.whole': '整个提交',
       'commit.wholeBtn': '完整改动',
+      'commit.view': '查看详情',
+      'commit.copyShort': '复制短哈希',
+      'commit.copyFull': '复制完整哈希',
+      'commit.copySubject': '复制提交信息',
+      'commit.copyLink': '复制提交链接',
+      'commit.branchHere': '在此提交新建分支',
       'commit.wholeHint': '把这次提交涉及的所有文件合成一个 patch 查看',
       'diff.modeUnified': '合并查看',
       'search.caseSensitive': '区分大小写',
       'search.wholeWord': '全词匹配',
       'search.regex': '正则表达式',
       'modal.open': '弹窗',
+      'side.recent': '最近提交',
+      'side.empty': '还没有提交记录',
+      'side.changes': '未提交',
+      'side.ahead': '待推送',
+      'side.staged': '已暂存',
       'modal.close': '退出弹窗',
       'diff.modeSplit': '分栏查看',
       'dir.empty': '空目录',
@@ -317,8 +402,12 @@ const NARROW_PANE_W = 225
             'op.checkout': '签出',
       'op.checkoutTitle': '建一个同名本地分支并切过去',
       'tag.pushOne': '推送标签',
+      'tag.deleteRemote': '删除远程',
+      'tag.deleteRemoteTitle': '删除远端标签',
+      'tag.deleteRemoteBody': '只删服务器上的标签（git push --delete）。本地标签会保留。',
       'tag.deleteTitle': '删除标签？',
-      'tag.deleteBody': '将删除本地标签 {tag}；如果它在远端也存在，也会一并删除。',      'op.merge': '合并',
+      'tag.deleteBody': '只删除本地标签 {tag}；远端的那份不会消失，需要点「删除远程」。',
+      'op.merge': '合并',
       'op.mergeTitle': '合并到当前分支',
       'op.mergeBody': '把该分支合并进当前分支。有冲突时会停下来等解决。',
       'op.rebase': '变基',
@@ -378,11 +467,20 @@ const NARROW_PANE_W = 225
       'file.renameTitle': '重命名',
       'file.delete': '删除',
       'file.deleteTitle': '确认删除？',
+      'file.deleteDirBody': '目录会连同其中全部内容一起删除（不可恢复）。',
+      'file.deletedHint': '文件已从磁盘删除（git 中仍有删除改动）',
+      'row.ignore': '添加忽略',
+      'row.ignoreTitle': '添加忽略',
+      'row.ignoreBody': '会把该路径加入仓库根目录的 .gitignore。如果它已经被 Git 跟踪，还会从索引移除（工作区文件保留）；提交这次删除后才会真正不再跟踪。历史提交不会被改写。',
+      'row.ignoreDone': '已加入 .gitignore',
+      'row.ignoreTrackedDone': '已加入 .gitignore，并从 Git 索引移除；提交这次删除后生效',
+      'row.ignoreFailed': '添加忽略失败：',
       'tab.history': '历史',
       'tab.blame': '逐行作者',
       'tab.blameHint': '逐行显示最后是谁改的（git blame）',
       'history.fileEmpty': '这个文件还没有提交历史',
       'blame.empty': '没有追责信息',
+      'blame.authors': '作者',
     }
 
     const EN = {
@@ -398,6 +496,12 @@ const NARROW_PANE_W = 225
       'group.files': 'Files',
       'group.staged': 'Staged',
       'group.unstaged': 'Changes',
+      'group.modified': 'Modified',
+      'group.deleted': 'Deleted',
+      'group.added': 'Added',
+      'group.renamed': 'Renamed',
+      'group.collapse': 'Collapse group',
+      'group.expand': 'Expand group',
       'group.untracked': 'Untracked',
       'group.conflicted': 'Conflicts',
       'tab.source': 'Source',
@@ -407,11 +511,17 @@ const NARROW_PANE_W = 225
       'commit.amend': 'Amend last commit',
       'commit.nothing': 'Nothing to commit',
       'empty.noRoot': 'No workspace selected yet',
+      'root.clear': 'Clear workspace',
+      'root.clearTitle': 'Clear the current workspace?',
+      'root.clearHint': 'This only unbinds the folder — nothing on disk is deleted. You can pick another one right away.',
+      'root.clearConfirm': 'Clear workspace',
       'empty.chooseRoot': 'Choose a workspace',
       'empty.noRepo': 'This directory is not a git repository',
       'empty.noRepoHint': 'Open this page inside a repository, or initialise one first.',
       'empty.noFile': 'Pick a file on the left',
       'empty.noFileHint': 'Its source or diff appears here.',
+      'empty.noFileHintDrawer': 'Pick a file and the diff slides in from the right; switch to Split to compare side by side.',
+      'empty.noBranch': 'No branch',
       'empty.clean': 'The working tree is clean',
       'state.loading': 'Loading…',
       'state.failed': 'Could not load',
@@ -420,6 +530,14 @@ const NARROW_PANE_W = 225
       'action.stage': 'Stage',
       'action.unstage': 'Unstage',
       'action.addToChat': 'Add to chat',
+      'row.copyAbsolute': 'Copy absolute path',
+      'row.copyRelative': 'Copy relative path',
+      'row.reveal': 'Reveal in file manager',
+      'row.revealDir': 'Open folder',
+      'row.openEditor': 'Open in editor',
+      'row.refresh': 'Refresh',
+      'row.copied': 'Copied: ',
+      'row.copyFailed': 'Copy failed',
       'chat.unavailable': 'No conversation input to write into',
       'action.discard': 'Discard changes',
       'action.open': 'Open',
@@ -450,6 +568,12 @@ const NARROW_PANE_W = 225
       'group.conflicted': 'Conflicts',
       'group.staged': 'Staged',
       'group.unstaged': 'Changes',
+      'group.modified': 'Modified',
+      'group.deleted': 'Deleted',
+      'group.added': 'Added',
+      'group.renamed': 'Renamed',
+      'group.collapse': 'Collapse group',
+      'group.expand': 'Expand group',
       'group.untracked': 'Untracked',
       'changes.clean': 'The working tree is clean',
       'history.empty': 'No commits yet',
@@ -459,6 +583,31 @@ const NARROW_PANE_W = 225
       'branches.remote': 'Remote branches',
       'branches.tags': 'Tags',
       'branches.legend': '● current · ↑↓ ahead/behind upstream · click a local branch to switch',
+      'branches.filterPlaceholder': 'Filter branches…',
+      'branch.more': 'More branch actions',
+      'branch.copyName': 'Copy name',
+      'branch.copyRemoteUrl': 'Copy remote URL',
+      'branch.openWeb': 'Open in browser',
+      'branch.fetchRemote': 'Fetch this remote',
+      'branch.moreBody': 'These actions affect this branch only.',
+      'branch.rename': 'Rename',
+      'branch.renameTitle': 'Rename branch',
+      'branch.renameBody': 'Renames the local branch only; the remote is untouched.',
+      'branch.upstream': 'Set upstream',
+      'branch.upstreamTitle': 'Set upstream branch',
+      'branch.upstreamBody': 'Leave it empty to stop tracking.',
+      'branch.upstreamLabel': 'Upstream (e.g. origin/main)',
+      'branch.push': 'Push branch',
+      'branch.deleteRemoteTitle': 'Delete remote branch',
+      'branch.deleteRemoteBody': 'Runs push --delete on the remote; this cannot be undone.',
+      'branch.forceDeleteTitle': 'Force-delete an unmerged branch',
+      'branch.forceDeleteBody': 'Not all of its commits are merged; -D will discard them.',
+      'branch.forceDelete': 'Force delete',
+      'merge.default': 'Default merge',
+      'merge.defaultHint': 'Fast-forward when possible, otherwise create a merge commit',
+      'merge.noFf': 'No fast-forward (--no-ff)',
+      'merge.squash': 'Squash merge',
+      'merge.squashHint': 'Stages the changes without creating a commit',
       'branches.localHint': 'Local branches: switch, merge, rebase or delete',
       'branches.remoteHint': 'Remote branches: read-only mirrors of the server; create a local branch to switch',
       'branches.tagHint': 'Tags: fixed labels on a commit, usually marking a release',
@@ -483,12 +632,23 @@ const NARROW_PANE_W = 225
       'commit.back': 'Back to commit',
       'commit.whole': 'Whole commit',
       'commit.wholeBtn': 'All changes',
+      'commit.view': 'View details',
+      'commit.copyShort': 'Copy short hash',
+      'commit.copyFull': 'Copy full hash',
+      'commit.copySubject': 'Copy commit message',
+      'commit.copyLink': 'Copy commit link',
+      'commit.branchHere': 'New branch at this commit',
       'commit.wholeHint': 'Show every touched file as one merged patch',
       'diff.modeUnified': 'Unified',
       'search.caseSensitive': 'Match case',
       'search.wholeWord': 'Whole word',
       'search.regex': 'Regex',
       'modal.open': 'Open in a window',
+      'side.recent': 'Recent commits',
+      'side.empty': 'No commits yet',
+      'side.changes': 'Pending',
+      'side.ahead': 'To push',
+      'side.staged': 'Staged',
       'modal.close': 'Close window',
       'diff.modeSplit': 'Split',
       'dir.empty': 'Empty directory',
@@ -552,8 +712,12 @@ const NARROW_PANE_W = 225
             'op.checkout': 'Check out',
       'op.checkoutTitle': 'Create a local branch from this remote branch and switch to it',
       'tag.pushOne': 'Push',
+      'tag.deleteRemote': 'Delete remote',
+      'tag.deleteRemoteTitle': 'Delete remote tag',
+      'tag.deleteRemoteBody': 'Deletes the tag on the server (git push --delete); the local tag stays.',
       'tag.deleteTitle': 'Delete this tag?',
-      'tag.deleteBody': 'Deletes the local tag {tag}, and the copy on the remote when it exists there too.',      'op.merge': 'Merge',
+      'tag.deleteBody': 'Deletes the local tag {tag}. A copy on the remote is NOT removed — use “Delete remote” for that.',
+      'op.merge': 'Merge',
       'op.mergeTitle': 'Merge into the current branch',
       'op.mergeBody': 'Merges that branch into the current one. Conflicts stop and wait for you.',
       'op.rebase': 'Rebase',
@@ -613,11 +777,20 @@ const NARROW_PANE_W = 225
       'file.renameTitle': 'Rename',
       'file.delete': 'Delete',
       'file.deleteTitle': 'Delete?',
+      'file.deleteDirBody': 'The directory and everything inside it will be deleted (cannot be undone).',
+      'file.deletedHint': 'The file is gone from disk (the deletion is still recorded in git)',
+      'row.ignore': 'Add to .gitignore',
+      'row.ignoreTitle': 'Add to .gitignore',
+      'row.ignoreBody': 'Adds this path to the repository root .gitignore. If Git already tracks it, it is also removed from the index (the working-tree file is kept); commit that deletion for the ignore to take effect. Past commits are not rewritten.',
+      'row.ignoreDone': 'Added to .gitignore',
+      'row.ignoreTrackedDone': 'Added to .gitignore and removed from the Git index; commit the deletion to apply it',
+      'row.ignoreFailed': 'Could not add to .gitignore: ',
       'tab.history': 'History',
       'tab.blame': 'Blame',
       'tab.blameHint': 'Who last touched each line (git blame)',
       'history.fileEmpty': 'No commit history for this file yet',
       'blame.empty': 'No blame information',
+      'blame.authors': 'Authors',
     }
 
     const LOCALES = { en: EN }
@@ -703,6 +876,24 @@ const NARROW_PANE_W = 225
       return index < 0 ? '' : clean.slice(0, index)
     }
 
+    /* Blame gutter colours: one per author, stable across sessions. The palette is
+       tuned for the dark workbench background — same lightness band, distinct hues —
+       so a file's history reads as blocks of ownership instead of one grey column. */
+    const BLAME_COLORS = [
+      '#4d9fff', '#3fb950', '#e3b341', '#d2a8ff', '#ff7b72', '#56d4dd',
+      '#f0883e', '#7ee787', '#ffa8c5', '#b3a1ff', '#a5d6ff', '#d4c56a',
+    ]
+
+    function blameColorOf(author) {
+      const text = String(author === undefined || author === null ? '' : author).trim()
+      if (text === '') return 'transparent'
+      let hash = 0
+      for (let index = 0; index < text.length; index += 1) {
+        hash = (hash * 31 + text.charCodeAt(index)) >>> 0
+      }
+      return BLAME_COLORS[hash % BLAME_COLORS.length]
+    }
+
     function extensionOf(rel) {
       const base = baseNameOf(rel)
       const dot = base.lastIndexOf('.')
@@ -739,6 +930,57 @@ const NARROW_PANE_W = 225
       return repo.slice(rootLower.length)
     }
 
+    /** Parse `git remote -v` lines into { name: { fetch, push } }. */
+    function parseRemotes(verboseLines) {
+      const map = {}
+      for (const line of Array.isArray(verboseLines) ? verboseLines : []) {
+        const match = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(String(line === undefined || line === null ? '' : line).trim())
+        if (match === null) continue
+        const [, name, url, kind] = match
+        const entry = map[name] === undefined ? (map[name] = { fetch: '', push: '' }) : map[name]
+        if (kind === 'fetch' && entry.fetch === '') entry.fetch = url
+        if (kind === 'push' && entry.push === '') entry.push = url
+      }
+      return map
+    }
+
+    /**
+     * Web base URL of one git remote, or '' when it has no web form.
+     *
+     * https://host/owner/repo.git      -> https://host/owner/repo
+     * git@host:owner/repo.git          -> https://host/owner/repo
+     * ssh://git@host:2222/owner/repo   -> https://host:2222/owner/repo
+     */
+    function webUrlOfRemote(remoteUrl) {
+      const raw = String(remoteUrl === undefined || remoteUrl === null ? '' : remoteUrl).trim()
+      if (raw === '') return ''
+      const scp = /^[\w.~-]+@([^:/]+):(.+)$/.exec(raw)
+      if (scp !== null) {
+        return 'https://' + scp[1] + '/' + scp[2].replace(/^\/+/, '').replace(/\.git$/i, '')
+      }
+      try {
+        const url = new URL(raw)
+        if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'ssh:' || url.protocol === 'git:') {
+          const host = url.host
+          const pathname = url.pathname.replace(/\/+$/, '').replace(/\.git$/i, '')
+          if (host === '' || pathname === '') return ''
+          return (url.protocol === 'ssh:' || url.protocol === 'git:' ? 'https://' : url.origin) + (url.protocol === 'ssh:' || url.protocol === 'git:' ? host : '') + pathname
+        }
+      } catch (error) { void error }
+      return ''
+    }
+
+    /** Gitea branch/tag page URL (path segments encoded, slashes preserved). */
+    function branchWebUrl(baseUrl, kind, name) {
+      if (String(baseUrl === undefined || baseUrl === null ? '' : baseUrl) === '') return ''
+      const encoded = String(name === undefined || name === null ? '' : name)
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/')
+      if (encoded === '') return ''
+      return baseUrl + (kind === 'tag' ? '/src/tag/' : '/src/branch/') + encoded
+    }
+
     /** workspace-relative -> repository-relative (or null when not in the repo). */
     function toRepoPath(rel, repoRootRel) {
       const clean = normalizeRel(rel)
@@ -748,6 +990,20 @@ const NARROW_PANE_W = 225
       if (clean === repoRootRel) return ''
       if (clean.startsWith(prefix) === false) return null
       return clean.slice(prefix.length)
+    }
+
+    /**
+     * Absolute host path of a browse-root-relative entry.
+     *
+     * The source-control tree is rooted at `browseRoot` (workspace root, or the
+     * repository root when it lies outside the workspace), so joining the two
+     * gives the path the agent can open regardless of its cwd.
+     */
+    function absoluteFromRoot(rootPath, rel) {
+      if (typeof rootPath !== 'string' || rootPath.trim() === '') return ''
+      const base = rootPath.replace(/[\\/]+$/, '')
+      if (typeof rel !== 'string' || rel.trim() === '') return base
+      return base + '\\' + rel.replace(/^[\\/]+/, '').replace(/[\\/]+/g, '\\')
     }
 
     /** repository-relative -> workspace-relative (or null when unrepresentable). */
@@ -805,42 +1061,55 @@ const NARROW_PANE_W = 225
       return index
     }
 
+    /** Full commit message for the "undo commit" box (subject + optional body). */
+    function commitMessageFromDetail(detail) {
+      if (detail === null || detail === undefined || typeof detail !== 'object') return ''
+      const subject = typeof detail.subject === 'string' ? detail.subject.trimEnd() : ''
+      const body = typeof detail.body === 'string' ? detail.body.trim() : ''
+      if (subject === '') return body
+      return body === '' ? subject : subject + '\n\n' + body
+    }
     /**
-     * Group changes the way every git UI does, for a reason: the four groups mean
-     * four DIFFERENT next actions.
+     * Group changes by WHAT HAPPENED (modified / deleted / added / renamed).
      *
-     *   conflicted → resolve it, nothing else works
-     *   staged     → it is going into the next commit; you may want to unstage
-     *   unstaged   → it is NOT going in until you stage it
-     *   untracked  → it is not in git at all; staging is the whole job
+     * Staged vs unstaged is still visible on every row and through the per-group
+     * bulk actions, but it is not the first division any more: while reviewing a
+     * big compile output or asset cleanup, "show me all deleted files" is the
+     * question; "which half of them is staged" comes later.
      *
-     * A flat list sorted by path hides that difference, and "why didn't my commit
-     * include that file" is the single most common git confusion.
-     *
-     * Order is deliberate: what blocks you, then what is ready, then what is not.
+     * A conflict outranks everything (the only useful action is resolving it),
+     * and a conflict-free row lands in exactly one group.
      */
     function buildChangeGroups(statusIndex) {
       const conflicted = []
-      const staged = []
-      const unstaged = []
-      const untracked = []
+      const modified = []
+      const deleted = []
+      const added = []
+      const renamed = []
       for (const [rel, change] of statusIndex) {
         if (change === null || change === undefined) continue
-        if (change.conflicted === true) { conflicted.push({ rel, change }); continue }
-        if (change.untracked === true) { untracked.push({ rel, change }); continue }
-        if (change.staged === true) staged.push({ rel, change })
-        else unstaged.push({ rel, change })
+        const entry = { rel, change }
+        if (change.conflicted === true) { conflicted.push(entry); continue }
+        const kind = typeof change.kind === 'string' ? change.kind : ''
+        if (kind === 'added' || kind === 'copied' || change.untracked === true) added.push(entry)
+        else if (kind === 'deleted') deleted.push(entry)
+        else if (kind === 'renamed') renamed.push(entry)
+        else modified.push(entry)
       }
       const byName = (left, right) => (left.rel < right.rel ? -1 : left.rel > right.rel ? 1 : 0)
-      conflicted.sort(byName)
-      staged.sort(byName)
-      unstaged.sort(byName)
-      untracked.sort(byName)
+      const make = (key, rows) => {
+        rows.sort(byName)
+        /* Untracked-only groups label the bulk action "delete", not "discard":
+           git has no copy to restore. A mixed group keeps the safer wording. */
+        const untrackedOnly = rows.length > 0 && rows.every((entry) => entry.change.untracked === true)
+        return { key, rows, untrackedOnly }
+      }
       return [
-        { key: 'conflicted', rows: conflicted },
-        { key: 'staged', rows: staged },
-        { key: 'unstaged', rows: unstaged },
-        { key: 'untracked', rows: untracked },
+        make('conflicted', conflicted),
+        make('modified', modified),
+        make('deleted', deleted),
+        make('added', added),
+        make('renamed', renamed),
       ]
     }
 
@@ -1012,6 +1281,9 @@ const NARROW_PANE_W = 225
       const opts = options !== null && typeof options === 'object' ? options : {}
       const statusIndex = opts.statusIndex instanceof Map ? opts.statusIndex : new Map()
       const dirtyDirs = opts.dirtyDirs instanceof Set ? opts.dirtyDirs : new Set()
+      /* 用户在「只看变更」里手动收起的目录：自动展开（有改动的目录）必须能被覆盖，
+         否则一按过滤就再也收不回目录。 */
+      const collapsedSet = opts.collapsed instanceof Set ? opts.collapsed : new Set()
       const onlyChanges = opts.onlyChanges === true
       const collator = opts.collator
       /* Natural order ("file2" before "file10") is what a file tree wants, and it
@@ -1042,16 +1314,20 @@ const NARROW_PANE_W = 225
         return list
       }
 
-      const walk = (dirRel, depth, group) => {
+      const walk = (dirRel, depth, group, ghostDir) => {
         const node = state[dirRel]
+        const ghost = ghostDir === true
         /**
          * A directory that is not ready emits NOTHING — correct for a collapsed
          * child, wrong for the ROOT: the root always exists on screen, and
          * returning silently left the whole pane blank with no spinner and no
          * explanation. A blank pane is indistinguishable from "there is nothing
          * here", which is the worst thing an explorer can say.
+         *
+         * A GHOST directory (deleted on disk, changes still recorded) has no
+         * listing at all; it is synthesised from the status index below.
          */
-        if (node === undefined || node === null || node.status !== 'ready') {
+        if (!(node !== undefined && node !== null && node.status === 'ready') && ghost !== true) {
           if (dirRel === '') {
             const status = node === undefined || node === null ? 'loading' : node.status
             rows.push({
@@ -1066,7 +1342,49 @@ const NARROW_PANE_W = 225
           }
           return
         }
-        const entries = sortEntries(node.entries)
+        /* Changes-only: deleted files (and whole deleted directories) have no
+           directory entry to list, so the filter used to hide exactly the D
+           records the user wants. Merge them back as ghost rows; they open the
+           deletion patch. Added files still exist on disk and come from the
+           listing as before. */
+        const rawEntries = node !== undefined && node !== null && Array.isArray(node.entries) ? node.entries.slice() : []
+        if (onlyChanges === true) {
+          const present = new Set(rawEntries.map((entry) => normalizeRel(entry === null || entry === undefined ? '' : entry.rel)))
+          for (const [rel, change] of statusIndex) {
+            if (dirNameOf(rel) !== dirRel) continue
+            if (present.has(rel)) continue
+            if (change === null || change === undefined) continue
+            present.add(rel)
+            rawEntries.push({
+              name: baseNameOf(rel),
+              rel,
+              type: 'file',
+              size: undefined,
+              mtimeMs: 0,
+              missing: true,
+            })
+          }
+          /* A deleted directory never appears in the parent listing; synthesise
+             it so its (also deleted) children stay reachable. */
+          const prefix = dirRel === '' ? '' : dirRel + '/'
+          for (const rel of statusIndex.keys()) {
+            if (!rel.startsWith(prefix)) continue
+            const rest = rel.slice(prefix.length)
+            const cut = rest.indexOf('/')
+            if (cut < 0) continue
+            const childRel = prefix + rest.slice(0, cut)
+            if (present.has(childRel)) continue
+            present.add(childRel)
+            rawEntries.push({
+              name: baseNameOf(childRel),
+              rel: childRel,
+              type: 'dir',
+              missing: true,
+              ghost: true,
+            })
+          }
+        }
+        const entries = sortEntries(rawEntries)
         for (let index = 0; index < entries.length; index += 1) {
           const entry = entries[index]
           if (entry === null || entry === undefined) continue
@@ -1081,7 +1399,7 @@ const NARROW_PANE_W = 225
              same tree — this is a filter, not a second view. */
           if (onlyChanges === true && isDir === false && change === undefined) continue
           if (onlyChanges === true && isDir === true && hasDirtyChild === false && change === undefined) continue
-          const isExpanded = isDir && (open.has(rel) || (onlyChanges === true && hasDirtyChild === true))
+          const isExpanded = isDir && !collapsedSet.has(rel) && (open.has(rel) || (onlyChanges === true && hasDirtyChild === true))
           rows.push({
             kind: 'entry',
             key: 'e:' + rel,
@@ -1094,6 +1412,7 @@ const NARROW_PANE_W = 225
             expanded: isExpanded,
             size: entry.size,
             mtimeMs: entry.mtimeMs,
+            missing: entry.missing === true,
             letter,
             colorClass: statusColorClass(letter),
             hasDirtyChild,
@@ -1101,10 +1420,27 @@ const NARROW_PANE_W = 225
             /* `statusIndex.get` returns undefined for a clean file, so every read
                has to guard BOTH null and undefined. Mixing the two is how a clean
                file used to crash the tree. */
-            added: change !== null && change !== undefined && typeof change.added === 'number' ? change.added : 0,
-            deleted: change !== null && change !== undefined && typeof change.deleted === 'number' ? change.deleted : 0,
+            /* Which edits a row shows: the STAGED group shows what is in the
+               index, the unstaged group shows the worktree edits. Reading only
+               `change.added` (the staged side) made every unstaged file render
+               without its +N −N. */
+            added: change === null || change === undefined
+              ? 0
+              : (change.staged === true
+                ? (typeof change.added === 'number' ? change.added : 0)
+                : (typeof change.unstagedAdded === 'number' ? change.unstagedAdded : 0)),
+            deleted: change === null || change === undefined
+              ? 0
+              : (change.staged === true
+                ? (typeof change.deleted === 'number' ? change.deleted : 0)
+                : (typeof change.unstagedDeleted === 'number' ? change.unstagedDeleted : 0)),
           })
           if (!isExpanded) continue
+          if (entry.ghost === true) {
+            /* Deleted directory: its children exist only in the status index. */
+            walk(rel, depth + 1, group, true)
+            continue
+          }
           const child = state[rel]
           if (child === undefined || child === null || child.status === 'loading' || child.status === 'idle') {
             rows.push({ kind: 'status', key: 's:' + rel, rel, depth: depth + 1, status: 'loading' })
@@ -1114,9 +1450,9 @@ const NARROW_PANE_W = 225
             rows.push({ kind: 'status', key: 's:' + rel, rel, depth: depth + 1, status: 'error', message: child.error })
             continue
           }
-          walk(rel, depth + 1, group)
+          walk(rel, depth + 1, group, false)
         }
-        if (node.truncated === true) {
+        if (node !== null && node !== undefined && node.truncated === true) {
           rows.push({ kind: 'truncated', key: 't:' + dirRel, rel: dirRel, depth })
         }
       }
@@ -1339,6 +1675,8 @@ const NARROW_PANE_W = 225
 .scw-head{display:flex;align-items:center;gap:6px;height:40px;padding:0 8px;flex:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
 .scw-repoChip{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:40%;height:24px;padding:0 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:inherit;font:inherit;font-size:11px;cursor:pointer}
 .scw-repoChip:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+/* 被工作台外壳托管时：仓库名/分支由外壳上下文条显示，这里只留入口图标 */
+.scw-repoChip.is-iconOnly{max-width:none;padding:0 6px}
 .scw-repoName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .scw-branch{display:inline-flex;align-items:center;gap:4px;min-width:0;color:var(--dsw-alias-label-secondary,#b6bac1);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scw-sync{color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10px;white-space:nowrap}
@@ -1348,8 +1686,6 @@ const NARROW_PANE_W = 225
    不重新挂载面板，所以编辑器里的滚动位置、光标、未保存内容都不会丢。尺寸照 GitCraft
    的 is-wide：min(1100px, 92vw) / 86vh —— 不铺满整屏，留出背景让人知道这是临时窗口。 */
 /* diff 的高亮对比度：默认那两档在深色背景上几乎看不出来 */
-.scw-root.is-modal .scw-content{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:900;width:min(1100px,92vw);height:86vh;max-height:86vh;background:var(--dsw-alias-bg-base,#14161a);border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:10px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.55)}
-.scw-root.is-modal .scw-content::before{content:'';position:fixed;left:-50vw;top:-50vh;width:200vw;height:200vh;background:rgba(0,0,0,.55);z-index:-1}
 .gwc-row.is-del{background:rgba(255,107,107,.28)!important}
 .gwc-row.is-add{background:rgba(63,185,80,.30)!important}
 .gwc-row.is-add .gwc-line{color:#7ee787;font-weight:500}
@@ -1367,10 +1703,15 @@ const NARROW_PANE_W = 225
 /* ---- body: tree | content ---- */
 .gwc-row.is-del .gwc-line{color:#ff9b9b;font-weight:500}
 .scw-body{display:flex;flex:1 1 auto;min-height:0;min-width:0}
+/* The list column owns the tree AND the commit box, so the box lines up with the
+   list it acts on instead of spanning under the diff. */
+.scw-leftCol{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;min-width:0}
+.scw-leftCol>.scw-treePane{flex:1 1 auto;min-height:0}
 /* 窄的时候上下分栏：左右各占一半在 700px 以下两边都只剩几十列，读不了。
    M 档（720-1024）仍是左右分栏，放得下。 */
 .scw-body.is-stacked{flex-direction:column}
-.scw-body.is-stacked>.scw-treePane{flex:0 0 auto!important;width:auto!important;max-width:none!important;height:56%;border-right:none;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-body.is-stacked>.scw-leftCol{flex:0 0 auto!important;width:auto!important;max-width:none!important;height:56%;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-body.is-stacked>.scw-leftCol>.scw-treePane{flex:1 1 auto!important;width:auto!important;max-width:none!important;height:auto!important;border-right:none;border-bottom:none}
 .scw-body.is-stacked>.scw-content{flex:1 1 auto;min-height:0}
 /* flex: 0 0 auto is load-bearing: without it the pane is a shrinking flex item,
    so a long line in the content pane squeezes the tree to a sliver and dragging
@@ -1394,7 +1735,7 @@ const NARROW_PANE_W = 225
 .scw-content{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0}
 
 /* ---- tree ---- */
-.scw-tree{flex:1 1 auto;min-height:0;overflow:auto;padding:2px 0 8px;overscroll-behavior:contain;/* contain:paint 保证列表里的行绝不可能画到自己盒子外面——虚拟滚动的行是绝对定位的，布局一挤就会溢出到工具栏那一行 */contain:paint;position:relative;isolation:isolate;background:inherit}
+.scw-tree{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 0 8px;overscroll-behavior:contain;/* contain:paint 保证列表里的行绝不可能画到自己盒子外面——虚拟滚动的行是绝对定位的，布局一挤就会溢出到工具栏那一行 */contain:paint;position:relative;isolation:isolate;background:inherit}
 .scw-treeViewport{position:relative}
 .scw-row{display:flex;align-items:center;gap:4px;height:${TREE_ROW_HEIGHT}px;padding-right:6px;border-radius:4px;cursor:pointer;white-space:nowrap;outline:none;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .scw-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
@@ -1404,7 +1745,9 @@ const NARROW_PANE_W = 225
 .scw-rowIcon{flex:none;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-row.is-dir .scw-rowIcon{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
 .scw-row{color:var(--dsw-alias-label-primary,#e6e6e6)}
-  .scw-rowName{color:inherit;flex:0 1 auto;min-width:3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .scw-row.is-missing .scw-rowName{text-decoration:line-through;opacity:.7}
+.scw-row.is-missing .scw-rowIcon{opacity:.6}
+.scw-rowName{color:inherit;flex:0 1 auto;min-width:3em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
 /* GitCraft puts the path AFTER the name and lets it shrink first: the name is what
    you pick a file by, the path is context. */
 .scw-rowDir.is-after{flex:1 1 auto;min-width:0;max-width:none;margin-left:6px;text-align:left}
@@ -1412,7 +1755,7 @@ const NARROW_PANE_W = 225
 .scw-rowName.is-dir{font-weight:500}
 
 /* one badge, one letter, immediately after the name */
-.scw-letter{flex:none;font-size:10px;font-weight:600;line-height:1;padding:0 1px}
+.scw-letter{flex:none;width:13px;text-align:center;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10.5px;font-weight:700;line-height:1;padding:0 1px}
 .scw-letter.is-modified{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
 .scw-letter.is-added{color:var(--dsw-alias-state-success-primary,#3fb950)}
 .scw-letter.is-deleted{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
@@ -1424,7 +1767,7 @@ const NARROW_PANE_W = 225
 .scw-dirDot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-brand-primary,#4d6bfe);opacity:.85}
 
 /* +N -M only inside the changes group */
-.scw-stat{flex:none;display:inline-flex;gap:4px;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.scw-stat{margin-left:auto;flex:none;display:inline-flex;gap:4px;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .scw-statAdd{color:var(--dsw-alias-state-success-primary,#3fb950)}
 .scw-statDel{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 
@@ -1443,11 +1786,19 @@ const NARROW_PANE_W = 225
 .scw-treeState.is-error{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 
 /* ---- mode strip: five modes, one column ---- */
-.scw-modes{display:flex;flex:none;gap:1px;padding:3px 4px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));overflow-x:auto;scrollbar-width:none}
+/* The view switch is a TOOLBAR segment, not a second nav bar: no divider,
+   smaller type, tighter padding. The shell pills stay the only nav-looking row. */
+.scw-modeBlock{flex:none}
+.scw-modes{display:flex;flex:none;gap:1px;padding:2px 4px 3px;border-bottom:none;overflow-x:auto;scrollbar-width:none}
 .scw-modes::-webkit-scrollbar{display:none}
 /* Narrow panel: labels only cut themselves off. Icons alone still say which tab it is,
    and the tooltip keeps the full name — a truncated label is worse than no label. */
 .scw-root.is-xs .scw-modeLabel,.scw-treePane.is-narrow .scw-modeLabel{display:none}
+
+
+
+
+
 .scw-root.is-xs .scw-mode,.scw-treePane.is-narrow .scw-mode{gap:0;padding:3px 7px}
 /* Same reasoning for the ref chips: squeezed to a sliver they read as broken glyphs.
    The row tooltip still carries the refs, so nothing is lost. */
@@ -1468,12 +1819,17 @@ const NARROW_PANE_W = 225
 
 /* ---- grouped change list ---- */
 .scw-changeList,.scw-list{overflow:auto}
-.scw-bulkBtn{flex:none;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;padding:1px 6px;cursor:pointer;white-space:nowrap}
+/* 分组批量操作读起来是文字链接，不是一排描边按钮（参考图同样如此） */
+.scw-bulkBtn{flex:none;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);font:inherit;font-size:10px;padding:1px 6px;cursor:pointer;white-space:nowrap}
 .scw-bulkBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#fff)}
-.scw-bulkBtn.is-danger{color:var(--dsw-alias-state-error-primary,#ff6b6b);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 45%,transparent)}
+.scw-bulkBtn.is-danger{color:var(--dsw-alias-state-error-primary,#e06a6a);border-color:transparent}
 .scw-bulkBtn:disabled{opacity:.45;cursor:default}
 .scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;/* 不吸顶：吸顶时分组行会盖住滚动的文件名，露半截字，看着像背景透了。 */box-shadow:0 1px 0 0 var(--dsw-alias-border-l1,rgba(255,255,255,.12))}
 .scw-groupCount{font-weight:400;opacity:.7}
+.scw-group[role=button]{cursor:pointer;user-select:none}
+.scw-group[role=button]:hover{background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04))}
+.scw-groupChevron{display:inline-flex;align-items:center;justify-content:center;width:12px;opacity:.65;flex:none}
+.scw-group.is-collapsed{box-shadow:none;opacity:.85}
 .scw-groupFoot{padding:6px 8px}
 
 /* ---- history ---- */
@@ -1517,7 +1873,16 @@ const NARROW_PANE_W = 225
 .scw-branchGroup .scw-groupName{display:flex;align-items:center;gap:5px;padding:7px 8px 3px;font-size:9.5px;font-weight:600;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:none}
 .scw-branchGroup .scw-groupCount{flex:none;min-width:14px;text-align:center;padding:0 4px;border-radius:3px;background:var(--dsw-alias-bg-layer-3,rgba(255,255,255,.08));font-weight:500;font-size:9px;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-groupEmpty{padding:2px 8px 6px 26px;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);opacity:.8}
+.scw-remoteUrlRow{padding:0 6px 4px 26px;min-width:0;overflow:hidden}
+.scw-remoteUrl{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;color:var(--dsw-alias-brand-primary,#4d6bfe);text-decoration:none}
+.scw-remoteUrl:hover{text-decoration:underline}
 .scw-branchLegend{flex:none;padding:5px 8px;font-size:9.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#8a8f98);border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
+.scw-branchFolder{display:flex;align-items:center;gap:6px;min-height:24px;padding:0 8px 0 5px;cursor:pointer;color:var(--dsw-alias-label-secondary,#b6bac1);font-weight:600}
+.scw-branchFolder:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
+.scw-branchFolderName{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Consolas,monospace}
+.scw-branchSubject{flex:1 1 90px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:11px}
+.scw-branchTime{flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:10.5px;font-variant-numeric:tabular-nums}
+.scw-branchFilter{flex:1 1 auto;min-width:60px;height:24px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11.5px}
 .scw-branchRow{display:flex;align-items:center;gap:6px;min-height:24px;padding:0 8px 0 5px;cursor:pointer;font-size:11px;border-left:2px solid transparent}
 .scw-branchRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.07))}
 /* The current branch is a STATE, not just bold text: accent bar + tinted row. */
@@ -1552,14 +1917,14 @@ const NARROW_PANE_W = 225
 .scw-commitHead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .scw-commitHash{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-commitSubject.is-large{font-size:13px;font-weight:600}
-.scw-commitInfo{display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.scw-commitInfo{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-dim{color:var(--dsw-alias-label-tertiary,#8a8f98)}
   .scw-commitBody{flex:none;margin:2px 0;padding:8px;border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04));font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
-.scw-commitFilesLabel{font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
+.scw-commitFilesLabel{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;margin-top:4px}
 /* The ONLY scrolling region: the list can be thousands of rows, and giving it the
    remaining height keeps the message and the header pinned above it. */
 .scw-commitFiles{flex:none;min-height:0;overflow:visible;display:flex;flex-direction:column;gap:1px}
-.scw-commitFile{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:4px;font-size:11px}
+.scw-commitFile{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;font-size:12px}
 .scw-commitFile[role="button"]{cursor:pointer}
 .scw-commitFile[role="button"]:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .scw-commitFileName{flex:none}
@@ -1576,9 +1941,13 @@ const NARROW_PANE_W = 225
 .scw-toolIcon.is-primary{color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-toolIcon.is-danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .scw-toolIcon:disabled{opacity:.35;cursor:default}
-.scw-toolBtn{flex:none;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;padding:2px 6px;cursor:pointer;white-space:nowrap}
-.scw-toolBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
-.scw-toolBtn.is-primary{border-color:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-brand-primary,#4d6bfe)}
+/* Toolbar actions read as TEXT, not as a row of bordered chips: the reference keeps
+   the tree as the only visual weight in the column and lets the actions appear on
+   hover/read as quiet links. */
+.scw-toolBtn{flex:none;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);font:inherit;font-size:10px;padding:2px 6px;cursor:pointer;white-space:nowrap}
+.scw-toolBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.07));color:var(--dsw-alias-label-primary,#e6e6e6)}
+.scw-toolBtn.is-primary{border:none;color:var(--dsw-alias-brand-primary,#7c93ff)}
+.scw-toolBtn.is-danger{color:var(--dsw-alias-state-error-primary,#e06a6a)}
 .scw-toolBtn.is-danger:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary,#ff6b6b);color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .scw-toolBtn:disabled{opacity:.4;cursor:default}
 
@@ -1626,10 +1995,17 @@ const NARROW_PANE_W = 225
 .scw-paneState{display:flex;align-items:center;justify-content:center;height:100%;padding:16px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98);text-align:center}
 .scw-paneState.is-error{color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 .scw-historyList{overflow:auto;height:100%}
-.scw-blameList{overflow:auto;height:100%;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px}
-.scw-blameRow{display:flex;gap:8px;padding:0 8px;white-space:pre;line-height:1.6}
-.scw-blameRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
-.scw-blameHash{flex:none;color:var(--dsw-alias-brand-primary,#4d6bfe);opacity:.8}
+.scw-blameWrap{display:flex;flex-direction:column;height:100%;min-height:0}
+.scw-blameLegend{flex:none;display:flex;align-items:center;gap:12px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.07));overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+.scw-blameLegendLabel{flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98);font-size:11px}
+.scw-blameChip{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#b6bac1);font-size:11px}
+.scw-blameSwatch{width:8px;height:8px;border-radius:2px;flex:none}
+.scw-blameRow.is-group-start{border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.07))}
+.scw-blameHash.is-cont,.scw-blameMeta.is-cont{opacity:.62;font-weight:400}
+.scw-blameList{flex:1 1 auto;min-height:0;overflow:auto;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px}
+.scw-blameRow{display:flex;gap:8px;padding:0 8px 0 5px;border-left:3px solid var(--blame-color,transparent);background-image:linear-gradient(90deg,color-mix(in srgb,var(--blame-color,transparent) 22%,transparent) 0 176px,transparent 176px);white-space:pre;line-height:1.6}
+.scw-blameRow:hover{background-color:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
+.scw-blameHash{flex:none;color:var(--blame-color,var(--dsw-alias-label-secondary,#b6bac1));opacity:.95;font-weight:600}
 .scw-blameMeta{min-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none;color:var(--dsw-alias-label-tertiary,#8a8f98);opacity:.85}
 .scw-blameLine{flex:none;min-width:38px;text-align:right;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .scw-blameText{flex:1 1 auto;white-space:pre}
@@ -1652,7 +2028,7 @@ const NARROW_PANE_W = 225
 .scw-searchMode{border:none;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:9px;padding:3px 5px;cursor:pointer;white-space:nowrap}
 .scw-searchMode.is-active{background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
 .scw-searchResults{overflow:auto}
-.scw-rowDir{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.scw-rowDir{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
 .scw-hit{background:transparent;color:var(--dsw-alias-brand-primary,#4d6bfe);font-weight:600}
 .scw-matchRow{display:flex;align-items:center;gap:6px;height:20px;padding:0 6px 0 28px;cursor:pointer;font-size:11px;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap;overflow:hidden}
 .scw-matchRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
@@ -1660,8 +2036,8 @@ const NARROW_PANE_W = 225
 .scw-matchText{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:11px}
 
 /* ---- content tabs ---- */
-.scw-tabs{position:relative;display:flex;align-items:stretch;flex:none;width:100%;min-height:30px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
-.scw-tab{display:inline-flex;align-items:center;gap:5px;padding:0 10px;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer}
+.scw-tabs{position:relative;display:flex;align-items:stretch;flex:none;width:100%;overflow:hidden;min-height:30px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-tab{display:inline-flex;align-items:center;gap:5px;padding:0 8px;white-space:nowrap;flex:none;border:none;border-right:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:11px;cursor:pointer}
 .scw-tab:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
 .scw-tab.is-active{background:var(--dsw-alias-bg-layer-2,#22262c);color:var(--dsw-alias-label-primary,#e6e6e6);box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-modeToggle{display:inline-flex;align-items:center;gap:3px;flex:none;align-self:center;margin:0 6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);font:inherit;font-size:10px;padding:1px 5px;cursor:pointer}
@@ -1681,10 +2057,10 @@ const NARROW_PANE_W = 225
 .scw-paneSlot[hidden]{display:none}
 
 /* ---- commit box ---- */
-.scw-commit{flex:none;display:flex;gap:6px;align-items:flex-end;padding:6px 8px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24)}
-.scw-commitInput{flex:1 1 auto;min-width:0;min-height:38px;max-height:140px;resize:vertical;padding:5px 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:12px;box-sizing:border-box}
+.scw-commit{flex:none;display:flex;flex-direction:column;gap:6px;align-items:stretch;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24)}
+.scw-commitInput{flex:0 1 auto;width:100%;min-width:0;height:52px;min-height:52px;max-height:120px;resize:vertical;padding:5px 7px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.12));border-radius:6px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:12px;box-sizing:border-box}
 .scw-commitInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
-.scw-commitSide{display:flex;flex-direction:column;gap:3px;flex:none}
+.scw-commitSide{display:flex;flex-direction:row;align-items:center;justify-content:flex-end;gap:6px;flex:none}
 .scw-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:24px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:6px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .scw-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1))}
 .scw-btn.is-primary{border-color:transparent;background:var(--dsw-alias-brand-primary,#4d6bfe);color:var(--dsw-alias-label-primary-inverted,#fff)}
@@ -1697,6 +2073,12 @@ const NARROW_PANE_W = 225
 
 /* ---- empty / error ---- */
 .scw-empty{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:18px;text-align:center;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+/* 空内容区不能只剩一片空白：给当前仓库状态一个摘要（分支 + 数量），
+   中间列才不会在宽面板里显得悬空。 */
+.scw-emptySummary{display:flex;align-items:center;gap:16px;margin-top:14px;padding:10px 16px;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));border-radius:10px;background:var(--dsw-alias-bg-layer-1,#1b1e24)}
+.scw-emptyBranch{display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.scw-emptyStat{display:inline-flex;align-items:baseline;gap:6px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.scw-emptyStat b{font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .scw-emptyTitle{font-size:12px;color:var(--dsw-alias-label-secondary,#b6bac1)}
 .scw-emptyHint{font-size:11px;max-width:34em;line-height:1.5}
 
@@ -1709,7 +2091,7 @@ const NARROW_PANE_W = 225
 .scw-bar.is-error{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ff6b6b) 40%,transparent);color:var(--dsw-alias-state-error-primary,#ff6b6b)}
 
 /* ---- dialog ---- */
-.scw-backdrop{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);padding:16px}
+.scw-backdrop{position:fixed;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);padding:16px}
 .scw-dialog{display:flex;flex-direction:column;width:min(460px,100%);max-height:80%;border-radius:var(--dsw-radius-lg,12px);border:1px solid var(--dsw-alias-border-l3,rgba(255,255,255,.16));background:var(--dsw-alias-bg-layer-2,#22262c);box-shadow:var(--dsw-elevation-prominent,0 12px 40px rgba(0,0,0,.5))}
 .scw-dialogHead{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));font-size:12px;font-weight:600}
 .scw-dialog.is-wide{width:min(600px,100%)}
@@ -1727,7 +2109,66 @@ const NARROW_PANE_W = 225
 .scw-back:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
 .scw-root.is-xs .scw-back{display:inline-flex}
 
+/* ---- single-column layout: the content pane becomes a DRAWER ----
+   Below the split breakpoint the list must keep the whole height (it is the only
+   navigation), so the diff floats over it instead of squeezing it into 44%. */
+.scw-root.is-drawer .scw-body{position:relative}
+.scw-root.is-drawer .scw-leftCol{flex:1 1 auto!important;height:auto!important;border-bottom:none}
+.scw-root.is-drawer .scw-content{position:absolute;inset:0 0 0 auto;width:100%;z-index:30;
+  background:var(--dsw-alias-bg-base,#14161a);border-left:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));
+  box-shadow:-14px 0 34px rgba(0,0,0,.5)}
+.scw-root.is-drawer .scw-content[hidden]{display:none}
+.scw-drawerFloat{position:absolute;top:7px;right:9px;z-index:40;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));background:var(--dsw-alias-bg-layer-1,#1b1e24);color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
+.scw-drawerFloat:hover{color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+
+/* ---- right column (three-column layout) ---- */
+.scw-side{display:flex;flex-direction:column;width:280px;flex:none;min-height:0;overflow:auto;border-left:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));background:var(--dsw-alias-bg-layer-1,#1b1e24)}
+.scw-sideHead{display:flex;align-items:center;height:32px;flex:none;padding:0 12px;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#b6bac1)}
+.scw-sideEmpty{padding:10px 12px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.scw-sideCommit{display:flex;flex-direction:column;gap:2px;padding:7px 12px;cursor:pointer}
+.scw-sideCommit:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.05))}
+.scw-sideCommit.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.14))}
+.scw-sideSubject{font-size:11.5px;color:#d7dade;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scw-sideMeta{display:flex;gap:6px;font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace)}
+.scw-sideHash{color:var(--dsw-alias-brand-primary,#6b83ff)}
+.scw-sideStats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;margin-top:auto;background:var(--dsw-alias-border-l1,rgba(255,255,255,.08))}
+.scw-sideStat{background:var(--dsw-alias-bg-layer-1,#1b1e24);padding:9px 10px}
+.scw-sideStatV{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+.scw-sideStatV.is-warn{color:var(--dsw-alias-state-warn-primary,#e2a03f)}
+.scw-sideStatV.is-ok{color:var(--dsw-alias-state-success-primary,#3fb950)}
+.scw-sideStatK{font-size:10px;color:var(--dsw-alias-label-tertiary,#8a8f98);margin-top:2px}
+
 @media (prefers-reduced-motion:reduce){.scw-root *{animation:none!important;transition:none!important}}
+
+/* ===== readability baseline ===== */
+/* 键盘/点击焦点必须看得见：输入类给品牌色环，按钮给 outline。 */
+.scw-root input:focus, .scw-root textarea:focus, .scw-root select:focus{outline:1px solid var(--dsw-alias-brand-primary,#4d6bfe);outline-offset:1px}
+.scw-root button:focus-visible{outline:1px solid var(--dsw-alias-brand-primary,#4d6bfe);outline-offset:2px}
+.scw-root{font-size:13px}
+.scw-head{height:44px}
+.scw-search{padding:6px 8px}
+.scw-searchInput{font-size:12.5px;height:28px}
+.scw-modalBtn,.scw-modeToggle{font-size:11.5px}
+.scw-mode{font-size:11.5px;padding:4px 8px;gap:5px}
+.scw-modeLabel{font-size:11.5px}
+.scw-toolBtn{font-size:11.5px;padding:3px 7px}
+.scw-bulkBtn{font-size:11.5px;padding:3px 7px}
+.scw-group{font-size:11.5px;padding:7px 8px 4px}
+.scw-letter{font-size:11px;width:14px}
+.scw-rowName{font-size:12.5px}
+.scw-rowDir{font-size:11px}
+.scw-stat{font-size:11px}
+.scw-treeState{font-size:12px}
+.scw-tabs{min-height:32px}
+.scw-tab{font-size:12.5px;height:32px}
+.scw-commitInput{font-size:12.5px;height:56px}
+.scw-btn{font-size:12px;height:26px}
+.scw-sideSubject{font-size:12.5px}
+.scw-sideMeta{font-size:11px}
+.scw-sideStatK{font-size:11px}
+.scw-commitSubject{font-size:12px}
+.scw-commitMeta{font-size:10.5px}
+
 `
 
     /* ============================== page ============================== */
@@ -1784,6 +2225,15 @@ function insertIntoComposer(text) {
 }
 function Page(props) {
       const { t, ctx, dock, chatRef } = props
+      /* The workbench shell already renders the workspace name, branch and change
+         count; `hosted` lets this page drop its own copy of that text. */
+      const hosted = props.hosted === true
+      /* The workbench shell resolves the layout from the PANEL's width (auto) or
+         from the user's explicit choice. Empty means "no shell": fall back to this
+         page's own width measurement, which is what the standalone panel uses. */
+      const shellLayout = props.layout === 'single' || props.layout === 'split' || props.layout === 'tri'
+        ? props.layout
+        : ''
       const call = useMemo(() => makeCaller(), [])
       const visible = useDocumentVisible()
       const rootRef = useRef(null)
@@ -1791,8 +2241,12 @@ function Page(props) {
       const mode = modeOfWidth(width)
       const compact = mode === 'XS'
       /* 窄窗口用上下分栏（< 1024）。宽屏仍是左右分栏。
-         声明在这里，因为下面的树/内容渲染表达式要用它 —— 放到后面会落进 TDZ。 */
-      const stacked = mode === 'S' || mode === 'M'
+         声明在这里，因为下面的树/内容渲染表达式要用它 —— 放到后面会落进 TDZ。
+         The shell's choice wins when present: `single` pins the stacked layout,
+         anything wider pins side-by-side. */
+      const stacked = shellLayout === 'single'
+        ? true
+        : shellLayout === '' ? (mode === 'S' || mode === 'M') : false
 
       /* ---- workspace / repo ---- */
   /* 页面级缓存：dock 只挂载当前页，切走就卸载。没有缓存时，每切回来一次就要
@@ -1802,11 +2256,98 @@ function Page(props) {
   const [snapshot, setSnapshot] = useState(() => pageCache.snapshot)
   const [historyState, setHistoryState] = useState(() => pageCache.history)
   const [branchState, setBranchState] = useState(() => pageCache.branches)
+      /* Remote names/URLs for the branches page (open in browser, copy). */
+      const [remoteState, setRemoteState] = useState({ status: 'idle', remotes: {} })
+      /* Branches view: name filter + collapsed folders (feature/…), like SourceTree. */
+      const [branchFilter, setBranchFilter] = useState('')
+      const [collapsedBranchFolders, setCollapsedBranchFolders] = useState(() => new Set())
   const [stashState, setStashState] = useState(() => pageCache.stash)
       const [workspaceRoot, setWorkspaceRoot] = useState(() => readString(ROOT_KEY, ''))
       const [repoRoot, setRepoRoot] = useState(() => readString(REPO_KEY, ''))
       const [snapshotError, setSnapshotError] = useState(null)
       const [snapshotLoading, setSnapshotLoading] = useState(false)
+      /* Shared loader: selection, hover-prefetch and reset-message restore all
+         hit the same cache/in-flight promise. */
+      const commitDetailRequestsRef = useRef(new Map())
+      const loadCommitDetail = useCallback((hash, options) => {
+        if (typeof hash !== 'string' || hash === '') return Promise.resolve(null)
+        const rootKey = repoRoot !== '' ? repoRoot : workspaceRoot
+        const cached = readCommitDetailCache(rootKey, hash)
+        if (cached !== null && (options === undefined || options === null || options.force !== true)) {
+          return Promise.resolve(cached)
+        }
+        const requestKey = commitDetailKey(rootKey, hash)
+        const pending = commitDetailRequestsRef.current.get(requestKey)
+        if (pending !== undefined) return pending
+        const request = call(GIT_PREFIX, 'commitDetail', { repoRoot: rootKey, rev: hash }).then((data) => {
+          if (data !== null && data !== undefined) rememberCommitDetail(rootKey, hash, data)
+          return data
+        }).finally(() => {
+          if (commitDetailRequestsRef.current.get(requestKey) === request) {
+            commitDetailRequestsRef.current.delete(requestKey)
+          }
+        })
+        commitDetailRequestsRef.current.set(requestKey, request)
+        return request
+      }, [call, repoRoot, workspaceRoot])
+      const commitPrefetchTimerRef = useRef(null)
+      const prefetchCommitDetail = useCallback((hash) => {
+        const rootKey = repoRoot !== '' ? repoRoot : workspaceRoot
+        if (typeof hash !== 'string' || hash === '' || readCommitDetailCache(rootKey, hash) !== null) return
+        /* Hovering across the list must not spawn one git process per row. */
+        if (commitPrefetchTimerRef.current !== null) clearTimeout(commitPrefetchTimerRef.current)
+        commitPrefetchTimerRef.current = setTimeout(() => {
+          commitPrefetchTimerRef.current = null
+          void loadCommitDetail(hash).catch((error) => { void error })
+        }, 160)
+      }, [loadCommitDetail, repoRoot, workspaceRoot])
+      const diffPrefetchTimerRef = useRef(null)
+      const prefetchCommitDiff = useCallback((rev, filePath) => {
+        if (typeof rev !== 'string' || rev === '' || typeof filePath !== 'string' || filePath === '') return
+        if (diffPrefetchTimerRef.current !== null) clearTimeout(diffPrefetchTimerRef.current)
+        diffPrefetchTimerRef.current = setTimeout(() => {
+          diffPrefetchTimerRef.current = null
+          void call(GIT_PREFIX, 'diff', {
+            repoRoot,
+            base: 'commit',
+            rev,
+            path: filePath,
+            context: 3,
+          }).catch((error) => { void error })
+        }, 140)
+      }, [call, repoRoot])
+      useEffect(() => () => {
+        if (commitPrefetchTimerRef.current !== null) clearTimeout(commitPrefetchTimerRef.current)
+        commitPrefetchTimerRef.current = null
+        if (diffPrefetchTimerRef.current !== null) clearTimeout(diffPrefetchTimerRef.current)
+        diffPrefetchTimerRef.current = null
+      }, [])
+
+      /* Publish the workspace to the workbench shell. The context bar belongs to
+         the shell, but only this page knows which repository it is looking at —
+         so the page reports it and every other page inherits it. The dock may be
+         absent (standalone panel) or too old to have the bus; both are no-ops. */
+      useEffect(() => {
+        const dock = typeof window === 'object' && window !== null ? window.__DSH_WORKBAY__ : undefined
+        if (dock === undefined || dock === null || typeof dock.setContext !== 'function') return
+        const rootPath = workspaceRoot !== '' ? workspaceRoot : repoRoot
+        const name = rootPath === ''
+          ? ''
+          : String(rootPath).replace(/\\/g, '/').split('/').filter((part) => part !== '').pop()
+        const changes = snapshot !== null && snapshot !== undefined && Array.isArray(snapshot.changes)
+          ? snapshot.changes.length
+          : 0
+        dock.setContext({
+          path: rootPath,
+          name: typeof name === 'string' ? name : '',
+          branch: snapshot !== null && snapshot !== undefined && typeof snapshot.branch === 'string'
+            ? snapshot.branch
+            : '',
+          ahead: snapshot !== null && snapshot !== undefined && Number.isFinite(snapshot.ahead) ? snapshot.ahead : 0,
+          behind: snapshot !== null && snapshot !== undefined && Number.isFinite(snapshot.behind) ? snapshot.behind : 0,
+          changes,
+        })
+      }, [workspaceRoot, repoRoot, snapshot])
 
       /* ---- tree ---- */
       /* History paging: the limit grows by one page per '加载更多'. */
@@ -1818,8 +2359,12 @@ function Page(props) {
       const forcedTickRef = useRef(0)
       const [dirs, setDirs] = useState({})
       const [expanded, setExpanded] = useState(() => new Set())
+      /* 手动收起的目录（覆盖「只看变更」的自动展开）。 */
+      const [collapsedDirs, setCollapsedDirs] = useState(() => new Set())
       const [selectedRel, setSelectedRel] = useState(null)
       const [onlyChanges, setOnlyChanges] = useState(false)
+      /* 变更页按类型分组的折叠状态；默认全部展开。 */
+      const [collapsedChangeGroups, setCollapsedChangeGroups] = useState(() => new Set())
       const [treeWidth, setTreeWidth] = useState(() => {
         const stored = readJson(LAYOUT_KEY, null)
         return stored !== null && typeof stored === 'object' && Number.isFinite(stored.treeWidth) ? stored.treeWidth : TREE_DEFAULT_W
@@ -1961,13 +2506,26 @@ function Page(props) {
        */
       /* 默认落在变更页：这页最常见的工作是「看改了什么」（用户明确要求）。 */
       const [treeMode, setTreeMode] = useState('changes')
-  /* 内容区弹窗放大：只切一个类，不重新挂载面板（滚动位置、光标、未保存内容都不丢）。 */
-  const [contentModal, setContentModal] = useState(false)
       const [busyAction, setBusyAction] = useState(null)
       const [selectedCommit, setSelectedCommit] = useState(null)
       const [commitDetail, setCommitDetail] = useState({ status: 'idle', detail: null, error: null })
       /* Which file of the selected commit is being diffed, if any. */
       const [commitFile, setCommitFile] = useState(null)
+      /* Esc 逐级返回：对话框 → 提交里的文件 → 提交详情 → 选中的文件；
+         一层都没有时才把 Esc 交还给外壳（由外壳决定关闭工作台）。 */
+      useEffect(() => {
+        if (dock === undefined || dock === null || typeof dock.setBackHandler !== 'function') return undefined
+        dock.setBackHandler('source-control', () => {
+          if (dialog !== null) { setDialog(null); return true }
+          if (commitFile !== null) { setCommitFile(null); return true }
+          if (selectedCommit !== null) { setSelectedCommit(null); return true }
+          if (selectedRel !== null) { setSelectedRel(null); return true }
+          return false
+        })
+        return () => {
+          if (typeof dock.setBackHandler === 'function') dock.setBackHandler('source-control', null)
+        }
+      }, [dock, dialog, commitFile, selectedCommit, selectedRel])
       /**
        * Selecting a file always ends the "commit patch" view.
        *
@@ -1982,6 +2540,8 @@ function Page(props) {
            右边仍然停在之前那个提交的详情上——文件选了半天，内容区一动不动。 */
         setSelectedCommit(null)
         setSelectedRel(rel)
+        /* 内容区始终跟随选中：点到哪个文件就看哪个文件的 diff。 */
+        if (rel !== null && rel !== undefined) setActiveTab('diff')
       }, [])
       /**
        * Selecting a commit opens its WHOLE patch immediately.
@@ -2056,6 +2616,30 @@ function Page(props) {
          empty rather than null (null means "cannot convert", not "no prefix"). */
       const repoRootRel = repoNotInWorkspace ? '' : repoOffset
       const statusIndex = useMemo(() => buildStatusIndex(snapshot, repoRootRel), [snapshot, repoRootRel])
+      /* Prefetch a working-tree/staged diff when the user hovers a change row.
+         The files diff pane asks for exactly this payload, so the host's diff
+         cache turns the click into a cache hit instead of a 250-400 ms git spawn. */
+      const worktreePrefetchTimerRef = useRef(null)
+      const prefetchWorktreeDiff = useCallback((rel, change) => {
+        if (change === null || change === undefined || change.untracked === true) return
+        if (repoRootRel === null) return
+        const repoRel = toRepoPath(rel, repoRootRel)
+        if (repoRel === null || repoRel === '') return
+        if (worktreePrefetchTimerRef.current !== null) clearTimeout(worktreePrefetchTimerRef.current)
+        worktreePrefetchTimerRef.current = setTimeout(() => {
+          worktreePrefetchTimerRef.current = null
+          void call(GIT_PREFIX, 'diff', {
+            repoRoot,
+            base: change.staged === true ? 'staged' : 'worktree',
+            path: repoRel,
+            context: 3,
+          }).catch((error) => { void error })
+        }, 140)
+      }, [call, repoRoot, repoRootRel])
+      useEffect(() => () => {
+        if (worktreePrefetchTimerRef.current !== null) clearTimeout(worktreePrefetchTimerRef.current)
+        worktreePrefetchTimerRef.current = null
+      }, [])
       const dirtyDirs = useMemo(() => buildDirtyDirs(statusIndex), [statusIndex])
 
       /**
@@ -2086,8 +2670,8 @@ function Page(props) {
       }, [])
 
       const rows = useMemo(
-        () => flattenTree(dirs, expanded, { statusIndex, dirtyDirs, onlyChanges, collator }),
-        [dirs, expanded, statusIndex, dirtyDirs, onlyChanges, collator],
+        () => flattenTree(dirs, expanded, { statusIndex, dirtyDirs, onlyChanges, collator, collapsed: collapsedDirs }),
+        [dirs, expanded, statusIndex, dirtyDirs, onlyChanges, collator, collapsedDirs],
       )
 
       const changeCount = statusIndex.size
@@ -2095,33 +2679,6 @@ function Page(props) {
         ? snapshot.changes.filter((change) => change !== null && change !== undefined && change.staged === true).length
         : 0
 
-      /* Esc 关闭弹窗，并且**不让它继续冒泡**。
-         之前只写了 setContentModal(false)，事件照常传给工作台，于是弹窗关掉的同时
-         整个工作台也跟着退了——用户按一次 Esc 丢了两个东西。
-         用捕获阶段 + stopImmediatePropagation，抢在宿主之前处理。 */
-      useEffect(() => {
-        if (contentModal !== true) return undefined
-        const onKey = (event) => {
-          if (event.key !== 'Escape') return
-          event.preventDefault()
-          event.stopImmediatePropagation()
-          setContentModal(false)
-        }
-        /* 点弹窗以外的地方也关闭：弹窗是「同一份 DOM 换位置」做的，遮罩是伪元素，
-           接不到点击，所以在这一层判断点击目标是否落在内容区里。 */
-        const onDown = (event) => {
-          const box = document.querySelector('.scw-root.is-modal .scw-content')
-          if (box === null) return
-          if (box.contains(event.target) === true) return
-          setContentModal(false)
-        }
-        window.addEventListener('keydown', onKey, true)
-        window.addEventListener('pointerdown', onDown, true)
-        return () => {
-          window.removeEventListener('keydown', onKey, true)
-          window.removeEventListener('pointerdown', onDown, true)
-        }
-      }, [contentModal])
 
       /* Pick the workspace root if nobody has yet: the files page may already
          have chosen one, and honouring it is what makes the two pages feel like
@@ -2150,26 +2707,33 @@ function Page(props) {
        * demand (mount, focus, explicit refresh) and after every write it
        * performs. Polling here would add a second 3-spawn loop per visible page.
        */
+      /* One place that turns a snapshot payload into page state. Write methods
+         ALREADY return a fresh snapshot; reusing it saves a second git round-trip
+         (~3 spawns) after every stage/commit/branch action. */
+      const applySnapshot = useCallback((data) => {
+        setSnapshot(data)
+        setSnapshotError(null)
+        /* Adopt the repository root the host resolved, so the path join has a
+           real value even when the user never picked a repo explicitly. */
+        if (data !== null && data !== undefined && typeof data.root === 'string' && data.root !== '' && data.root !== repoRoot) {
+          setRepoRoot(data.root)
+        }
+      }, [repoRoot])
+
       const loadSnapshot = useCallback(async () => {
         if (workspaceRoot === '') return
         setSnapshotLoading(true)
         try {
           const payload = repoRoot !== '' ? { repoRoot } : { repoRoot: workspaceRoot }
           const data = await call(GIT_PREFIX, 'snapshot', payload)
-          setSnapshot(data)
-          setSnapshotError(null)
-          /* Adopt the repository root the host resolved, so the path join has a
-             real value even when the user never picked a repo explicitly. */
-          if (data !== null && data !== undefined && typeof data.root === 'string' && data.root !== '' && data.root !== repoRoot) {
-            setRepoRoot(data.root)
-          }
+          applySnapshot(data)
         } catch (error) {
           setSnapshot(null)
           setSnapshotError(error)
         } finally {
           setSnapshotLoading(false)
         }
-      }, [workspaceRoot, repoRoot, call])
+      }, [workspaceRoot, repoRoot, call, applySnapshot])
 
       useEffect(() => {
         if (visible !== true) return undefined /* a hidden window cannot show it */
@@ -2188,18 +2752,25 @@ function Page(props) {
        * cost of a page most people open to look at their diff — so each loads on
        * first activation and caches until a write or a refresh invalidates it.
        */
-      const historyLoadedRef = useRef(false)
-      const branchesLoadedRef = useRef(false)
-      const stashLoadedRef = useRef(false)
+      /* A ready page-cache entry is already on screen. Re-entering the page must
+         not immediately force the same git log/branch list again; the toolbar
+         refresh and any write still pass efresh: true. */
+      const historyLoadedRef = useRef(pageCache.history.status === 'ready')
+      const branchesLoadedRef = useRef(pageCache.branches.status === 'ready')
+      const stashLoadedRef = useRef(pageCache.stash.status === 'ready')
 
-      const loadHistory = useCallback(async (overrideLimit) => {
+      const loadHistory = useCallback(async (overrideLimit, options) => {
         if (workspaceRoot === '') return
+        const opts = options === undefined || options === null ? {} : options
         setHistoryState((previous) => ({ status: 'loading', commits: previous.commits, error: null }))
         try {
                     /* An explicit limit lets the pager fetch the NEXT page in one call, instead of
              mutating state and hoping some effect notices. */
           const limit = typeof overrideLimit === 'number' && Number.isFinite(overrideLimit) ? overrideLimit : historyLimit
           const payload = repoRoot !== '' ? { repoRoot, limit } : { repoRoot: workspaceRoot, limit }
+          /* This page has no git watcher, so a page reload or an external commit
+             would hit a cache entry from revision 0 forever. Read fresh by default. */
+          if (opts.refresh !== false) payload.refresh = true
           const data = await call(GIT_PREFIX, 'log', payload)
           const commits = data !== null && data !== undefined && Array.isArray(data.commits) ? data.commits : []
           /* A full page back almost certainly means there is another one; asking git for
@@ -2227,11 +2798,13 @@ function Page(props) {
         void loadHistory(next)
       }, [historyLimit, loadHistory])
 
-      const loadBranches = useCallback(async () => {
+      const loadBranches = useCallback(async (options) => {
         if (workspaceRoot === '') return
+        const opts = options === undefined || options === null ? {} : options
         setBranchState((previous) => ({ status: 'loading', branches: previous.branches, error: null }))
         try {
           const payload = repoRoot !== '' ? { repoRoot } : { repoRoot: workspaceRoot }
+          if (opts.refresh !== false) payload.refresh = true
           const data = await call(GIT_PREFIX, 'branches', payload)
           /* The host returns the array directly; tolerate an envelope too so a
              future shape change does not blank the panel. */
@@ -2247,6 +2820,33 @@ function Page(props) {
           })
         }
       }, [workspaceRoot, repoRoot, call, t])
+
+      const loadRemotes = useCallback(async () => {
+        if (workspaceRoot === '') return
+        try {
+          const payload = repoRoot !== '' ? { repoRoot } : { repoRoot: workspaceRoot }
+          const data = await call(GIT_PREFIX, 'repoInfo', payload)
+          setRemoteState({ status: 'ready', remotes: parseRemotes(data === null || data === undefined ? [] : data.remotes) })
+        } catch (error) {
+          void error
+          setRemoteState({ status: 'error', remotes: {} })
+        }
+      }, [workspaceRoot, repoRoot, call])
+
+      /* Remotes are needed by the branches page AND by the history page's
+         "open commit in browser" item. Load them once the FIRST directory
+         listing is ready: at that point the initial tree/snapshot have already
+         been requested (loading them earlier delayed that first paint). */
+      const remotesLoadedForRef = useRef('')
+      useEffect(() => {
+        if (visible !== true || workspaceRoot === '') return undefined
+        if (remotesLoadedForRef.current === workspaceRoot) return undefined
+        const root = dirs['']
+        if (root === undefined || root === null || root.status !== 'ready') return undefined
+        remotesLoadedForRef.current = workspaceRoot
+        void loadRemotes()
+        return undefined
+      }, [visible, workspaceRoot, dirs, loadRemotes])
 
       const loadStash = useCallback(async () => {
         if (workspaceRoot === '') return
@@ -2302,8 +2902,15 @@ function Page(props) {
           return undefined
         }
         let cancelled = false
+        /* A cached detail (or one a hover prefetch already fetched) renders
+           immediately. Only a genuinely cold commit gets a spinner. */
+        const cached = readCommitDetailCache(repoRoot !== '' ? repoRoot : workspaceRoot, selectedCommit)
+        if (cached !== null) {
+          setCommitDetail({ status: 'ready', detail: cached, error: null })
+          return undefined
+        }
         setCommitDetail({ status: 'loading', detail: null, error: null })
-        call(GIT_PREFIX, 'commitDetail', { repoRoot, rev: selectedCommit }).then((data) => {
+        loadCommitDetail(selectedCommit).then((data) => {
           if (cancelled) return
           setCommitDetail({ status: 'ready', detail: data, error: null })
         }).catch((error) => {
@@ -2315,11 +2922,13 @@ function Page(props) {
           })
         })
         return () => { cancelled = true }
-      }, [selectedCommit, workspaceRoot, repoRoot, call, t])
+      }, [selectedCommit, workspaceRoot, repoRoot, loadCommitDetail, t])
 
       /* ============================== effects: tree loading ============================== */
 
       const dirReqsRef = useRef(new Map())
+      /* 正在飞行中的目录请求：用来区分「真的在加载」和「状态卡在 loading」。 */
+      const dirInflightRef = useRef(new Set())
 
       const loadDir = useCallback(async (dirRel, options) => {
         if (browseRoot === '') return
@@ -2329,6 +2938,7 @@ function Page(props) {
         if (!force && existing !== undefined && existing !== null && (existing.status === 'loading' || existing.status === 'ready')) return
         const token = (dirReqsRef.current.get(dirRel) || 0) + 1
         dirReqsRef.current.set(dirRel, token)
+        dirInflightRef.current.add(dirRel)
         setDirs((previous) => Object.assign({}, previous, {
           [dirRel]: { status: 'loading', error: null, entries: previous[dirRel] !== undefined && Array.isArray(previous[dirRel].entries) ? previous[dirRel].entries : [], truncated: false },
         }))
@@ -2352,8 +2962,27 @@ function Page(props) {
               truncated: false,
             }),
           }))
+        } finally {
+          /* 无论成功、失败还是被更新的请求取代，都要把「飞行中」标记清掉：
+             不清的话，一个被取代的请求会让目录永远停在 loading，也就永远显示
+             「正在加载…」并且重新展开也救不回来。 */
+          if (dirReqsRef.current.get(dirRel) === token) dirInflightRef.current.delete(dirRel)
         }
       }, [browseRoot, dirs, call, t])
+
+      /* 「只看变更」会自动展开有改动的目录。如果这些目录从没加载过，树里就只有一行
+         「正在加载…」——替用户把它们拉下来（已加载/正在飞行中的跳过）。 */
+      useEffect(() => {
+        if (onlyChanges !== true) return
+        const pending = []
+        for (const rel of dirtyDirs) {
+          if (collapsedDirs.has(rel)) continue
+          const entry = dirs[rel]
+          const stuckLoading = entry !== undefined && entry !== null && entry.status === 'loading' && !dirInflightRef.current.has(rel)
+          if (entry === undefined || entry === null || stuckLoading) pending.push(rel)
+        }
+        for (const rel of pending) void loadDir(rel, { force: true })
+      }, [onlyChanges, dirtyDirs, collapsedDirs, dirs, loadDir])
 
       /* First paint, and re-paint when the browsed root changes.
          The repo fallback can flip only AFTER the first snapshot arrives, and the
@@ -2480,7 +3109,21 @@ function Page(props) {
             role: 'button',
             tabIndex: 0,
             title: rel,
-            onClick: () => { selectRel(rel); setActiveTab('source') },
+            onClick: () => {
+              selectRel(rel)
+              setActiveTab('source')
+              /* The file row stands for its first hit; open there instead of
+                 at the top of the file. Match rows below jump to their own
+                 line and the editor flashes/scrolls to it. */
+              const first = Array.isArray(file.matches) && file.matches.length > 0
+                ? Number(file.matches[0].line)
+                : 0
+              const page = sourcePage
+              if (first > 0 && page !== null && page !== undefined && page.commands !== undefined
+                && typeof page.commands.jump === 'function') {
+                try { page.commands.jump(rel, first) } catch (error) { void error }
+              }
+            },
           },
           E('span', { className: 'scw-rowChevron' }),
           E(Icon, { name: 'file', size: 13, className: 'scw-rowIcon' }),
@@ -2514,16 +3157,43 @@ function Page(props) {
       }, [searchState, searchMode, selectedRel, statusIndex])
 
       const toggleDir = useCallback((rel) => {
-        setExpanded((previous) => {
-          const next = new Set(previous)
-          if (next.has(rel)) next.delete(rel)
-          else {
-            next.add(rel)
-            void loadDir(rel)
+        /* 当前是否展开 = 显式展开，或「只看变更」时因有改动而自动展开；手动收起
+           优先于自动展开，否则过滤一开就再也收不回去。 */
+        const autoExpanded = onlyChanges === true && dirtyDirs.has(rel)
+        const isExpanded = !collapsedDirs.has(rel) && (expanded.has(rel) || autoExpanded)
+        if (isExpanded) {
+          if (expanded.has(rel)) {
+            setExpanded((previous) => {
+              if (!previous.has(rel)) return previous
+              const next = new Set(previous)
+              next.delete(rel)
+              return next
+            })
           }
+          setCollapsedDirs((previous) => {
+            if (previous.has(rel)) return previous
+            const next = new Set(previous)
+            next.add(rel)
+            return next
+          })
+          return
+        }
+        setCollapsedDirs((previous) => {
+          if (!previous.has(rel)) return previous
+          const next = new Set(previous)
+          next.delete(rel)
           return next
         })
-      }, [loadDir])
+        if (!expanded.has(rel)) {
+          setExpanded((previous) => {
+            if (previous.has(rel)) return previous
+            const next = new Set(previous)
+            next.add(rel)
+            return next
+          })
+        }
+        void loadDir(rel)
+      }, [loadDir, onlyChanges, dirtyDirs, expanded, collapsedDirs])
 
       const refresh = useCallback(() => {
         if (workspaceRoot === '') return
@@ -2538,10 +3208,11 @@ function Page(props) {
         void loadSnapshot()
         /* Only refresh the panels that have actually been opened once; forcing a
            `git log` on a page the user is using for diffs buys nothing. */
-        if (historyLoadedRef.current === true) void loadHistory()
-        if (branchesLoadedRef.current === true) void loadBranches()
+        if (historyLoadedRef.current === true) void loadHistory(undefined, { refresh: true })
+        if (branchesLoadedRef.current === true) void loadBranches({ refresh: true })
         if (stashLoadedRef.current === true) void loadStash()
-      }, [workspaceRoot, dirs, loadDir, loadSnapshot, loadHistory, loadBranches, loadStash])
+        void loadRemotes()
+      }, [workspaceRoot, dirs, loadDir, loadSnapshot, loadHistory, loadBranches, loadStash, loadRemotes])
 
       /* ============================== pane mounting ============================== */
 
@@ -2627,7 +3298,10 @@ function Page(props) {
         try {
           mounted = paneFn(host, {
             /* Stable for the pane's lifetime, read at mount time (see above). */
-            repoRoot: live.repoRoot,
+            /* A pane can mount a frame before repoInfo fills the root. Falling
+               back to the workspace root lets the host resolve the repository
+               instead of leaving the pane without any scope. */
+            repoRoot: live.repoRoot !== '' ? live.repoRoot : live.workspaceRoot,
             workspaceRoot: live.workspaceRoot,
             t,
             visible: true,
@@ -2911,8 +3585,10 @@ function Page(props) {
         try {
           await call(GIT_PREFIX, method, payload)
           afterWrite()
+          return true
         } catch (error) {
           setBar({ kind: 'error', message: error !== null && error !== undefined ? error.message : t('error.unknown') })
+          return false
         } finally {
           setBusy(null)
         }
@@ -2927,7 +3603,7 @@ function Page(props) {
        * working tree at once. Refreshing only the snapshot leaves the other panels
        * showing the previous world, which reads as "the action did nothing".
        */
-      const runGitOp = useCallback(async (method, payload, label) => {
+      const runGitOp = useCallback(async (method, payload, label, options) => {
         setBusyAction(label)
         setBar(null)
         try {
@@ -2935,7 +3611,15 @@ function Page(props) {
           historyLoadedRef.current = false
           branchesLoadedRef.current = false
           stashLoadedRef.current = false
-          void loadSnapshot()
+          /* A write already returns the post-write snapshot from git. Refetching
+             it costs another snapshot round-trip (3 spawns) for the same answer. */
+          const fresh = data !== null && data !== undefined && typeof data === 'object'
+            ? (data.snapshot !== null && data.snapshot !== undefined && typeof data.snapshot === 'object'
+              ? data.snapshot
+              : (typeof data.root === 'string' && Array.isArray(data.changes) ? data : null))
+            : null
+          if (fresh !== null) applySnapshot(fresh)
+          else void loadSnapshot()
           void loadDir('', { force: true })
           if (treeMode === 'history') void loadHistory()
           if (treeMode === 'branches') void loadBranches()
@@ -2944,6 +3628,9 @@ function Page(props) {
           return data
         } catch (error) {
           setBar({ kind: 'error', message: error !== null && error !== undefined ? error.message : t('error.unknown') })
+          if (options !== undefined && options !== null && typeof options.onError === 'function') {
+            try { options.onError(error) } catch (nested) { void nested }
+          }
           return null
         } finally {
           setBusyAction(null)
@@ -2965,42 +3652,109 @@ function Page(props) {
 
       /* ---------- branch ---------- */
 
-      const doBranchCreate = useCallback(() => {
-        openPrompt(t('branch.createTitle'), t('branch.createBody'), t('branch.nameLabel'), '', t('branch.namePlaceholder'), (value) => {
-          const name = value.trim()
-          if (name === '') return
-          void runGitOp('branchCreate', { repoRoot, name }, 'branchCreate').then(() => {
-            branchesLoadedRef.current = false
-            void loadBranches()
-          })
-        })
-      }, [openPrompt, runGitOp, repoRoot, loadBranches, t])
-
-      const doBranchDelete = useCallback((branch) => {
-        const name = branch.name
-        openConfirm(
-          t('branch.deleteTitle') + ' — ' + name,
-          t('branch.deleteBody'),
-          () => {
-            void runGitOp('branchDelete', { repoRoot, name }, 'branchDelete').then(() => {
+      const doBranchCreate = useCallback((startPoint) => {
+        const base = typeof startPoint === 'string' && startPoint.trim() !== '' ? startPoint.trim() : ''
+        openPrompt(
+          t('branch.createTitle'),
+          base === '' ? t('branch.createBody') : t('branch.createBody') + ' — ' + base.slice(0, 8),
+          t('branch.nameLabel'),
+          '',
+          t('branch.namePlaceholder'),
+          (value) => {
+            const name = value.trim()
+            if (name === '') return
+            void runGitOp('branchCreate', base === '' ? { repoRoot, name } : { repoRoot, name, startPoint: base }, 'branchCreate').then(() => {
               branchesLoadedRef.current = false
               void loadBranches()
             })
           },
+        )
+      }, [openPrompt, runGitOp, repoRoot, loadBranches, t])
+
+      const defaultRemoteName = useCallback(() => {
+        for (const branch of branchState.branches) {
+          const refName = String(branch.refName === undefined || branch.refName === null ? '' : branch.refName)
+          if (!refName.startsWith('refs/remotes/')) continue
+          const rest = refName.slice('refs/remotes/'.length)
+          const cut = rest.indexOf('/')
+          if (cut > 0) return rest.slice(0, cut)
+        }
+        return 'origin'
+      }, [branchState])
+
+      const remoteOfRef = (branch) => {
+        const refName = String(branch.refName === undefined || branch.refName === null ? '' : branch.refName)
+        if (!refName.startsWith('refs/remotes/')) return ''
+        const rest = refName.slice('refs/remotes/'.length)
+        const cut = rest.indexOf('/')
+        return cut > 0 ? rest.slice(0, cut) : ''
+      }
+
+      const doBranchRename = useCallback((branch) => {
+        openPrompt(t('branch.renameTitle'), t('branch.renameBody'), t('branch.nameLabel'), branch.name, branch.name, (value) => {
+          const next = value.trim()
+          if (next === '' || next === branch.name) return
+          void runGitOp('branchRename', { repoRoot, from: branch.name, to: next }, 'branchRename')
+        })
+      }, [openPrompt, runGitOp, repoRoot, t])
+
+      const doBranchUpstream = useCallback((branch) => {
+        openPrompt(t('branch.upstreamTitle'), t('branch.upstreamBody'), t('branch.upstreamLabel'), branch.upstream === null || branch.upstream === undefined ? '' : branch.upstream, 'origin/main', (value) => {
+          void runGitOp('branchUpstream', { repoRoot, name: branch.name, upstream: value.trim() }, 'branchUpstream')
+        })
+      }, [openPrompt, runGitOp, repoRoot, t])
+
+      const doBranchPush = useCallback((branch) => {
+        const remote = defaultRemoteName()
+        const needsUpstream = branch.upstream === null || branch.upstream === undefined
+        void runGitOp('push', needsUpstream
+          ? { repoRoot, remote, branch: branch.name, setUpstream: true }
+          : { repoRoot, branch: branch.name }, 'push')
+      }, [defaultRemoteName, runGitOp, repoRoot])
+
+      const doBranchDeleteRemote = useCallback((branch) => {
+        const remote = remoteOfRef(branch)
+        const cut = String(branch.name).indexOf('/')
+        const shortName = cut > 0 ? String(branch.name).slice(cut + 1) : String(branch.name)
+        if (remote === '') return
+        openConfirm(
+          t('branch.deleteRemoteTitle') + ' — ' + branch.name,
+          t('branch.deleteRemoteBody'),
+          () => { void runGitOp('branchDeleteRemote', { repoRoot, remote, branch: shortName }, 'branchDeleteRemote') },
           t('action.delete'),
         )
+      }, [openConfirm, runGitOp, repoRoot, t])
+
+      const doBranchDelete = useCallback((branch) => {
+        const name = branch.name
+        const remove = (force) => runGitOp('branchDelete', { repoRoot, name, force: force === true }, 'branchDelete', force === true ? undefined : {
+          /* -d refuses unmerged branches. Instead of leaving the user at a red
+             bar, offer the explicit -D once, with the consequence spelled out. */
+          onError: (error) => {
+            const text = String((error !== null && error !== undefined && (error.code || error.message)) || '')
+            if (!/not-merged|not fully merged/i.test(text)) return
+            openConfirm(t('branch.forceDeleteTitle') + ' — ' + name, t('branch.forceDeleteBody'), () => { remove(true) }, t('branch.forceDelete'))
+          },
+        }).then(() => {
+          branchesLoadedRef.current = false
+          void loadBranches()
+        })
+        openConfirm(t('branch.deleteTitle') + ' — ' + name, t('branch.deleteBody'), () => { remove(false) }, t('action.delete'))
       }, [openConfirm, runGitOp, repoRoot, loadBranches, t])
 
       /* ---------- merge / rebase / pick / revert / reset ---------- */
 
       const doMerge = useCallback((ref) => {
-        openConfirm(
+        openMenu(
           t('op.mergeTitle') + ' — ' + ref,
           t('op.mergeBody'),
-          () => { void runGitOp('merge', { repoRoot, rev: ref }, 'merge') },
-          t('op.merge'),
+          [
+            { label: t('merge.default'), title: t('merge.defaultHint'), onSelect: () => { void runGitOp('merge', { repoRoot, rev: ref }, 'merge') } },
+            { label: t('merge.noFf'), onSelect: () => { void runGitOp('merge', { repoRoot, rev: ref, noFf: true }, 'merge') } },
+            { label: t('merge.squash'), title: t('merge.squashHint'), onSelect: () => { void runGitOp('merge', { repoRoot, rev: ref, squash: true }, 'merge') } },
+          ],
         )
-      }, [openConfirm, runGitOp, repoRoot, t])
+      }, [openMenu, runGitOp, repoRoot, t])
 
       const doRebase = useCallback((ref) => {
         openConfirm(
@@ -3025,6 +3779,30 @@ function Page(props) {
       }, [openConfirm, runGitOp, repoRoot, t])
 
       const doReset = useCallback((hash) => {
+        const runReset = async (mode, confirmed) => {
+          /* VS Code's "undo commit" behaviour: when a soft/mixed reset moves the
+             branch back, put the commit that was removed back into the message
+             box. Fetch that commit BEFORE the reset; after it, HEAD is the target
+             and the message is no longer reachable from the branch. */
+          const head = snapshot !== null && snapshot !== undefined && typeof snapshot.head === 'string'
+            ? snapshot.head
+            : ''
+          let restore = ''
+          if (mode !== 'hard' && head !== '' && head !== hash) {
+            const commits = Array.isArray(historyState.commits) ? historyState.commits : []
+            const headIndex = commits.findIndex((commit) => commit !== null && commit !== undefined && commit.hash === head)
+            const targetIndex = commits.findIndex((commit) => commit !== null && commit !== undefined && commit.hash === hash)
+            const movesBack = targetIndex < 0 || headIndex < 0 || targetIndex > headIndex
+            if (movesBack) {
+              try {
+                const detail = await call(GIT_PREFIX, 'commitDetail', { repoRoot, rev: head })
+                restore = commitMessageFromDetail(detail)
+              } catch (error) { void error }
+            }
+          }
+          const result = await runGitOp('reset', { repoRoot, rev: hash, mode, confirm: confirmed === true }, 'reset')
+          if (result !== null && restore !== '') setCommitMessage(restore)
+        }
         openMenu(
           t('op.resetTitle') + ' — ' + hash.slice(0, 8),
           t('op.resetBody'),
@@ -3032,12 +3810,12 @@ function Page(props) {
             {
               label: t('op.resetSoft'),
               title: t('op.resetSoftHint'),
-              onSelect: () => { void runGitOp('reset', { repoRoot, rev: hash, mode: 'soft' }, 'reset') },
+              onSelect: () => { void runReset('soft') },
             },
             {
               label: t('op.resetMixed'),
               title: t('op.resetMixedHint'),
-              onSelect: () => { void runGitOp('reset', { repoRoot, rev: hash, mode: 'mixed' }, 'reset') },
+              onSelect: () => { void runReset('mixed') },
             },
             {
               label: t('op.resetHard'),
@@ -3047,13 +3825,13 @@ function Page(props) {
                  only mode that throws away uncommitted work. */
               onSelect: () => {
                 openConfirm(t('op.resetHardTitle'), t('op.resetHardBody'), () => {
-                  void runGitOp('reset', { repoRoot, rev: hash, mode: 'hard', confirm: true }, 'reset')
+                  void runReset('hard', true)
                 }, t('op.resetHard'))
               },
             },
           ],
         )
-      }, [openMenu, openConfirm, runGitOp, repoRoot, t])
+      }, [openMenu, openConfirm, runGitOp, repoRoot, snapshot, historyState.commits, call, setCommitMessage, t])
 
       /* ---------- conflict ---------- */
 
@@ -3103,8 +3881,17 @@ function Page(props) {
       /** 推送单个标签（分支/标签行上的按钮）。 */
       const doTagPushOne = useCallback((name) => {
         if (typeof name !== 'string' || name.trim() === '') return
-        void runGitOp('tagPush', { repoRoot, name: name.trim(), remote: 'origin' }, 'tagPush')
-      }, [repoRoot, runGitOp])
+        void runGitOp('tagPush', { repoRoot, name: name.trim(), remote: defaultRemoteName() }, 'tagPush')
+      }, [defaultRemoteName, repoRoot, runGitOp])
+
+      /** 删除远端标签：本地删不掉服务器上的那份，必须单独 push --delete。 */
+      const doTagDeleteRemote = useCallback((name) => {
+        const tag = typeof name === 'string' ? name.trim() : ''
+        if (tag === '') return
+        openConfirm(t('tag.deleteRemoteTitle') + ' — ' + tag, t('tag.deleteRemoteBody'),
+          () => { void runGitOp('tagDeleteRemote', { repoRoot, name: tag, remote: defaultRemoteName() }, 'tagDeleteRemote') },
+          t('action.delete'))
+      }, [defaultRemoteName, openConfirm, repoRoot, runGitOp, t])
 
       /**
        * 删除标签。
@@ -3209,6 +3996,36 @@ function Page(props) {
 
       changeRootRef.current = changeRoot
 
+
+      /**
+       * 取消工作区（解绑，不是删文件）。
+       *
+       * 之前只能「换成另一个目录」——一旦选错了(或那个目录被删/改名)，界面就永远
+       * 停在它上面，没有任何出口。清除只动本地绑定的两个 key，磁盘不做任何修改。
+       */
+      const clearRoot = useCallback(() => {
+        try {
+          window.localStorage.removeItem(ROOT_KEY)
+          window.localStorage.removeItem('dsh-workbay.root.v1')
+        } catch (error) { void error }
+        setRepoRoot('')
+        setWorkspaceRoot('')
+        setDirs({})
+        setSelectedRel(null)
+        setCommitFile(null)
+        setSelectedCommit(null)
+        historyLoadedRef.current = false
+        branchesLoadedRef.current = false
+        stashLoadedRef.current = false
+        setHistoryLimit(80)
+        setHistoryHasMore(false)
+        setHistoryState((previous) => Object.assign({}, previous, { status: 'idle', commits: [], error: null }))
+        setBranchState((previous) => Object.assign({}, previous, { status: 'idle', branches: [], error: null }))
+        setStashState((previous) => Object.assign({}, previous, { status: 'idle', stash: [], error: null }))
+        setFileHistory((previous) => Object.assign({}, previous, { status: 'idle', commits: [], error: null }))
+        setBlameState((previous) => Object.assign({}, previous, { status: 'idle', lines: [], error: null }))
+      }, [])
+
       const doInit = useCallback(() => {
         if (workspaceRoot === '') return
         openConfirm(t('repo.initTitle'), t('repo.initBody'), () => {
@@ -3284,11 +4101,23 @@ function Page(props) {
         }
       }, [call, loadDir, dirs, loadSnapshot, t])
 
-      const fileOp = useCallback((kind) => {
+      /**
+       * File operations through the FILES host.
+       *
+       * `targetRel`/`targetIsDir` come from the right-click menu; the toolbar
+       * calls it without them and falls back to the current selection, so both
+       * entry points share one implementation.
+       */
+      const fileOp = useCallback((kind, targetRel, targetIsDir) => {
         if (workspaceRoot === '') return
-        /* New entries land in the directory of the current selection — that is
-           where the user is looking. With nothing selected, the workspace root. */
-        const baseDir = selectedRel === null ? '' : dirNameOf(selectedRel)
+        const hasTarget = typeof targetRel === 'string' && targetRel !== ''
+        const target = hasTarget ? normalizeRel(targetRel) : selectedRel
+        const targetIsDirectory = hasTarget ? targetIsDir === true : selectedIsDir === true
+        /* New entries land in the directory of the anchor — a directory row itself,
+           otherwise the selection's parent, otherwise the workspace root. */
+        const baseDir = (kind === 'newFile' || kind === 'mkdir') && hasTarget && targetIsDirectory
+          ? target
+          : (selectedRel === null ? '' : dirNameOf(selectedRel))
         if (kind === 'newFile') {
           openPrompt(t('file.newFileTitle'), baseDir === '' ? t('file.newAtRoot') : (t('file.newIn') + ' ' + baseDir),
             t('file.nameLabel'), '', t('file.namePlaceholder'), (value) => {
@@ -3310,27 +4139,33 @@ function Page(props) {
             })
           return
         }
-        if (selectedRel === null) return
+        if (target === null || target === '') return
         if (kind === 'rename') {
-          openPrompt(t('file.renameTitle'), selectedRel, t('file.nameLabel'), baseNameOf(selectedRel), '', (value) => {
+          openPrompt(t('file.renameTitle'), target, t('file.nameLabel'), baseNameOf(target), '', (value) => {
             const name = normalizeRel(value)
             if (name === '') return
-            const to = joinRel(dirNameOf(selectedRel), name)
-            if (to === selectedRel) return
-            void runFileOp('rename', { root: browseRoot, from: selectedRel, to }, 'rename').then((ok) => {
+            const to = joinRel(dirNameOf(target), name)
+            if (to === target) return
+            void runFileOp('rename', { root: browseRoot, from: target, to }, 'rename').then((ok) => {
               if (ok === true) setSelectedRel(to)
             })
           })
           return
         }
         if (kind === 'delete') {
-          openConfirm(t('file.deleteTitle'), selectedRel, () => {
-            void runFileOp('delete', { root: browseRoot, rel: selectedRel }, 'delete').then((ok) => {
-              if (ok === true) setSelectedRel(null)
-            })
-          }, t('action.delete'))
+          const recursive = targetIsDirectory === true
+          openConfirm(
+            t('file.deleteTitle'),
+            recursive ? target + '\n' + t('file.deleteDirBody') : target,
+            () => {
+              void runFileOp('delete', { root: browseRoot, rel: target, recursive }, 'delete').then((ok) => {
+                if (ok === true) setSelectedRel(null)
+              })
+            },
+            t('action.delete'),
+          )
         }
-      }, [browseRoot, selectedRel, openPrompt, openConfirm, runFileOp, t])
+      }, [browseRoot, selectedRel, selectedIsDir, openPrompt, openConfirm, runFileOp, t])
 
       /**
        * Load the per-file views on demand.
@@ -3381,15 +4216,51 @@ function Page(props) {
       hunkActionRef.current = doHunkAction
 
       /**
-       * 把一个文件引用写进对话输入框。
+       * 把一个文件的**绝对路径**写进对话输入框（纯文本，不带 @）。
        *
-       * 不复制路径、也不新开窗口：DSH 自己的引用面板认 `@相对路径`，写进去之后
-       * agent 按需读取/修改，用户还能继续补话。这是社区插件（better-sidebar /
-       * workspace-explorer）用的同一条路——它们也是「把 @文件 插进输入框」。
+       * 之前写的是 `@相对路径`：相对会话工作区解析，工作台根和仓库根不一致时
+       * agent 会读错文件（实测 @build.bat 解析到 D:\AI_workspace\build.bat）。
+       * 现在直接给出 host 绝对路径，任何 cwd 下都指向同一个文件；末尾留一个空格
+       * 方便用户继续补话。
        */
+      const copyText = useCallback(async (value) => {
+        const textValue = typeof value === 'string' ? value : ''
+        if (textValue === '') return false
+        try {
+          await navigator.clipboard.writeText(textValue)
+          setBar({ kind: 'info', message: t('row.copied') + textValue })
+          return true
+        } catch (error) { void error }
+        try {
+          const area = document.createElement('textarea')
+          area.value = textValue
+          area.style.position = 'fixed'
+          area.style.opacity = '0'
+          document.body.appendChild(area)
+          area.select()
+          const ok = document.execCommand('copy') === true
+          area.remove()
+          if (ok === true) {
+            setBar({ kind: 'info', message: t('row.copied') + textValue })
+            return true
+          }
+        } catch (error) { void error }
+        setBar({ kind: 'error', message: t('row.copyFailed') })
+        return false
+      }, [t])
+
+      const revealPath = useCallback((rel) => {
+        if (typeof rel !== 'string' || rel === '') return
+        call(FILES_PREFIX, 'reveal', { root: browseRoot, rel }).catch((error) => {
+          setBar({ kind: 'error', message: error !== null && error !== undefined && typeof error.message === 'string' ? error.message : t('error.unknown') })
+        })
+      }, [browseRoot, call, t])
+
       const addToChat = useCallback((rel) => {
         const path = typeof rel === 'string' ? rel.trim() : ''
         if (path === '') return
+        const absolute = absoluteFromRoot(browseRoot, path)
+        const promptText = (absolute === '' ? path : absolute) + ' '
         /* 服务可能挂在插件根 ctx 上，也可能要先 inject 才拿得到会话作用域的那一个，
            所以两条路都试：先用 apply 里注入好的引用，其次现场 ctx.get。 */
         const conversation = (chatRef !== null && chatRef !== undefined ? chatRef.current : null)
@@ -3399,15 +4270,79 @@ function Page(props) {
         if (hasService === true) {
           try {
             /* append：输入框里已经有字时接在后面，而不是把用户写了一半的话冲掉。 */
-            input.requestDraftInitialization({ prompt: '@' + path + ' ', whenDraftExists: 'append' })
+            input.requestDraftInitialization({ prompt: promptText, whenDraftExists: 'append' })
             return
           } catch (error) { void error }
         }
-        /* 服务拿不到时退回 DOM：找到对话输入框，把 @路径 插进去。
-           这比弹一句「没有可写入的输入框」有用——用户要的是把文件带进对话。 */
-        if (insertIntoComposer('@' + path + ' ') === true) return
+        /* 服务拿不到时退回 DOM：找到对话输入框，把绝对路径插进去。 */
+        if (insertIntoComposer(promptText) === true) return
         setBar({ kind: 'error', message: t('chat.unavailable') })
-      }, [ctx, t, chatRef])
+      }, [ctx, t, chatRef, browseRoot])
+      /**
+       * Right-click menu for a tree / change row. Uses the page's existing menu
+       * dialog so the look matches the other workbench actions.
+       */
+      const openRowMenu = useCallback((event, row) => {
+        if (event !== null && event !== undefined) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        if (row === null || row === undefined) return
+        const rel = normalizeRel(row.rel === undefined || row.rel === null ? '' : row.rel)
+        if (rel === '') return
+        const isDir = row.dir === true
+        const missing = row.missing === true
+        const change = row.change === undefined ? null : row.change
+        const absolute = absoluteFromRoot(browseRoot, isDir ? rel + '/' : rel)
+        const canIgnore = repoRoot !== '' && repoRootRel !== null
+        const ignore = () => {
+          const repoRel = canIgnore ? toRepoPath(rel, repoRootRel) : null
+          if (repoRel === null || repoRel === '') return
+          openConfirm(t('row.ignoreTitle'), t('row.ignoreBody'), () => {
+            void call(GIT_PREFIX, 'ignore', {
+              repoRoot,
+              path: repoRel,
+              directory: isDir,
+            }).then((data) => {
+              setBar({
+                kind: 'info',
+                message: data !== null && data !== undefined && data.tracked === true
+                  ? t('row.ignoreTrackedDone')
+                  : t('row.ignoreDone'),
+              })
+              setSelectedRel(null)
+              void loadSnapshot()
+              void loadDir('', { force: true })
+            }).catch((error) => {
+              setBar({
+                kind: 'error',
+                message: t('row.ignoreFailed') + (error !== null && error !== undefined && typeof error.message === 'string' ? error.message : t('error.unknown')),
+              })
+            })
+          }, t('row.ignore'))
+        }
+        const items = [
+          menuItem(t('action.addToChat'), () => addToChat(isDir ? rel + '/' : rel)),
+          menuItem(t('row.copyAbsolute'), () => { void copyText(absolute) }),
+          menuItem(t('row.copyRelative'), () => { void copyText(rel) }),
+          missing ? null : menuItem(isDir ? t('row.revealDir') : t('row.reveal'), () => revealPath(rel)),
+          isDir ? null : menuItem(t('row.openEditor'), () => {
+            selectRel(rel)
+            setActiveTab(missing || (change !== null && change.untracked !== true) ? 'diff' : 'source')
+          }),
+          isDir ? menuItem(t('file.newFile'), () => fileOp('newFile', rel, true)) : null,
+          isDir ? menuItem(t('file.newFolderTitle'), () => fileOp('mkdir', rel, true)) : null,
+          missing ? null : menuItem(t('file.rename'), () => fileOp('rename', rel, isDir)),
+          missing ? null : menuItem(t('file.delete'), () => fileOp('delete', rel, isDir), { danger: true }),
+          canIgnore ? menuItem(t('row.ignore'), ignore) : null,
+          menuItem(t('row.refresh'), () => {
+            void loadDir(dirNameOf(rel), { force: true })
+            void loadSnapshot()
+          }),
+        ].filter(item => item !== null)
+        openMenu(baseNameOf(rel), absolute, items)
+      }, [addToChat, copyText, fileOp, browseRoot, loadDir, loadSnapshot, openMenu, openConfirm, revealPath, selectRel, setActiveTab, setBar, setSelectedRel, call, repoRoot, repoRootRel, t])
+
       const stageRow = useCallback((row) => {
         if (row === null || row === undefined) return
         const path = toRepoPath(row.rel, repoRootRel)
@@ -3476,13 +4411,16 @@ function Page(props) {
           const change = entry.change
           if (kind === 'stage' && change !== null && change !== undefined && change.staged === true) continue
           if (kind === 'unstage' && (change === null || change === undefined || change.staged !== true)) continue
+          /* A type group can contain staged rows; bulk discard only touches the
+             worktree side (untracked or unstaged), exactly like before. */
+          if (kind === 'discard' && change !== null && change !== undefined && change.staged === true && change.untracked !== true) continue
           const path = toRepoPath(entry.rel, repoRootRel)
           if (path !== null && path !== '') paths.push(path)
         }
         if (paths.length === 0) return
         if (kind === 'stage') { void runWrite('stage', { repoRoot, paths }, 'stage'); return }
         if (kind === 'unstage') { void runWrite('unstage', { repoRoot, paths }, 'unstage'); return }
-        const untracked = group.key === 'untracked'
+        const untracked = group.untrackedOnly === true
         openConfirm(
           untracked ? t('conflict.deleteManyTitle') : t('conflict.discardManyTitle'),
           (untracked ? t('conflict.deleteManyBody') : t('conflict.discardManyBody')).replace('{n}', String(paths.length)),
@@ -3521,6 +4459,146 @@ function Page(props) {
        * silently act on stash@{0} instead. That is a data-loss bug, not a cosmetic
        * one, so the index is parsed from the ref the list shows.
        */
+      /** Web base URL for a remote name, falling back to the default/first remote. */
+      const remoteWebBase = useCallback((remoteName) => {
+        const wanted = typeof remoteName === 'string' && remoteName !== '' ? remoteName : defaultRemoteName()
+        const entry = remoteState.remotes[wanted]
+          || remoteState.remotes[defaultRemoteName()]
+          || Object.values(remoteState.remotes)[0]
+        return entry === undefined ? '' : webUrlOfRemote(entry.fetch)
+      }, [defaultRemoteName, remoteState])
+
+      /** The original remote URL (for copy), not the derived web URL. */
+      const remoteRawUrl = useCallback((remoteName) => {
+        const wanted = typeof remoteName === 'string' && remoteName !== '' ? remoteName : defaultRemoteName()
+        const entry = remoteState.remotes[wanted]
+          || remoteState.remotes[defaultRemoteName()]
+          || Object.values(remoteState.remotes)[0]
+        if (entry === undefined) return ''
+        return entry.fetch || entry.push || ''
+      }, [defaultRemoteName, remoteState])
+
+      const openExternalUrl = useCallback((url) => {
+        const target = String(url === undefined || url === null ? '' : url)
+        if (target === '') return
+        try {
+          if (typeof window !== 'undefined' && typeof window.open === 'function') {
+            const opened = window.open(target, '_blank', 'noopener,noreferrer')
+            if (opened !== null && opened !== undefined) return
+          }
+        } catch (error) { void error }
+        try {
+          const link = document.createElement('a')
+          link.href = target
+          link.target = '_blank'
+          link.rel = 'noreferrer noopener'
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+        } catch (error) { void error }
+      }, [])
+
+      const openBranchMenu = useCallback((event, kind, branch, remoteName) => {
+        if (event !== null && event !== undefined) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        const items = []
+        const add = (label, onSelect, options) => items.push(menuItem(label, onSelect, options))
+        let title = ''
+        let body = ''
+        if (kind === 'remote-group') {
+          title = String(remoteName || '')
+          body = remoteRawUrl(remoteName)
+          add(t('branch.copyRemoteUrl'), () => { void copyText(body) })
+          const web = remoteWebBase(remoteName)
+          if (web !== '') add(t('branch.openWeb'), () => openExternalUrl(web))
+          add(t('branch.fetchRemote'), () => { void runGitOp('fetch', { repoRoot, remote: remoteName }, 'fetch') })
+        } else if (kind === 'local') {
+          const name = String(branch.name === undefined ? '' : branch.name)
+          title = name
+          if (branch.head !== true) add(t('op.checkout'), () => { void checkoutBranch(name) })
+          if (branch.head !== true) add(t('op.merge'), () => doMerge(name))
+          if (branch.head !== true) add(t('op.rebase'), () => doRebase(name))
+          add(t('branch.push'), () => doBranchPush(branch))
+          add(t('branch.rename'), () => doBranchRename(branch))
+          add(t('branch.upstream'), () => doBranchUpstream(branch))
+          add(t('branch.copyName'), () => { void copyText(name) })
+          const upstream = String(branch.upstream === undefined || branch.upstream === null ? '' : branch.upstream)
+          const remote = upstream.indexOf('/') > 0 ? upstream.slice(0, upstream.indexOf('/')) : defaultRemoteName()
+          const web = branchWebUrl(remoteWebBase(remote), 'branch', name)
+          if (web !== '') add(t('branch.openWeb'), () => openExternalUrl(web))
+          if (branch.head !== true) add(t('action.delete'), () => doBranchDelete(branch), { danger: true })
+        } else if (kind === 'remote') {
+          const full = String(branch.name === undefined ? '' : branch.name)
+          const cut = full.indexOf('/')
+          const remoteNameOfRef = cut > 0 ? full.slice(0, cut) : defaultRemoteName()
+          const rest = cut > 0 ? full.slice(cut + 1) : full
+          title = full
+          add(t('op.checkout'), () => { void checkoutBranch(rest, { create: true, startPoint: full }) })
+          add(t('op.merge'), () => doMerge(full))
+          add(t('op.rebase'), () => doRebase(full))
+          add(t('branch.copyName'), () => { void copyText(full) })
+          const web = branchWebUrl(remoteWebBase(remoteNameOfRef), 'branch', rest)
+          if (web !== '') {
+            body = web
+            add(t('branch.openWeb'), () => openExternalUrl(web))
+          }
+          add(t('branch.deleteRemote'), () => doBranchDeleteRemote(branch), { danger: true })
+        } else if (kind === 'tag') {
+          const name = String(branch.name === undefined ? '' : branch.name)
+          title = 'tag: ' + name
+          add(t('action.tagPush'), () => doTagPushOne(name))
+          add(t('branch.copyName'), () => { void copyText(name) })
+          const web = branchWebUrl(remoteWebBase(defaultRemoteName()), 'tag', name)
+          if (web !== '') {
+            body = web
+            add(t('branch.openWeb'), () => openExternalUrl(web))
+          }
+          add(t('tag.delete'), () => doTagDelete(name), { danger: true })
+          add(t('tag.deleteRemote'), () => doTagDeleteRemote(name), { danger: true })
+        }
+        if (items.length === 0) return
+        openMenu(title, body, items)
+      }, [
+        copyText, defaultRemoteName, doBranchDelete, doBranchDeleteRemote, doBranchPush, doBranchRename,
+        doBranchUpstream, doMerge, doRebase, doTagDelete, doTagDeleteRemote, doTagPushOne, openExternalUrl,
+        openMenu, remoteRawUrl, remoteWebBase, repoRoot, runGitOp, t, checkoutBranch,
+      ])
+
+      /** Right-click menu for one history row. */
+      const openCommitMenu = useCallback((event, commit) => {
+        if (event !== null && event !== undefined) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        if (commit === null || commit === undefined) return
+        const hash = String(commit.hash === undefined || commit.hash === null ? '' : commit.hash)
+        if (hash === '') return
+        const short = hash.slice(0, 8)
+        const subject = String(commit.subject === undefined || commit.subject === null ? '' : commit.subject)
+        const base = remoteWebBase(defaultRemoteName())
+        const commitUrl = base === '' ? '' : base + '/commit/' + encodeURIComponent(hash)
+        const items = [
+          menuItem(t('commit.view'), () => selectCommit(hash)),
+          menuItem(t('commit.copyShort'), () => { void copyText(short) }),
+          menuItem(t('commit.copyFull'), () => { void copyText(hash) }),
+          menuItem(t('commit.copySubject'), () => { void copyText(subject) }),
+          commitUrl === '' ? null : menuItem(t('commit.copyLink'), () => { void copyText(commitUrl) }),
+          commitUrl === '' ? null : menuItem(t('branch.openWeb'), () => openExternalUrl(commitUrl)),
+          menuItem(t('commit.branchHere'), () => doBranchCreate(hash)),
+          menuItem(t('action.tagCreate'), () => doTagCreate(hash)),
+          menuItem(t('op.cherryPick'), () => doCherryPick(hash)),
+          menuItem(t('op.revert'), () => doRevert(hash)),
+          menuItem(t('op.reset'), () => doReset(hash)),
+          menuItem(t('commit.wholeBtn'), () => setCommitFile({ rel: null, rev: hash })),
+        ].filter(item => item !== null)
+        openMenu(short + ' — ' + subject, commitUrl, items)
+      }, [
+        copyText, defaultRemoteName, doBranchCreate, doCherryPick, doReset, doRevert, doTagCreate,
+        openExternalUrl, openMenu, remoteWebBase, selectCommit, setCommitFile, t,
+      ])
+
       const stashAction = useCallback((method, item) => {
         const ref = item !== null && item !== undefined && typeof item.ref === 'string' ? item.ref : ''
         const match = /\{(\d+)\}/.exec(ref)
@@ -3538,7 +4616,10 @@ function Page(props) {
       const doCommit = useCallback(() => {
         const message = commitMessage.trim()
         if (message === '') return
-        void runWrite('commit', { repoRoot, message, amend }, 'commit').then(() => {
+        void runWrite('commit', { repoRoot, message, amend }, 'commit').then((ok) => {
+          /* A failed commit (hook, missing identity, conflict...) keeps both the
+             message and the amend flag so the user can fix the cause and retry. */
+          if (ok !== true) return
           setCommitMessage('')
           setAmend(false)
         })
@@ -3662,50 +4743,44 @@ function Page(props) {
         const isActive = row.rel === selectedRel
         return E('div', {
           key: row.key,
-          className: 'scw-row' + (row.dir ? ' is-dir' : '') + (isActive ? ' is-active' : ''),
+          className: 'scw-row' + (row.dir ? ' is-dir' : '') + (isActive ? ' is-active' : '') + (row.missing === true ? ' is-missing' : ''),
           role: 'button',
           tabIndex: 0,
-          title: row.rel,
+          title: row.rel + (row.missing === true ? '\n' + t('file.deletedHint') : ''),
           style: box,
           onClick: () => {
+            /* 目录只做展开/收起：选中目录会把内容区换成目录清单（单栏时整块盖住
+               列表），这不是点文件夹时预期的事。 */
+            if (row.dir) { toggleDir(row.rel); return }
             selectRel(row.rel)
-            if (row.dir) toggleDir(row.rel)
-            else setActiveTab('source')
+            /* A deleted file has no source to read: show what the commit removed. */
+            setActiveTab(row.missing === true ? 'diff' : 'source')
           },
           onKeyDown: (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return
             event.preventDefault()
+            if (row.dir) { toggleDir(row.rel); return }
             selectRel(row.rel)
-            if (row.dir) toggleDir(row.rel)
-            else setActiveTab('source')
+            setActiveTab(row.missing === true ? 'diff' : 'source')
           },
+          onContextMenu: (event) => openRowMenu(event, row),
         },
         E('span', { className: 'scw-rowChevron' }, row.dir ? E(Icon, { name: row.expanded ? 'chevronDown' : 'chevronRight', size: 11 }) : null),
-        E(Icon, { name: row.dir ? 'folder' : 'file', size: 13, className: 'scw-rowIcon' }),
+        /* The status letter takes the icon slot on a changed file: it is the thing
+           the reader scans for, and the file/folder glyph adds nothing next to it.
+           Unchanged files keep their glyph. */
+        row.dir === true || row.letter === ''
+          ? E(Icon, { name: row.dir ? 'folder' : 'file', size: 13, className: 'scw-rowIcon' })
+          : E('span', { className: 'scw-letter ' + row.colorClass }, row.letter),
         E('span', { className: 'scw-rowName' + (row.dir ? ' is-dir' : '') }, row.name),
         row.dir === true
           ? (row.hasDirtyChild === true ? E('span', { className: 'scw-dirDot', 'aria-hidden': 'true' }) : null)
-          : (row.letter !== '' ? E('span', { className: 'scw-letter ' + row.colorClass }, row.letter) : null),
+          : E('span', { className: 'scw-rowDir is-after' }, dirNameOf(row.rel)),
         row.dir === false && row.change !== null && row.change !== undefined && (row.added > 0 || row.deleted > 0)
           ? E('span', { className: 'scw-stat' },
             row.added > 0 ? E('span', { className: 'scw-statAdd' }, '+' + row.added) : null,
             row.deleted > 0 ? E('span', { className: 'scw-statDel' }, '−' + row.deleted) : null)
           : null,
-        /* 文件行上的「加入对话」按钮。放在这里而不是只放在 changeActions 里：
-           那个函数只对「有变更的文件」渲染，而文件模式下大多数行没有 change，
-           于是按钮在最常用的地方反而看不见。 */
-        /* 目录也支持：引用一个目录让 agent 自己去翻，比逐个文件点更快。
-           目录引用带尾斜杠，DSH 的引用面板据此走文件夹那条分支。 */
-        E('span', { className: 'scw-rowActions' },
-          E('button', {
-            type: 'button',
-            className: 'scw-rowBtn',
-            title: t('action.addToChat') + ' — ' + row.rel,
-            onClick: (event) => {
-              event.stopPropagation()
-              addToChat(row.dir === true ? row.rel + '/' : row.rel)
-            },
-          }, '@')),
         row.dir === false && row.change !== null && row.change !== undefined
           ? E('span', { className: 'scw-rowActions' },
             E('button', {
@@ -3743,15 +4818,18 @@ function Page(props) {
       const header = E('div', { className: 'scw-head' },
         E('button', {
           type: 'button',
-          className: 'scw-repoChip',
+          className: 'scw-repoChip' + (hosted ? ' is-iconOnly' : ''),
           title: t('root.title') + ' — ' + (repoRoot === '' ? workspaceRoot : repoRoot),
           /* 合并成一个入口：对话框里既有「最近打开」，也能浏览其它目录。 */
   onClick: () => openBrowse(),
         },
         E(Icon, { name: 'folder', size: 13 }),
-        E('span', { className: 'scw-repoName' }, repoLabel === '' ? t('empty.noRoot') : repoLabel),
-        E(Icon, { name: 'chevronDown', size: 10 })),
-        branchLabel === '' ? null : E('span', { className: 'scw-branch' }, branchLabel),
+        /* Hosted by the workbench shell: the context bar above already shows the
+           repo name, the branch and the change count, so this row keeps only the
+           ENTRY (icon + tooltip) and the actions that are unique to this page. */
+        hosted ? null : E('span', { className: 'scw-repoName' }, repoLabel === '' ? t('empty.noRoot') : repoLabel),
+        hosted ? null : E(Icon, { name: 'chevronDown', size: 10 })),
+        hosted || branchLabel === '' ? null : E('span', { className: 'scw-branch' }, branchLabel),
         E('span', { className: 'scw-spacer' }),
         /* Sync lives in the header because it acts on the repository, not on
            whatever the left pane happens to be showing. */
@@ -3890,8 +4968,6 @@ function Page(props) {
 
         const modeToolbar = (() => {
           if (treeMode === 'changes') {
-            const groups = buildChangeGroups(statusIndex)
-            const unstagedCount = groups[2].rows.length + groups[3].rows.length
             const hasChanges = changeTotal > 0
             return E('div', { className: 'scw-toolbar' },
               /* 直接摆出来，不再折进「⋯」：窄侧栏里那个省略号本身就把整行挤乱了。 */
@@ -3905,7 +4981,7 @@ function Page(props) {
               ]), { primary: true }),
               toolbarIcon('edit', t('file.rename'), () => { void fileOp('rename') }, { disabled: selectedRel === null || selectedIsDir === true }),
               toolbarIcon('trash', t('file.delete'), () => { void fileOp('delete') }, { danger: true, disabled: selectedRel === null }),
-              toolbarIcon('filter', t('head.onlyChanges'), () => setOnlyChanges((value) => !value), { primary: onlyChanges }))
+              toolbarIcon('filter', onlyChanges ? t('head.onlyChangesOff') : t('head.onlyChanges'), () => setOnlyChanges((value) => !value), { primary: onlyChanges }))
           }
           if (treeMode === 'history') {
             return E('div', { className: 'scw-toolbar' },
@@ -3914,7 +4990,15 @@ function Page(props) {
           }
           if (treeMode === 'branches') {
             return E('div', { className: 'scw-toolbar' },
-              toolbarIcon('plus', t('action.branchCreate'), () => doBranchCreate(), { primary: true }))
+              toolbarIcon('plus', t('action.branchCreate'), () => doBranchCreate(), { primary: true }),
+              toolbarIcon('tag', t('action.tagCreate'), () => doTagCreate(), { disabled: busy }),
+              E('input', {
+                className: 'scw-branchFilter',
+                value: branchFilter,
+                placeholder: t('branches.filterPlaceholder'),
+                spellCheck: false,
+                onChange: (event) => setBranchFilter(event.target.value),
+              }))
           }
           return E('div', { className: 'scw-toolbar' },
             toolbarIcon('plus', t('stash.pushTitle'), () => doStashPush(), { primary: true, disabled: changeTotal === 0 }))
@@ -3980,19 +5064,6 @@ function Page(props) {
          */
         const changeActions = (rel, change) => {
           const actions = []
-          /* 每个文件都能「加入对话」：把 @路径 写进输入框最前面。
-             DSH 的引用面板认得 @path，agent 会按需读它——和 better-sidebar 的
-             「悬浮 @文件 一键引用进输入框」是同一个路子。 */
-          actions.push(E('button', {
-            key: 'addToChat',
-            type: 'button',
-            className: 'scw-rowBtn',
-            title: t('action.addToChat') + ' — ' + rel,
-            onClick: (event) => {
-              event.stopPropagation()
-              addToChat(rel)
-            },
-          }, '@'))
           if (change.conflicted === true) {
             const resolve = (side, label, hint) => E('button', {
               key: side,
@@ -4035,6 +5106,15 @@ function Page(props) {
           return E('span', { className: 'scw-rowActions' }, actions)
         }
 
+        const toggleChangeGroup = (key) => {
+          setCollapsedChangeGroups((previous) => {
+            const next = new Set(previous)
+            if (next.has(key)) next.delete(key)
+            else next.add(key)
+            return next
+          })
+        }
+
         const changesPanel = (() => {
           if (changeTotal === 0) {
             return E('div', { className: 'scw-treeState' }, t('changes.clean'))
@@ -4043,13 +5123,33 @@ function Page(props) {
           const out = []
           for (const group of groups) {
             if (group.rows.length === 0) continue
-            /* Bulk actions live on the group header: "stage everything I just edited"
-               and "drop the build output I did not mean to add" are different
-               intentions, and the groups already separate them. */
-            const canStage = group.key === 'unstaged' || group.key === 'untracked'
-            const canUnstage = group.key === 'staged'
-            const canDiscard = group.key === 'unstaged' || group.key === 'untracked'
-            out.push(E('div', { key: 'g:' + group.key, className: 'scw-group' },
+            /* Bulk actions stay on the header; a type group can mix staged and
+               unstaged rows, so each button is offered only when some row in it
+               actually satisfies that action. */
+            const canStage = group.rows.some(({ change }) => change.conflicted !== true && change.staged !== true)
+            const canUnstage = group.rows.some(({ change }) => change.staged === true)
+            const canDiscard = group.rows.some(({ change }) => change.conflicted !== true && change.staged !== true)
+            const untrackedOnly = group.untrackedOnly === true
+            const collapsed = collapsedChangeGroups.has(group.key)
+            const bulk = (event, kind) => {
+              event.stopPropagation()
+              bulkGroup(group, kind)
+            }
+            out.push(E('div', {
+              key: 'g:' + group.key,
+              className: 'scw-group' + (collapsed ? ' is-collapsed' : ''),
+              role: 'button',
+              tabIndex: 0,
+              'aria-expanded': collapsed ? 'false' : 'true',
+              title: collapsed ? t('group.expand') : t('group.collapse'),
+              onClick: () => toggleChangeGroup(group.key),
+              onKeyDown: (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return
+                event.preventDefault()
+                toggleChangeGroup(group.key)
+              },
+            },
+              E('span', { className: 'scw-groupChevron' }, E(Icon, { name: collapsed ? 'chevronRight' : 'chevronDown', size: 11 })),
               E('span', { className: 'scw-groupName' }, t('group.' + group.key)),
               E('span', { className: 'scw-groupCount' }, String(group.rows.length)),
               E('span', { className: 'scw-spacer' }),
@@ -4059,7 +5159,7 @@ function Page(props) {
                   className: 'scw-bulkBtn',
                   disabled: busyAction !== null,
                   title: t('action.stageGroupTitle'),
-                  onClick: () => bulkGroup(group, 'stage'),
+                  onClick: (event) => bulk(event, 'stage'),
                 }, t('action.stageAll'))
                 : null,
               canUnstage
@@ -4068,7 +5168,7 @@ function Page(props) {
                   className: 'scw-bulkBtn',
                   disabled: busyAction !== null,
                   title: t('action.unstageGroupTitle'),
-                  onClick: () => bulkGroup(group, 'unstage'),
+                  onClick: (event) => bulk(event, 'unstage'),
                 }, t('action.unstageAll'))
                 : null,
               canDiscard
@@ -4076,10 +5176,11 @@ function Page(props) {
                   type: 'button',
                   className: 'scw-bulkBtn is-danger',
                   disabled: busyAction !== null,
-                  title: group.key === 'untracked' ? t('action.deleteGroupTitle') : t('action.discardGroupTitle'),
-                  onClick: () => bulkGroup(group, 'discard'),
-                }, group.key === 'untracked' ? t('action.deleteAll') : t('action.discardAll'))
+                  title: untrackedOnly ? t('action.deleteGroupTitle') : t('action.discardGroupTitle'),
+                  onClick: (event) => bulk(event, 'discard'),
+                }, untrackedOnly ? t('action.deleteAll') : t('action.discardAll'))
                 : null))
+            if (collapsed) continue
             for (const { rel, change } of group.rows) {
               const letter = statusLetterOf(change)
               const isActive = rel === selectedRel
@@ -4089,6 +5190,8 @@ function Page(props) {
                 role: 'button',
                 tabIndex: 0,
                 title: rel,
+                onMouseEnter: () => prefetchWorktreeDiff(rel, change),
+                onFocus: () => prefetchWorktreeDiff(rel, change),
                 onClick: () => {
                   selectRel(rel)
                   setActiveTab(change !== null && change !== undefined && change.untracked !== true ? 'diff' : 'source')
@@ -4099,16 +5202,33 @@ function Page(props) {
                   selectRel(rel)
                   setActiveTab(change !== null && change !== undefined && change.untracked !== true ? 'diff' : 'source')
                 },
+                onContextMenu: (event) => openRowMenu(event, { rel, dir: false, change }),
               },
               E('span', { className: 'scw-rowChevron' }),
-              E(Icon, { name: 'file', size: 13, className: 'scw-rowIcon' }),
+              /* Letter first: on a change list the status IS the leading column the
+                 eye scans; the file glyph was pure noise in front of it. */
+              letter === ''
+                ? E(Icon, { name: 'file', size: 13, className: 'scw-rowIcon' })
+                : E('span', { className: 'scw-letter ' + statusColorClass(letter) }, letter),
               E('span', { className: 'scw-rowName' }, baseNameOf(rel)),
                 /* GitCraft's arrangement: the NAME stays intact and the directory
                    follows in a dimmer, shrinkable column. The name never gets squeezed —
                    that was the original complaint — but the location is still readable
                    at a glance instead of hiding in a tooltip. */
                 E('span', { className: 'scw-rowDir is-after' }, dirNameOf(rel)),
-              letter === '' ? null : E('span', { className: 'scw-letter ' + statusColorClass(letter) }, letter),
+              /* Staged rows show what is in the index; unstaged rows show the
+                 worktree edits. Reading only `change.added` (the staged side)
+                 left every unstaged file without its +N −N. */
+              (() => {
+                if (change === null || change === undefined) return null
+                const staged = change.staged === true
+                const added = staged ? change.added : change.unstagedAdded
+                const deleted = staged ? change.deleted : change.unstagedDeleted
+                if (!(added > 0) && !(deleted > 0)) return null
+                return E('span', { className: 'scw-stat' },
+                  added > 0 ? E('span', { className: 'scw-statAdd' }, '+' + added) : null,
+                  deleted > 0 ? E('span', { className: 'scw-statDel' }, '−' + deleted) : null)
+              })(),
               changeActions(rel, change)))
             }
           }
@@ -4264,11 +5384,14 @@ function Page(props) {
                     tabIndex: 0,
                     title: commit.hash + '\n' + commit.subject + (refSummary === '' ? '' : '\n' + refSummary),
                     onClick: () => selectCommit(commit.hash),
+                    onMouseEnter: () => prefetchCommitDetail(commit.hash),
+                    onFocus: () => prefetchCommitDetail(commit.hash),
                     onKeyDown: (event) => {
                       if (event.key !== 'Enter') return
                       event.preventDefault()
                       selectCommit(commit.hash)
                     },
+                    onContextMenu: (event) => openCommitMenu(event, commit),
                   },
                   graphCell(graphRow),
                 E('span', { className: 'scw-commitRefs' }, refChipsOf(commit)),
@@ -4311,9 +5434,11 @@ function Page(props) {
              is not a branch, it just mirrors one. Listing it produced a bare "origin". */
           return refName.endsWith('/HEAD') === false
         })
-        const local = all.filter((branch) => kindOf(branch) === 'local')
-        const remote = all.filter((branch) => kindOf(branch) === 'remote')
-        const tags = all.filter((branch) => kindOf(branch) === 'tag')
+        const query = branchFilter.trim().toLowerCase()
+        const matches = (branch) => query === '' || String(branch.name || '').toLowerCase().includes(query)
+        const local = all.filter((branch) => kindOf(branch) === 'local' && matches(branch))
+        const remote = all.filter((branch) => kindOf(branch) === 'remote' && matches(branch))
+        const tags = all.filter((branch) => kindOf(branch) === 'tag' && matches(branch))
         if (local.length + remote.length + tags.length === 0) return E('div', { className: 'scw-treeState' }, t('branches.empty'))
 
         const section = (key, title, hint, list, emptyText, render) => E('div', { className: 'scw-branchGroup', key },
@@ -4327,6 +5452,7 @@ function Page(props) {
           className: 'scw-branchRow' + (branch.head === true ? ' is-head' : ''),
           role: 'button',
           tabIndex: 0,
+          onContextMenu: (event) => openBranchMenu(event, 'local', branch),
           title: (branch.head === true ? t('branches.currentHint') + '\n' : '')
             + (branch.upstream === null || branch.upstream === undefined ? t('branches.noUpstream') : t('branches.tracks') + ' ' + branch.upstream + '\n')
             + (branch.subject || ''),
@@ -4347,6 +5473,8 @@ function Page(props) {
         branch.head === true ? E('span', { className: 'scw-headChip' }, 'HEAD') : null,
         branch.ahead > 0 ? E('span', { className: 'scw-branchAhead', title: t('branches.aheadHint') }, '↑' + branch.ahead) : null,
         branch.behind > 0 ? E('span', { className: 'scw-branchBehind', title: t('branches.behindHint') }, '↓' + branch.behind) : null,
+        branch.subject === undefined || branch.subject === '' ? null : E('span', { className: 'scw-branchSubject', title: branch.subject }, branch.subject),
+        branch.time === undefined || branch.time === 0 ? null : E('span', { className: 'scw-branchTime' }, relativeTime(branch.time, t)),
         /* Per-branch actions live on the row and only appear on hover, so the list
            stays readable. They act on THIS branch, which is why they are here and not
            in the toolbar (where "which branch?" would be a guess). */
@@ -4371,7 +5499,21 @@ function Page(props) {
             disabled: busy,
             title: t('branch.deleteTitle') + ' — ' + branch.name,
             onClick: (event) => { event.stopPropagation(); doBranchDelete(branch) },
-          }, t('action.delete'))))
+          }, t('action.delete')),
+          branch.head === true ? null : E('button', {
+            type: 'button',
+            className: 'scw-rowBtn',
+            disabled: busy,
+            title: t('branch.more') + ' — ' + branch.name,
+            onClick: (event) => {
+              event.stopPropagation()
+              openMenu(t('branch.more') + ' — ' + branch.name, t('branch.moreBody'), [
+                { label: t('branch.rename'), onSelect: () => doBranchRename(branch) },
+                { label: t('branch.upstream'), onSelect: () => doBranchUpstream(branch) },
+                { label: t('branch.push'), onSelect: () => doBranchPush(branch) },
+              ])
+            },
+          }, '⋯')))
 
         /* Remote branches and tags are REFERENCES, not working states: checking one out
            directly gives a detached HEAD, which is not what a click should ever do by
@@ -4411,7 +5553,14 @@ function Page(props) {
                 disabled: busy,
                 title: t('op.rebaseTitle') + ' — ' + full,
                 onClick: (event) => { event.stopPropagation(); doRebase(full) },
-              }, t('op.rebase')))
+              }, t('op.rebase')),
+              E('button', {
+                type: 'button',
+                className: 'scw-rowBtn is-danger',
+                disabled: busy,
+                title: t('branch.deleteRemoteTitle') + ' — ' + full,
+                onClick: (event) => { event.stopPropagation(); doBranchDeleteRemote(branch) },
+              }, t('action.delete')))
             : E('span', { className: 'scw-rowActions' },
               E('button', {
                 type: 'button',
@@ -4426,11 +5575,19 @@ function Page(props) {
                 disabled: busy,
                 title: t('tag.deleteTitle') + ' — ' + full,
                 onClick: (event) => { event.stopPropagation(); doTagDelete(full) },
-              }, t('action.delete')))
+              }, t('action.delete')),
+              E('button', {
+                type: 'button',
+                className: 'scw-rowBtn is-danger',
+                disabled: busy,
+                title: t('tag.deleteRemoteTitle') + ' — ' + full,
+                onClick: (event) => { event.stopPropagation(); doTagDeleteRemote(full) },
+              }, t('tag.deleteRemote')))
           return E('div', {
             key: branch.refName === undefined ? branch.name : branch.refName,
             className: 'scw-branchRow is-ref',
             title: full + '\n' + (branch.subject || '') + '\n' + String(branch.short === undefined ? '' : branch.short),
+            onContextMenu: (event) => openBranchMenu(event, isRemote === true ? 'remote' : 'tag', branch),
           },
           E('span', { className: 'scw-branchIcon' }, E(Icon, { name: isRemote === true ? 'download' : 'tag', size: 12 })),
           E('span', { className: 'scw-branchName' },
@@ -4438,6 +5595,59 @@ function Page(props) {
             rest),
           E('span', { className: 'scw-branchHash' }, String(branch.short === undefined ? '' : branch.short)),
           actions)
+        }
+
+        /* One level of folder grouping: `feature/login` + `feature/signup` collapse
+           under a `feature/` row, like SourceTree's tree. Only groups with 2+ members
+           become folders — a single child is cheaper to read as a plain row. */
+        const folderNodes = (list, keyPrefix, render) => {
+          const nodes = []
+          const buckets = new Map()
+          const order = []
+          for (const branch of list) {
+            const full = String(branch.name === undefined || branch.name === null ? '' : branch.name)
+            const cut = full.indexOf('/')
+            const prefix = cut > 0 ? full.slice(0, cut + 1) : ''
+            if (!buckets.has(prefix)) { buckets.set(prefix, []); order.push(prefix) }
+            buckets.get(prefix).push(branch)
+          }
+          for (const prefix of order) {
+            const group = buckets.get(prefix)
+            if (prefix === '' || group.length < 2) {
+              for (const branch of group) nodes.push(render(branch))
+              continue
+            }
+            const groupKey = keyPrefix + ':' + prefix
+            const collapsed = collapsedBranchFolders.has(groupKey)
+            nodes.push(E('div', {
+              key: 'folder:' + groupKey,
+              className: 'scw-branchFolder',
+              role: 'button',
+              tabIndex: 0,
+              title: prefix,
+              onClick: () => setCollapsedBranchFolders((previous) => {
+                const next = new Set(previous)
+                if (next.has(groupKey)) next.delete(groupKey)
+                else next.add(groupKey)
+                return next
+              }),
+              onKeyDown: (event) => {
+                if (event.key !== 'Enter') return
+                event.preventDefault()
+                setCollapsedBranchFolders((previous) => {
+                  const next = new Set(previous)
+                  if (next.has(groupKey)) next.delete(groupKey)
+                  else next.add(groupKey)
+                  return next
+                })
+              },
+            },
+            E('span', { className: 'scw-branchIcon' }, E(Icon, { name: collapsed ? 'chevronRight' : 'chevronDown', size: 11 })),
+            E('span', { className: 'scw-branchFolderName' }, prefix),
+            E('span', { className: 'scw-groupCount' }, String(group.length))))
+            if (!collapsed) for (const branch of group) nodes.push(render(branch))
+          }
+          return nodes
         }
 
         /* Remote branches grouped under the REMOTE they live on — `origin` is a heading,
@@ -4452,20 +5662,41 @@ function Page(props) {
             if (!byRemote.has(remoteName)) byRemote.set(remoteName, [])
             byRemote.get(remoteName).push(branch)
           }
+          /* Configured remotes without a fetched remote-tracking ref still deserve a
+             heading: the remote web address is the thing the reader wants here. */
+          for (const name of Object.keys(remoteState.remotes)) {
+            if (!byRemote.has(name)) byRemote.set(name, [])
+          }
           return byRemote
         })()
         const remoteNodes = []
         for (const [remoteName, list] of remoteGroups) {
-          remoteNodes.push(E('div', { key: 'rm:' + remoteName, className: 'scw-remoteGroup' },
-            E('span', { className: 'scw-branchIcon' }, E(Icon, { name: 'download', size: 12 })),
-            E('span', { className: 'scw-branchName' }, remoteName),
-            E('span', { className: 'scw-groupCount' }, String(list.length))))
-          for (const branch of list) remoteNodes.push(refRow(branch))
+          remoteNodes.push(E('div', {
+            key: 'rm:' + remoteName,
+            className: 'scw-remoteGroup',
+            onContextMenu: (event) => openBranchMenu(event, 'remote-group', null, remoteName),
+          },
+          E('span', { className: 'scw-branchIcon' }, E(Icon, { name: 'download', size: 12 })),
+          E('span', { className: 'scw-branchName' }, remoteName),
+          E('span', { className: 'scw-groupCount' }, String(list.length))))
+          const base = remoteWebBase(remoteName)
+          if (base !== '') {
+            remoteNodes.push(E('div', { className: 'scw-remoteUrlRow', key: 'url:' + remoteName },
+              E('a', {
+                className: 'scw-remoteUrl',
+                href: base,
+                target: '_blank',
+                rel: 'noreferrer noopener',
+                title: base,
+                onClick: (event) => event.stopPropagation(),
+              }, base)))
+          }
+          for (const node of folderNodes(list, 'remote:' + remoteName, refRow)) remoteNodes.push(node)
         }
 
         return E('div', { className: 'scw-tree scw-list' },
           E('div', { className: 'scw-branchLegend' }, t('branches.legend')),
-          section('local', t('branches.local'), t('branches.localHint'), local, t('branches.noLocal'), localRow),
+          section('local', t('branches.local'), t('branches.localHint'), folderNodes(local, 'local', localRow), t('branches.noLocal'), (node) => node),
           section('remote', t('branches.remote'), t('branches.remoteHint'), remoteNodes, t('branches.noRemote'), (node) => node),
           section('tag', t('branches.tags'), t('branches.tagHint'), tags, t('branches.noTags'), refRow))
       })()
@@ -4625,6 +5856,8 @@ function Page(props) {
               role: 'button',
               tabIndex: 0,
               onClick: () => setCommitFile({ rel: normalizeRel(file.path), rev: detail.hash }),
+              onMouseEnter: () => prefetchCommitDiff(detail.hash, file.path),
+              onFocus: () => prefetchCommitDiff(detail.hash, file.path),
               onKeyDown: (event) => {
                 if (event.key !== 'Enter') return
                 event.preventDefault()
@@ -4688,13 +5921,6 @@ function Page(props) {
             'aria-label': diffMode === 'unified' ? t('diff.modeSplit') : t('diff.modeUnified'),
             onClick: () => setDiffMode((value) => (value === 'unified' ? 'split' : 'unified')),
           }, E(Icon, { name: 'source', size: 11 }), diffMode === 'unified' ? t('diff.modeSplit') : t('diff.modeUnified'))),
-          /* 弹窗查看：内容区铺满窗口，Esc 退出。审查大文件时比挤在下半屏舒服。 */
-          E('button', {
-            className: 'scw-modeToggle',
-            title: contentModal === true ? t('modal.close') : t('modal.open'),
-            'aria-label': contentModal === true ? t('modal.close') : t('modal.open'),
-            onClick: () => setContentModal((value) => value !== true),
-          }, E(Icon, { name: 'source', size: 11 }), contentModal === true ? t('modal.close') : t('modal.open')),
         E('div', { className: 'scw-paneHost' },
           E('div', { className: 'scw-paneSlot', ref: commitRefCb })))
 
@@ -4753,22 +5979,87 @@ function Page(props) {
         if (blameState.status === 'loading') return E('div', { className: 'scw-paneState' }, t('state.loading'))
         if (blameState.status === 'error') return E('div', { className: 'scw-paneState is-error' }, blameState.error)
         if (blameState.lines.length === 0) return E('div', { className: 'scw-paneState' }, t('blame.empty'))
-        return E('div', { className: 'scw-blameList' },
-          blameState.lines.map((line, index) => {
-            const hash = typeof line.hash === 'string' ? line.hash : ''
-            const author = typeof line.author === 'string' ? line.author : ''
-            const summary = typeof line.summary === 'string' ? line.summary : ''
-            const number = Number.isFinite(line.finalLine) ? line.finalLine : index + 1
-            return E('div', {
-              key: index,
-              className: 'scw-blameRow',
-              title: author + (summary === '' ? '' : ' — ' + summary) + (hash === '' ? '' : '\n' + hash),
-            },
-            E('span', { className: 'scw-blameHash' }, hash.slice(0, 7)),
-            E('span', { className: 'scw-blameMeta' }, author.slice(0, 16)),
-            E('span', { className: 'scw-blameLine' }, String(number)),
-            E('span', { className: 'scw-blameText' }, typeof line.content === 'string' ? line.content : ''))
-          }))
+        /* `git blame --porcelain` prints the author/hash header only for the FIRST
+           line of each contiguous group; the remaining lines carry just the hash.
+           Inheriting the previous author is what makes every row answer "whose
+           line is this?", and it is also what gives the continuation rows a colour
+           (an empty author used to map to a transparent one — invisible text). */
+        /* Pair each line with ITS COMMIT's author. `--porcelain` omits the author
+           block for a commit it already printed once, and that commit can appear
+           again in a LATER block — inheriting the previous line's author there
+           pairs the wrong person with the hash. Resolve by hash, never by
+           neighbour; fall back to the neighbour only when the hash is unchanged. */
+        const metaByHash = new Map()
+        for (const line of blameState.lines) {
+          const hash = typeof line.hash === 'string' ? line.hash : ''
+          const author = typeof line.author === 'string' ? line.author : ''
+          if (hash === '' || author === '' || metaByHash.has(hash)) continue
+          metaByHash.set(hash, { author, summary: typeof line.summary === 'string' ? line.summary : '' })
+        }
+        const effective = []
+        const authorsInOrder = []
+        const colorOfAuthor = new Map()
+        let previousAuthor = ''
+        let previousHash = ''
+        for (let index = 0; index < blameState.lines.length; index += 1) {
+          const line = blameState.lines[index]
+          const rawHash = typeof line.hash === 'string' ? line.hash : ''
+          const rawAuthor = typeof line.author === 'string' ? line.author : ''
+          const rawSummary = typeof line.summary === 'string' ? line.summary : ''
+          const hash = rawHash !== '' ? rawHash : previousHash
+          const known = rawHash !== '' ? metaByHash.get(rawHash) : undefined
+          const author = rawAuthor !== ''
+            ? rawAuthor
+            : (known !== undefined ? known.author : (hash === previousHash ? previousAuthor : ''))
+          const summary = rawSummary !== ''
+            ? rawSummary
+            : (known !== undefined ? known.summary : '')
+          /* A new contiguous block starts when the HASH changes — the author block
+             being present or not is git's encoding detail, not a boundary. */
+          const groupStart = index === 0 || hash !== previousHash
+          const number = Number.isFinite(line.finalLine) ? line.finalLine : index + 1
+          if (author !== '' && colorOfAuthor.has(author) === false) {
+            /* Colours are assigned in ORDER OF APPEARANCE inside this file: a hash
+               can collide, and two people landing on the same swatch is exactly the
+               "everything looks the same" complaint. Twelve distinct hues, so the
+               first twelve authors of a file are always unique. */
+            const color = BLAME_COLORS[authorsInOrder.length % BLAME_COLORS.length]
+            colorOfAuthor.set(author, color)
+            authorsInOrder.push({ author, color })
+          }
+          previousAuthor = author
+          previousHash = hash
+          effective.push({
+            author,
+            hash,
+            summary,
+            groupStart,
+            number,
+            content: typeof line.content === 'string' ? line.content : '',
+          })
+        }
+        const rows = effective.map((line, index) => {
+          const color = colorOfAuthor.get(line.author) || 'transparent'
+          return E('div', {
+            key: index,
+            className: 'scw-blameRow' + (line.groupStart ? ' is-group-start' : ''),
+            title: line.author + (line.summary === '' ? '' : ' — ' + line.summary) + (line.hash === '' ? '' : '\n' + line.hash),
+            style: { '--blame-color': color },
+          },
+          E('span', { className: 'scw-blameHash' + (line.groupStart ? '' : ' is-cont') }, line.hash.slice(0, 7)),
+          E('span', { className: 'scw-blameMeta' + (line.groupStart ? '' : ' is-cont') }, line.author.slice(0, 16)),
+          E('span', { className: 'scw-blameLine' }, String(line.number)),
+          E('span', { className: 'scw-blameText' }, line.content))
+        })
+        return E('div', { className: 'scw-blameWrap' },
+          authorsInOrder.length > 1
+            ? E('div', { className: 'scw-blameLegend' },
+              E('span', { className: 'scw-blameLegendLabel' }, t('blame.authors')),
+              authorsInOrder.map((entry) => E('span', { key: entry.author, className: 'scw-blameChip' },
+                E('span', { className: 'scw-blameSwatch', style: { background: entry.color } }),
+                entry.author.slice(0, 24))))
+            : null,
+          E('div', { className: 'scw-blameList' }, rows))
       }
       /* 右栏值得打开吗？ */
       const hasDoc = (commitFile !== null && commitFile !== undefined)
@@ -4802,7 +6093,14 @@ function Page(props) {
         if (selectedRel === null) {
           return E('div', { className: 'scw-empty' },
             E('div', { className: 'scw-emptyTitle' }, changeCount === 0 ? t('empty.clean') : t('empty.noFile')),
-            E('div', { className: 'scw-emptyHint' }, t('empty.noFileHint')))
+            E('div', { className: 'scw-emptyHint' }, t(stacked === true ? 'empty.noFileHintDrawer' : 'empty.noFileHint')),
+            stacked === true
+              ? null
+              : E('div', { className: 'scw-emptySummary' },
+                E('span', { className: 'scw-emptyBranch' }, E(Icon, { name: 'branch', size: 12 }), branchLabel === '' ? t('empty.noBranch') : branchLabel),
+                E('span', { className: 'scw-emptyStat' }, E('b', null, String(changeCount)), t('side.changes')),
+                E('span', { className: 'scw-emptyStat' }, E('b', null, String(ahead)), t('side.ahead')),
+                E('span', { className: 'scw-emptyStat' }, E('b', null, String(stagedCount)), t('side.staged'))))
         }
         /* A directory is a selection but not a document: say so, instead of
            handing the path to a file viewer and showing its complaint. */
@@ -4853,19 +6151,8 @@ function Page(props) {
             }, E(Icon, { name: 'tag', size: 12 }), t('tab.blame')),
             E('span', {
               className: 'scw-tabFile',
-              title: selectedRel + '（双击弹窗查看）',
-              /* 双击标题就弹窗：看大文件时不用去右边找按钮，手上自然动作。 */
-              onDoubleClick: () => setContentModal(true),
+              title: selectedRel,
             }, selectedRel),
-            /* 弹窗查看：任何标签下都有用（源码/变更/历史/逐行作者），所以不像下面那个
-               分栏开关一样只在 diff 里出现。 */
-            E('button', {
-              type: 'button',
-              className: 'scw-modalBtn',
-              title: contentModal === true ? t('modal.close') : t('modal.open'),
-              'aria-label': contentModal === true ? t('modal.close') : t('modal.open'),
-              onClick: () => setContentModal((value) => value !== true),
-            }, E(Icon, { name: 'source', size: 11 }), contentModal === true ? t('modal.close') : t('modal.open')),
             /* Diff layout, owned by the reader. Only meaningful where a patch is
                shown, so it appears with the diff tab. */
             activeTab === 'diff'
@@ -4876,6 +6163,18 @@ function Page(props) {
                 'aria-label': diffMode === 'unified' ? t('diff.modeSplit') : t('diff.modeUnified'),
                 onClick: () => setDiffMode((value) => (value === 'unified' ? 'split' : 'unified')),
               }, E(Icon, { name: 'source', size: 11 }), diffMode === 'unified' ? t('diff.modeSplit') : t('diff.modeUnified'))
+              : null,
+            /* Drawer affordance: in the single-column layout the content pane floats
+               over the list, so it needs an explicit way out that is not a keyboard
+               shortcut. */
+            stacked === true
+              ? E('button', {
+                type: 'button',
+                className: 'scw-modeToggle scw-drawerClose',
+                title: t('modal.close'),
+                'aria-label': t('modal.close'),
+                onClick: () => { setSelectedRel(null); setSelectedCommit(null); setCommitFile(null) },
+              }, E(Icon, { name: 'close', size: 12 }))
               : null),
           E('div', { className: 'scw-paneHost' },
             /* TWO slots, both always mounted, one hidden. Hiding rather than
@@ -5109,24 +6408,81 @@ function Page(props) {
             },
           }, dialog.confirmLabel ?? t('action.ok')))))
 
+      /* ---- right column (three-column layout only) ----
+         Reference layout: the summary lives BESIDE the diff, not inside the list.
+         It answers "what did I just do / what is still pending" without making the
+         reader leave the file they are looking at. */
+      /* 外壳要求三栏，但页面自己可能被压窄（面板拖小、缩放变大）：宽度不够时
+         退化成双栏，而不是让头部控件被右栏压住。 */
+      const triLayout = shellLayout === 'tri' && (width === 0 || width >= 1000)
+      const recentCommits = Array.isArray(historyState.commits) ? historyState.commits.slice(0, 6) : []
+      const changeList = snapshot !== null && snapshot !== undefined && Array.isArray(snapshot.changes) ? snapshot.changes : []
+      const sideStagedCount = changeList.filter((change) => change !== null && change !== undefined && change.staged === true).length
+      const sidePanel = triLayout === true
+        ? E('aside', { className: 'scw-side' },
+          E('div', { className: 'scw-sideHead' }, t('side.recent')),
+          recentCommits.length === 0
+            ? E('div', { className: 'scw-sideEmpty' }, historyState.status === 'loading' ? t('state.loading') : t('side.empty'))
+            : recentCommits.map((commit) => E('div', {
+              key: commit.hash,
+              className: 'scw-sideCommit' + (commit.hash === selectedCommit ? ' is-active' : ''),
+              title: commit.hash + ' — ' + commit.subject,
+              onClick: () => selectCommit(commit.hash),
+            },
+            E('div', { className: 'scw-sideSubject' }, commit.subject),
+            E('div', { className: 'scw-sideMeta' },
+              E('span', { className: 'scw-sideHash' }, String(commit.hash).slice(0, 7)),
+              E('span', null, relativeTime(commit.authorTime, t))))),
+          E('div', { className: 'scw-sideStats' },
+            E('div', { className: 'scw-sideStat' },
+              E('div', { className: 'scw-sideStatV is-warn' }, String(changeList.length)),
+              E('div', { className: 'scw-sideStatK' }, t('side.changes'))),
+            E('div', { className: 'scw-sideStat' },
+              E('div', { className: 'scw-sideStatV is-ok' }, String(ahead)),
+              E('div', { className: 'scw-sideStatK' }, t('side.ahead'))),
+            E('div', { className: 'scw-sideStat' },
+              E('div', { className: 'scw-sideStatV' }, String(sideStagedCount)),
+              E('div', { className: 'scw-sideStatK' }, t('side.staged')))))
+        : null
+
       return E('div', {
         className: 'scw-root' + (compact ? ' is-xs' : '') + (resizing ? ' is-resizing' : '')
-          + (contentModal === true ? ' is-modal' : ''),
+          + (stacked === true ? ' is-drawer' : ''),
         ref: rootRef,
         'data-mode': mode,
       },
       header,
       barNode,
       E('div', { className: 'scw-body' + (stacked === true ? ' is-stacked' : '') },
-        treePane,
+        /* The commit box belongs to the LIST column, not to the page: it acts on
+           the selection the list is showing, and in the two-column layout it must
+           stay reachable without crossing over the diff. */
+        E('div', { className: 'scw-leftCol' }, treePane, commitBox),
         compact || stacked === true ? null : E('div', {
           /* 上下分栏时没有垂直拖拽条：这个把手只会水平拖动，留着只会误导。 */
           className: 'scw-grip' + (resizing ? ' is-dragging' : ''),
           title: t('head.more'),
           onPointerDown: onGripDown,
         }),
-        E('div', { className: 'scw-content' }, contentInner)),
-      commitBox,
+        E('div', {
+          className: 'scw-content',
+          /* The drawer only exists while something is selected: nobody wants a
+             floating panel covering the list before they picked a file. */
+          hidden: stacked === true && selectedRel === null && selectedCommit === null && commitFile === null,
+        },
+        /* 单栏档的抽屉现在整块盖住列表，必须有一个永远不会缺席的出口：
+           提交详情 / 历史详情这些视图不渲染 tab 头，原来的关闭按钮就不存在了。 */
+        stacked === true && (selectedRel !== null || selectedCommit !== null || commitFile !== null)
+          ? E('button', {
+            type: 'button',
+            className: 'scw-modeToggle scw-drawerClose scw-drawerFloat',
+            title: t('modal.close'),
+            'aria-label': t('modal.close'),
+            onClick: () => { setSelectedRel(null); setSelectedCommit(null); setCommitFile(null) },
+          }, E(Icon, { name: 'close', size: 12 }))
+          : null,
+        contentInner),
+        sidePanel),
       dialogNode)
     }
 
@@ -5152,7 +6508,7 @@ function Page(props) {
          The locale is still picked up live: `translatorOf` reads the active locale
          on every call, and `LocaleLive` re-renders on the locale event. */
       const t = useMemo(() => translatorOf(ctx), [ctx])
-      return E(Page, { t, ctx, dock: props.dock, chatRef: props.chatRef })
+      return E(Page, { t, ctx, dock: props.dock, layout: props.layout, tier: props.tier, hosted: props.hosted, chatRef: props.chatRef })
     }
 
     /* ============================== apply ============================== */
@@ -5205,6 +6561,11 @@ function Page(props) {
               ctx,
               t,
               dock: pageProps === undefined ? undefined : pageProps.dock,
+              /* The shell's resolved tier/layout: the page uses them to pick its
+                 own column count. Absent (standalone panel) = page measures itself. */
+              layout: pageProps === undefined ? undefined : pageProps.layout,
+              tier: pageProps === undefined ? undefined : pageProps.tier,
+              hosted: pageProps === undefined ? false : pageProps.hosted === true,
           chatRef,
             }),
           })
@@ -5235,8 +6596,12 @@ function Page(props) {
       dirNameOf,
       extensionOf,
       repoRootRelative,
+      parseRemotes,
+      webUrlOfRemote,
+      branchWebUrl,
       toRepoPath,
       toWorkspaceRel,
+      absoluteFromRoot,
       statusLetterOf,
       statusColorClass,
       buildStatusIndex,
@@ -5245,6 +6610,7 @@ function Page(props) {
       relativeTime,
       highlightName,
       flattenTree,
+      commitMessageFromDetail,
       modeOfWidth,
       components: { Page, LocaleLive, Icon, IconButton },
       TREE_ROW_HEIGHT,

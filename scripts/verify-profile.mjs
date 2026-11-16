@@ -4,10 +4,11 @@
  * Two supported layouts:
  *
  *   merged (default) — the profile depends on `dsh-workbay-suite` only. That one
- *   package vendors the five bundles, so the plugin list shows exactly one entry.
+ *   package vendors every bundle, so the plugin list shows exactly one entry.
  *
  *   standalone — the profile depends on dock/files/terminal/gitcraft/downloader
- *   (+ kit) and lists them in `dsh.profile.bundles`. Kept for development.
+ *   (+ source-control / memmap / kit) and lists them in `dsh.profile.bundles`.
+ *   Kept for development.
  *
  * Why the harshness: `file:` dependencies are copies. If a helper
  * (AbSerialHost / DownloaderIpcBridge / WorkbayPty) or DSH holds a file open,
@@ -54,6 +55,12 @@ const SUITE_FILES = [
   'vendor/source-control/package.json',
   'vendor/source-control/src/index.js',
   'vendor/source-control/src/client.js',
+  'vendor/memmap/package.json',
+  'vendor/memmap/src/index.js',
+  'vendor/memmap/src/client.js',
+  'vendor/absolute-file-references/package.json',
+  'vendor/absolute-file-references/index.js',
+  'vendor/absolute-file-references/client.js',
   'vendor/kit/package.json',
   'vendor/kit/src/host.js',
 ]
@@ -66,6 +73,7 @@ const STANDALONE = {
   'dsh-gitcraft': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js'],
   'dsh-downloader': ['package.json', 'cordis.patch.yml', 'lib/index.js', 'lib/client.js', 'helper/AbSerialHost.exe', 'ipc-helper/DownloaderIpcBridge.exe'],
   'dsh-workbay-source-control': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js'],
+  'dsh-workbench-memmap': ['package.json', 'cordis.patch.yml', 'src/index.js', 'src/client.js', 'tools/memmap_report.py'],
   '@dsh-workbay/kit': ['package.json', 'src/host.js'],
 }
 const STANDALONE_SOURCE = {
@@ -75,6 +83,7 @@ const STANDALONE_SOURCE = {
   'dsh-gitcraft': 'gitcraft',
   'dsh-downloader': 'downloader',
   'dsh-workbay-source-control': 'source-control',
+  'dsh-workbench-memmap': 'memmap',
   '@dsh-workbay/kit': 'kit',
 }
 
