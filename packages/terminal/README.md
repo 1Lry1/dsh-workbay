@@ -49,6 +49,7 @@ helper 选择顺序：config `ptyHelper` > 环境变量 `DSH_WORKBAY_TERMINAL_PT
 
 - **多 tab**：`+` 新建、`×` 关闭、中键关闭、双击重命名；切 tab 只隐藏不销毁，
   每个 tab 一个 xterm 实例 + 一个宿主 session + 一条 SSE。
+- **自动恢复**：页面重新打开时先 `api/list` 重连仍存在的会话；会话已丢失则在原 tab 自动 `api/start` 一个新 shell（同 root），不需要手动点 Restart；运行中输入遇到 `not-found`/`session-closed` 也只自动重启一次，第二次失败才显示错误。
 - **流控**：xterm 解析积压超过 100k 字符时暂停 PTY 读取（ConPTY 反压到 shell），低于 5k 恢复；hello.flow 协商，断开时宿主强制恢复。
   暂停期间宿主**保留**已收到的输出（≤1 MiB），恢复后补发；客户端 xterm chunk **必须转发 write callback**，否则积压永远不下降、PTY 会永久停住（已踩并加测试）。
 - **键盘**：`xterm.onData` 原样发给 PTY（不本地回显）；`Ctrl+Shift+C/V` 复制粘贴；

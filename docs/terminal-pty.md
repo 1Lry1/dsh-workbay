@@ -97,7 +97,8 @@ helper → host（读 helper.stdout）：
   Ctrl+C 由 PTY 处理（`\x03`），Ctrl+Shift+C/V 复制粘贴，Ctrl+L 清屏（`\x0c`）。
 - 主题：从 `--dsw-alias-*` 读前景/背景/光标色，ANSI 16 色给一套明暗两套配色。
 - 未选工作区时显示空状态（根路径仍由文件页写入 `localStorage['dsh-workbay.root.v1']`）。
-- 断线：SSE `error`/关闭自动重连一次；会话消失提示并允许 `restart`。
+- 断线：SSE `error`/关闭自动重连一次；会话消失时客户端自动 `restart` 一次（同 cwd 新会话），
+  第二次失败才显示错误/退出条，避免手动点 Restart。
 - `mode === 'command'` 时：本地回显 + 退格 + 上下历史，回车才发整行（`\r`），
   输出原样打印；状态条标注“非 PTY 模式”。
 
@@ -110,7 +111,8 @@ dock 切页会卸载页面组件；终端必须**恢复**而不是重开：
 - tab 元数据持久化到 `localStorage['dsh-workbay.terminal.tabs.v2']`
   （防抖 300ms）：`{ version:2, tabs:[{ tabId, title, root, sessionId, cwd, mode }] }`。
 - 页面挂载时：读存储 → `api/list` → 对仍存在的 `sessionId` 重新 `GET events` 并重建 xterm
-  （`hello` 校验 mode/cwd）；已消失的 tab 标为 exited 并提供 Restart（`api/restart`）。
+  （`hello` 校验 mode/cwd）；已消失的 tab **自动** `api/start` 一个新 shell（同 tab/root），
+  不再要求用户点 Restart；只有超过上限或重复 claim 的 tab 才保持 exited。
 - 新建 tab 的上限 = 宿主 `maxSessions`（默认 8）；恢复时超出上限的 tab 标记 exited。
 - 只有用户显式关闭 tab（`×`/中键）才 `api/stop` 并从存储中删除。
 - 状态条显示恢复数量（如“已恢复 2 个会话”），避免用户误以为新开。

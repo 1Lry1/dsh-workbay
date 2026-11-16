@@ -78,6 +78,9 @@ const FLOW_LOW_WATER = 5000
       'tab.capHint': '最多只能打开 {max} 个终端标签，请先关闭一个。',
       'tab.noRootHint': '请先在「文件」页面选择一个工作区。',
       'tab.restoreMissing': '原会话已不存在，可重新启动',
+      'tab.restoreAuto': '原会话已不存在，正在自动重启…',
+      'tab.autoRestartCount': '原会话已不存在，正在自动重启 {n} 个终端',
+      'tab.restoredAndAuto': '已恢复 {n} 个会话；正在自动重启 {m} 个丢失的会话',
       'tab.restoreCapExit': '标签数超过上限（{max}），此标签未恢复',
       'tab.restoredCount': '已恢复 {n} 个会话',
 
@@ -155,6 +158,9 @@ const FLOW_LOW_WATER = 5000
       'tab.capHint': 'At most {max} terminal tabs can be open — close one first.',
       'tab.noRootHint': 'Choose a workspace on the Files page first.',
       'tab.restoreMissing': 'The previous session is gone — restart it',
+      'tab.restoreAuto': 'The previous session is gone — restarting automatically…',
+      'tab.autoRestartCount': 'Previous session gone — automatically restarting {n} terminal(s)',
+      'tab.restoredAndAuto': 'Restored {n} session(s); automatically restarting {m} terminal(s)',
       'tab.restoreCapExit': 'Over the tab limit ({max}); this tab was not restored',
       'tab.restoredCount': 'Restored {n} session(s)',
 
@@ -613,7 +619,8 @@ const FLOW_LOW_WATER = 5000
      * Restore plan: saved tabs × live host sessions.
      *
      *   attach  — sessionId is still in `api/list`; rebuild the xterm + stream
-     *   restart — the session is gone (or never had an id); show Restart
+     *   restart — the session is gone (or never had an id); auto-start a fresh
+     *             shell in the same tab so opening the page never needs a click
      *   exit    — over the tab cap, or a duplicate sessionId claim; no reattach
      */
     function planRestore(savedTabs, liveSessions, cap) {
@@ -1185,6 +1192,7 @@ const FLOW_LOW_WATER = 5000
           phase: 'starting',
           es: null,
           reconnectUsed: false,
+          autoRestartUsed: false,
           reconnectTimer: null,
           resizeTimer: null,
           promptTimer: null,
@@ -1292,6 +1300,19 @@ const FLOW_LOW_WATER = 5000
           }
         }
 
+        /**
+         * A session can disappear between `api/list` and the stream, or while the
+         * page is open (host restart / shell reaped). Recover once automatically;
+         * the second failure still shows the error/exit UI so a crashing host
+         * cannot create a restart loop.
+         */
+        function autoRestartLostSession() {
+          if (core.autoRestartUsed === true) return false
+          core.autoRestartUsed = true
+          void restartSession()
+          return true
+        }
+
         function sendInput(data) {
           const session = core.session
           if (session === null || session === undefined || typeof session.id !== 'string') return
@@ -1301,6 +1322,7 @@ const FLOW_LOW_WATER = 5000
             const code = error !== null && error !== undefined ? error.code : undefined
             if (code === 'not-found' || code === 'session-closed') {
               closeStream()
+              if (autoRestartLostSession()) return
               commit({ phase: 'exited', error: '' })
               return
             }
@@ -1525,6 +1547,7 @@ const FLOW_LOW_WATER = 5000
                  the stream never sees `hello`; show it as an exited tab with
                  Restart (the Page's exit bar) instead of a generic retry error. */
               if (restored && !core.gotHello) {
+                if (autoRestartLostSession()) return
                 commit({ phase: 'exited', exitCode: null, error: '' })
                 return
               }
@@ -2027,7 +2050,12 @@ const FLOW_LOW_WATER = 5000
         tab.phase = 'exited'
         tab.exitCode = null
         if (planned.action === 'restart') {
-          tab.restoreNotice = t('tab.restoreMissing')
+          /* Auto-recover instead of leaving a dead "Restart" tab. `starting`
+             makes TerminalTab run its normal boot path; it calls api/start with
+             the same root and adopts the new session id. */
+          tab.phase = 'starting'
+          tab.restoreNotice = t('tab.restoreAuto')
+          tab.restartable = true
           return tab
         }
         /* Over the cap / duplicate claim: explain, do not offer a Restart that
@@ -2063,7 +2091,14 @@ const FLOW_LOW_WATER = 5000
           setRestoredCount(plan.attachedCount)
           /* 状态栏已合并到外壳，但「恢复了几个会话」属于一次性反馈，用顶部提示条
              说一声就消失，比常驻一行更合适。 */
-          if (plan.attachedCount > 0) showCapHint(t('status.restored', { n: plan.attachedCount }), 'info')
+          const autoRestartCount = plan.tabs.filter((planned) => planned.action === 'restart').length
+          if (plan.attachedCount > 0 && autoRestartCount > 0) {
+            showCapHint(t('tab.restoredAndAuto', { n: plan.attachedCount, m: autoRestartCount }), 'info')
+          } else if (plan.attachedCount > 0) {
+            showCapHint(t('status.restored', { n: plan.attachedCount }), 'info')
+          } else if (autoRestartCount > 0) {
+            showCapHint(t('tab.autoRestartCount', { n: autoRestartCount }), 'info')
+          }
           autoOpenRef.current = tabs.length === 0
           setRestoring(false)
         }

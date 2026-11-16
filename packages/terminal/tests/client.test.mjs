@@ -845,6 +845,11 @@ function makeSessionWorld(mode, worldOptions) {
     let data = { ok: true }
     if (method === 'start') data = { id: 's1', shell: 'pwsh', cwd: payload.root, mode }
     else if (method === 'restart') data = { id: 's2', shell: 'pwsh', cwd: 'C:/w', mode }
+    if (method === 'input' && options.inputNotFound === true) {
+      return {
+        json: async () => ({ ok: false, error: { code: 'not-found', message: 'unknown session' } }),
+      }
+    }
     if (method === 'restart' && options.restartNotFound === true) {
       return {
         json: async () => ({ ok: false, error: { code: 'not-found', message: 'unknown session' } }),
@@ -1136,6 +1141,22 @@ test('command-mode session engine: chunk → start → echo → submit → exit 
   assert.equal(world.eventSources[1].closed, true)
 })
 
+test('a lost session is restarted automatically on the next input', { timeout: 15000 }, async () => {
+  const world = makeSessionWorld('command', { inputNotFound: true })
+  world.mount()
+  await sleep(40)
+  const stream = world.eventSources[0]
+  stream.onmessage({ data: JSON.stringify({ type: 'hello', id: 's1', mode: 'command', shell: 'pwsh', cwd: 'C:/w' }) })
+  await sleep(20)
+  const data = world.handleOptions.onData
+  data('x')
+  data('\r')
+  await sleep(120)
+  assert.ok(world.fetchCalls.some((call) => call.method === 'restart' && call.payload.id === 's1'), 'a stale session is restarted without a click')
+  assert.ok(world.eventSources.length >= 2, 'the restarted session gets a new stream')
+  world.cleanup()
+})
+
 test('pty-mode session engine: raw keys, Ctrl+L, debounced + clamped resize', { timeout: 15000 }, async () => {
   const world = makeSessionWorld('pty')
   world.mount()
@@ -1336,7 +1357,7 @@ test('the restore planner attaches, restarts, exits and enforces the cap', () =>
   assert.equal(api.planRestore([], [], 8).attachedCount, 0)
 })
 
-test('Page restores saved tabs by reattaching live sessions (and never starts new ones)', async () => {
+test('Page restores live tabs and automatically restarts vanished sessions', async () => {
   const store = {
     version: 2,
     tabs: [
@@ -1350,9 +1371,9 @@ test('Page restores saved tabs by reattaching live sessions (and never starts ne
   })
   try {
     world.mount()
-    await sleep(80)
+    await sleep(500)
     assert.equal(world.fetchCalls.filter((call) => call.method === 'list').length, 1, 'api/list drives the restore')
-    assert.equal(world.fetchCalls.some((call) => call.method === 'start'), false, 'restore must not start sessions')
+    assert.equal(world.fetchCalls.some((call) => call.method === 'restart'), false, 'no stale restart request is made before mounting the tab')
 
     const tabs = world.terminalTabs()
     assert.equal(tabs.length, 2)
@@ -1360,10 +1381,11 @@ test('Page restores saved tabs by reattaching live sessions (and never starts ne
     assert.equal(tabs[0].props.restoreSession.id, 's1')
     assert.equal(tabs[0].props.restoreSession.mode, 'pty')
     assert.equal(tabs[1].props.restored, false)
-    assert.equal(tabs[1].props.dormant, true, 'a vanished tab waits for Restart instead of auto-starting')
+    assert.equal(tabs[1].props.dormant, false, 'a vanished tab must not wait for a manual Restart')
     assert.equal(tabs[1].props.storedSessionId, 'gone')
-    assert.ok(String(tabs[1].props.restoreNotice).includes('gone'), 'a vanished tab explains itself')
+    assert.ok(String(tabs[1].props.restoreNotice).includes('restarting automatically'), 'the page explains the automatic recovery')
     assert.ok(world.text().includes('Restored 1 session(s)'), 'the status bar reports the restored count')
+    assert.ok(world.text().includes('automatically restarting 1 terminal'), 'the page explains the automatic restart')
 
     world.unmount()
     assert.equal(world.fetchCalls.some((call) => call.method === 'stop'), false, 'page switch must not stop sessions')
