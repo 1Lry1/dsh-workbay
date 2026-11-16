@@ -364,6 +364,12 @@ function mountShell() {
   await sleep(2500)
   const staged = git(['diff', '--cached', '--name-only'], gitRepo).trim()
   check('the row action stages the file through the real git host', staged.indexOf('alpha.ts') >= 0, 'staged: ' + JSON.stringify(staged))
+  const stageSections = JSON.parse(await evaluate(`JSON.stringify({
+    sections: [].slice.call(document.querySelectorAll('.scw-subgroup')).map(function (n) { return n.textContent }),
+  })`))
+  check('the change list separates staged and unstaged files',
+    stageSections.sections.some((text) => /已暂存|Staged/.test(text))
+    && stageSections.sections.some((text) => /未暂存|Unstaged/.test(text)), stageSections)
 
   /* A failed commit must NOT clear the message box (the user has to retry after
      fixing the cause). Force a real git failure with a transient index lock. */

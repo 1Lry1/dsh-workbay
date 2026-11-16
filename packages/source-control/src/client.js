@@ -200,6 +200,8 @@ const NARROW_PANE_W = 225
       'group.expand': '展开分组',
       'group.staged': '已暂存',
       'group.unstaged': '更改',
+      'changes.stagedSection': '已暂存',
+      'changes.unstagedSection': '未暂存',
       'group.untracked': '未跟踪',
       'group.conflicted': '冲突',
       'tab.source': '源码',
@@ -266,6 +268,8 @@ const NARROW_PANE_W = 225
       'group.conflicted': '冲突',
       'group.staged': '已暂存',
       'group.unstaged': '更改',
+      'changes.stagedSection': '已暂存',
+      'changes.unstagedSection': '未暂存',
       'group.untracked': '未跟踪',
       'changes.clean': '工作区是干净的',
       'history.empty': '还没有提交',
@@ -496,6 +500,8 @@ const NARROW_PANE_W = 225
       'group.files': 'Files',
       'group.staged': 'Staged',
       'group.unstaged': 'Changes',
+      'changes.stagedSection': 'Staged',
+      'changes.unstagedSection': 'Unstaged',
       'group.modified': 'Modified',
       'group.deleted': 'Deleted',
       'group.added': 'Added',
@@ -568,6 +574,8 @@ const NARROW_PANE_W = 225
       'group.conflicted': 'Conflicts',
       'group.staged': 'Staged',
       'group.unstaged': 'Changes',
+      'changes.stagedSection': 'Staged',
+      'changes.unstagedSection': 'Unstaged',
       'group.modified': 'Modified',
       'group.deleted': 'Deleted',
       'group.added': 'Added',
@@ -1826,6 +1834,10 @@ const NARROW_PANE_W = 225
 .scw-bulkBtn:disabled{opacity:.45;cursor:default}
 .scw-group{display:flex;align-items:center;gap:5px;padding:5px 8px 3px;font-size:10px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase;letter-spacing:.03em;/* 不吸顶：吸顶时分组行会盖住滚动的文件名，露半截字，看着像背景透了。 */box-shadow:0 1px 0 0 var(--dsw-alias-border-l1,rgba(255,255,255,.12))}
 .scw-groupCount{font-weight:400;opacity:.7}
+.scw-subgroup{display:flex;align-items:center;gap:5px;padding:4px 8px 2px 22px;font-size:9.5px;font-weight:600;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary,#8a8f98);text-transform:uppercase}
+.scw-subgroup.is-staged{color:var(--dsw-alias-state-success-primary,#4ec9a0)}
+.scw-subgroupName{white-space:nowrap}
+.scw-subgroupCount{font-weight:400;opacity:.65;font-variant-numeric:tabular-nums}
 .scw-group[role=button]{cursor:pointer;user-select:none}
 .scw-group[role=button]:hover{background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.04))}
 .scw-groupChevron{display:inline-flex;align-items:center;justify-content:center;width:12px;opacity:.65;flex:none}
@@ -5181,7 +5193,28 @@ function Page(props) {
                 }, untrackedOnly ? t('action.deleteAll') : t('action.discardAll'))
                 : null))
             if (collapsed) continue
-            for (const { rel, change } of group.rows) {
+            /* Keep the existing type grouping, but split its rows into visible
+               staged / unstaged sections. A mixed "修改 4" header hid which one
+               file was already in the index (the screenshot that prompted this). */
+            const stagedCount = group.rows.filter(({ change }) => change.staged === true).length
+            const unstagedCount = group.rows.length - stagedCount
+            const orderedRows = group.rows.slice().sort((left, right) => {
+              const leftStaged = left.change.staged === true ? 0 : 1
+              const rightStaged = right.change.staged === true ? 0 : 1
+              return leftStaged - rightStaged
+            })
+            let lastStaged = null
+            for (const { rel, change } of orderedRows) {
+              const staged = change.staged === true
+              if (staged !== lastStaged) {
+                lastStaged = staged
+                out.push(E('div', {
+                  key: 'sg:' + group.key + ':' + (staged ? 'staged' : 'unstaged'),
+                  className: 'scw-subgroup' + (staged ? ' is-staged' : ''),
+                },
+                E('span', { className: 'scw-subgroupName' }, t(staged ? 'changes.stagedSection' : 'changes.unstagedSection')),
+                E('span', { className: 'scw-subgroupCount' }, String(staged ? stagedCount : unstagedCount))))
+              }
               const letter = statusLetterOf(change)
               const isActive = rel === selectedRel
               out.push(E('div', {
