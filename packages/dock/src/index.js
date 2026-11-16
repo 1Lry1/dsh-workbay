@@ -6,6 +6,8 @@
  *
  *   POST /dsh-workbay-dock/api/registry   -> the registered page ids + titles
  *   POST /dsh-workbay-dock/api/ping       -> liveness probe for tests
+ *   POST /dsh-workbay-dock/api/restart    -> ask HMR to recompose the profile
+ *   POST /dsh-workbay-dock/api/load       -> one CPU / GPU / MEM sample
  *
  * The page registry itself is a CLIENT concern (pages are React components), so
  * this half exists mainly to give the bundle a Node entry that DSH can load and

@@ -721,10 +721,16 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         let alive = true
         let retryTimer = null
+        let inFlight = false
 
         const tick = async () => {
           if (typeof document !== 'undefined' && document.hidden) return
           if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) return
+          /* One request at a time. Two overlapping ticks would be differenced over
+             a ~0ms window by the host's CPU reader, which yields a bogus 0/100 or
+             a spurious "—"; the GPU side has its own gate, CPU does not. */
+          if (inFlight === true) return
+          inFlight = true
           try {
             const url = new URL('dsh-workbay-dock/api/load', document.baseURI).href
             const response = await fetch(url, {
@@ -733,11 +739,24 @@ window.__ModuleLoader__.load({
               body: '{}',
             })
             const envelope = await response.json()
-            const data = envelope && envelope.data ? envelope.data : null
-            if (alive === false || data === null) return
+            /* The kit answers non-fatal failures as a JSON envelope with ok:false
+               (404 unknown method, 403 forbidden, 415 bad content type). Those are
+               NOT absent data — they are the case the user will hit first, before
+               the host half is loaded. Route them into the error path so the meter
+               greys out and explains itself instead of showing three dashes. */
+            if (response.ok !== true || envelope === null || envelope === undefined || envelope.ok !== true) {
+              const reason = envelope && envelope.error && envelope.error.message
+                ? envelope.error.message
+                : 'HTTP ' + response.status
+              throw new Error(reason)
+            }
+            const data = envelope.data ? envelope.data : null
+            if (alive === false) return
+            if (data === null) throw new Error('empty payload')
             setReading({ cpu: data.cpu, gpu: data.gpu, mem: data.mem, err: '' })
-            if (data.cpu === null && retried.current === false) {
-              retried.current = true
+            const latch = meterNextRetryState(retried.current, data.cpu)
+            retried.current = latch.retried
+            if (latch.schedule === true) {
               retryTimer = setTimeout(() => { void tick() }, METER_RETRY_MS)
             }
           } catch (error) {
@@ -745,6 +764,8 @@ window.__ModuleLoader__.load({
                a transient failure must not blank the meter. */
             if (alive === false) return
             setReading((previous) => ({ ...previous, err: String((error && error.message) || error) }))
+          } finally {
+            inFlight = false
           }
         }
 
@@ -771,6 +792,53 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Has at least one sample landed?
+     *
+     * Before the first reply every field is null, and reporting "no NVIDIA GPU"
+     * from that state tells the user something false about their hardware. The
+     * verdict is only trustworthy once `mem` exists (every successful sample
+     * carries it, and it is the field that cannot be null in a real reply).
+     */
+    function meterHasSample(reading) {
+      const state = reading === null || reading === undefined ? {} : reading
+      return state.mem !== null && state.mem !== undefined
+    }
+
+    /** True only when a sample landed AND that sample had no GPU. */
+    function meterGpuMissing(reading) {
+      if (meterHasSample(reading) === false) return false
+      const state = reading === null || reading === undefined ? {} : reading
+      return state.gpu === null || state.gpu === undefined
+    }
+
+    /** A failed poll keeps the numbers but flags them as out of date. */
+    function meterIsStale(reading) {
+      const state = reading === null || reading === undefined ? {} : reading
+      return typeof state.err === 'string' && state.err !== ''
+    }
+
+    /**
+     * Decide the retry latch for one poll result.
+     *
+     * `cpu === null` means "no baseline yet": on mount the reader has never run,
+     * and after `BASELINE_TTL_MS` of the window being unfocused the datum is
+     * discarded on purpose. Either way a fast retry turns the dash into a number
+     * immediately instead of waiting for the next 5s tick — but exactly once per
+     * episode, so a persistently null CPU cannot spin.
+     *
+     * A real number ENDS the episode, which re-arms the latch; without that, the
+     * TTL case (Review Focus 2) would never get its fast retry.
+     */
+    function meterNextRetryState(retried, cpu) {
+      if (cpu === null || cpu === undefined) {
+        /* Latch at SCHEDULE time, not when the timer fires: a focus event landing
+           before the timer would otherwise schedule a second one. */
+        return retried === true ? { retried: true, schedule: false } : { retried: true, schedule: true }
+      }
+      return { retried: false, schedule: false }
+    }
+
+    /**
      * The titlebar meter: one colour-coded dot per metric, the number beside it.
      *
      * Deliberately does NOT branch on the shell tier: narrow tiers hide the label
@@ -780,20 +848,36 @@ window.__ModuleLoader__.load({
     function LoadMeter(props) {
       const { t } = props
       const reading = useLoadMeter()
+      const gpu = reading.gpu === null || reading.gpu === undefined ? null : reading.gpu
+      const mem = reading.mem === null || reading.mem === undefined ? null : reading.mem
+      /* Temperature is `[N/A]` on some drivers, which parses to NaN and would
+         render as "null°C"; drop it rather than print nonsense. */
+      const gpuBits = gpu === null
+        ? []
+        : [
+          gpu.name,
+          Number.isFinite(gpu.temp) ? gpu.temp + '°C' : '',
+          gpu.memUsed + '/' + gpu.memTotal + ' MB',
+        ].filter((part) => typeof part === 'string' && part !== '')
       const cells = [
         { tone: 'cpu', label: t('load.cpu'), value: reading.cpu, extra: '' },
-        { tone: 'gpu', label: t('load.gpu'), value: reading.gpu === null || reading.gpu === undefined ? null : reading.gpu.util,
-          extra: reading.gpu ? (reading.gpu.temp + '°C · ' + reading.gpu.memUsed + '/' + reading.gpu.memTotal + ' MB') : '' },
-        { tone: 'mem', label: t('load.mem'), value: reading.mem === null || reading.mem === undefined ? null : reading.mem.usedPct,
-          extra: reading.mem ? (reading.mem.usedGB + ' / ' + reading.mem.totalGB + ' GB') : '' },
+        { tone: 'gpu', label: t('load.gpu'), value: gpu === null ? null : gpu.util, extra: gpuBits.join(' · ') },
+        { tone: 'mem', label: t('load.mem'), value: mem === null ? null : mem.usedPct,
+          extra: mem === null ? '' : (mem.usedGB + ' / ' + mem.totalGB + ' GB') },
       ]
-      const gpuMissing = reading.gpu === null || reading.gpu === undefined
-      const title = reading.err !== ''
+      const gpuMissing = meterGpuMissing(reading)
+      const stale = meterIsStale(reading)
+      const title = stale
         ? t('load.offline') + ' — ' + reading.err
         : cells.map((cell) => cell.label + ' ' + (typeof cell.value === 'number' ? cell.value + '%' : '—')
           + (cell.extra === '' ? '' : ' (' + cell.extra + ')')).join(' · ')
           + (gpuMissing ? '　·　' + t('load.noGpu') : '')
-      return E('span', { className: 'wbd-load', title, 'aria-label': t('load.title') },
+      return E('span', {
+        className: 'wbd-load',
+        title,
+        'aria-label': t('load.title'),
+        'data-state': stale ? 'stale' : undefined,
+      },
         cells.map((cell) => E('span', {
           key: cell.tone,
           className: 'wbd-loadCell',
@@ -1481,6 +1565,9 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
    warns. The breathing uses opacity ONLY: animating box-shadow / filter keeps
    the compositor busy forever, which is a silly price for a load indicator. */
 .wbd-load{display:inline-flex;align-items:center;gap:8px;flex:none;margin-right:2px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
+/* A failed poll keeps the last numbers but visibly dims them: the reading is no
+   longer current, and silently showing stale data is worse than showing none. */
+.wbd-load[data-state="stale"]{opacity:.55}
 .wbd-loadCell{display:inline-flex;align-items:center;gap:3px}
 .wbd-loadDot{width:6px;height:6px;border-radius:50%;flex:none}
 .wbd-loadNum{font-weight:600}
@@ -1496,8 +1583,12 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 html[data-theme="light"] .wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#0284c7}
 html[data-theme="light"] .wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#7c3aed}
 html[data-theme="light"] .wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#b45309}
+/* One red, in both themes — the spec pins #e5534b and says the light theme uses
+   the same colour. The dots change because a 6px chip on white needs more
+   contrast; the alarm colour does not, because "this is a warning" must not
+   mean two different hues depending on the theme. */
 html[data-theme="light"] .wbd-loadCell[data-level="warn"] .wbd-loadNum,
-html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#c62828}
+html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e5534b}
 /* Narrow tiers: the dot IS the label, and "—" plus a % reads badly. The docked
    panel is 620px by default (t1), so this is the COMMON case, not an edge case. */
 [data-w="t1"] .wbd-loadLabel, [data-w="t1"] .wbd-loadPct,
@@ -1694,6 +1785,16 @@ html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#c62
       /* The tier/layout rules are exported so the duplicated copy here can be
          pinned by tests against the canonical ones in @dsh-workbay/kit/src/ui.js. */
       shell: { tierForWidth, resolveLayoutKind, normalizeLayoutMode, isWorkbenchShortcut },
+      /* The meter's decisions live here as pure functions so they can be tested
+         by BEHAVIOR. The earlier string-matching tests stayed green even with the
+         component deleted; these cannot. */
+      meter: {
+        level: meterLevel,
+        hasSample: meterHasSample,
+        gpuMissing: meterGpuMissing,
+        isStale: meterIsStale,
+        nextRetryState: meterNextRetryState,
+      },
       open: () => setOpen(true),
       close: () => setOpen(false),
     }

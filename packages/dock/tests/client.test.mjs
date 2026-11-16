@@ -277,38 +277,61 @@ test('the meter declares the same thresholds as the host sampler', () => {
   assert.equal(clientHot, hostHot)
 })
 
-test('the meter registers into the titlebar action row', () => {
+test('the meter is actually mounted into the titlebar action row', () => {
   const source = readFileSync(clientPath, 'utf8')
-  assert.match(source, /wbd-titleActions/)
+  /* Anchor on the JSX, not on the stylesheet: `wbd-titleActions` and every
+     `wbd-load*` class also appear in the CSS, so a class-name match stayed green
+     with the component deleted. These two assertions fail if the mount or the
+     cell markup goes away. */
+  assert.match(source, /\bE\(LoadMeter, \{ t \}\),/, 'LoadMeter must be rendered into the titlebar')
+  assert.match(source, /\bE\('span', \{ className: 'wbd-loadDot' \}\)/, 'each cell needs its dot')
+  assert.match(source, /\bE\('span', \{ className: 'wbd-loadLabel' \}/, 'each cell needs its label')
+})
+
+test('the request path, the guard order and the envelope check are all present', () => {
+  const source = readFileSync(clientPath, 'utf8')
   assert.match(source, /dsh-workbay-dock\/api\/load/)
-  /* Narrow tiers hide the label and the percent sign by CSS, so both spans exist
-     unconditionally and both carry a hide rule. */
-  assert.match(source, /wbd-loadLabel/)
-  assert.match(source, /wbd-loadDot/)
-  assert.match(source, /wbd-loadPct/)
-  assert.match(source, /\[data-w="t1"\] \.wbd-loadLabel/, 't1 must hide the label')
+  const body = source.slice(source.indexOf('function useLoadMeter'), source.indexOf('function LoadMeter'))
+  /* Both guards must precede the request. */
+  assert.ok(body.indexOf('document.hidden') < body.indexOf('api/load'), 'hidden guard precedes the request')
+  assert.ok(body.indexOf('document.hasFocus()') < body.indexOf('api/load'), 'focus guard precedes the request')
+  /* The kit reports failures as a 200 envelope with ok:false; treating that as
+     "no data" made the user hit three dashes with no explanation. */
+  assert.match(body, /envelope\.ok !== true/, 'a ok:false envelope must take the error path')
+  /* Overlapping ticks would be differenced over ~0ms by the host CPU reader. */
+  assert.match(body, /inFlight/, 'the hook needs a single-flight guard')
+  assert.match(body, /removeEventListener\('focus'/, 'the focus listener must be removed on unmount')
 })
 
 test('both locale dictionaries carry the meter keys', () => {
   const source = readFileSync(clientPath, 'utf8')
+  /* Compare against the DICTIONARY SLICES, not the whole file: counting raw
+     occurrences let a key present in ZH and in a `t()` call site satisfy the
+     check even after it was deleted from EN. */
+  const zhStart = source.indexOf('const ZH = {')
+  const enStart = source.indexOf('const EN = {')
+  const enEnd = source.indexOf('const LOCALES =')
+  const zh = source.slice(zhStart, enStart)
+  const en = source.slice(enStart, enEnd)
   for (const key of ['load.title', 'load.cpu', 'load.gpu', 'load.mem', 'load.noGpu']) {
-    const hits = source.split("'" + key + "'").length - 1
-    assert.ok(hits >= 2, key + ' must appear in ZH and EN, found ' + hits)
+    assert.ok(zh.includes("'" + key + "'"), key + ' missing from ZH')
+    assert.ok(en.includes("'" + key + "'"), key + ' missing from EN')
   }
 })
 
 /* Review Focus 1: the first sample has no CPU baseline, so the meter MUST retry
    once instead of sitting on "—" forever — and exactly once, not in a loop. */
-test('the meter retries a null CPU reading exactly once', () => {
+test('the meter retries a null CPU reading through the latch decision', () => {
   const source = readFileSync(clientPath, 'utf8')
   /* The delay is a named constant, not a literal buried in the hook: assert the
      VALUE the spec pins, then assert the body actually uses it. */
   const retryMs = Number(/METER_RETRY_MS\s*=\s*(\d+)/.exec(source)[1])
   assert.equal(retryMs, 1500, 'retry delay is 1500ms per the spec')
   const body = source.slice(source.indexOf('function useLoadMeter'), source.indexOf('function LoadMeter'))
-  assert.match(body, /cpu === null/, 'must branch on a missing CPU baseline')
-  assert.match(body, /retried/, 'must hold a one-shot retry flag')
-  assert.match(body, /retried\.current === false/, 'the retry must be gated, not repeated')
+  /* The latch is decided by the tested pure function; the hook must delegate to
+     it rather than re-implement the rule inline (which is how the TTL case got
+     missed the first time). */
+  assert.match(body, /meterNextRetryState\(/, 'the hook must delegate the retry decision')
   assert.match(body, /METER_RETRY_MS/, 'the retry must use the declared delay')
 })
 
@@ -324,4 +347,62 @@ test('the meter skips sampling when the window is hidden or unfocused', () => {
     'the focus guard must precede the request',
   )
   assert.match(body, /removeEventListener\('focus'/, 'the focus listener must be removed on unmount')
+})
+
+/* -------- behavior tests for the meter's pure decisions (not CSS strings) --------
+   The first version of this cluster matched stylesheet text, which stayed green
+   even with the component deleted. These call exported functions instead: delete
+   the implementation and they fail. */
+test('meter levels follow the pinned 90 / 95 thresholds', () => {
+  const { api } = loadDock()
+  const { level } = api.meter
+  assert.equal(level(0), 'ok')
+  assert.equal(level(89), 'ok')
+  assert.equal(level(90), 'warn')
+  assert.equal(level(94), 'warn')
+  assert.equal(level(95), 'hot')
+  assert.equal(level(100), 'hot')
+  /* No number available is not an alarm state. */
+  assert.equal(level(null), 'ok')
+  assert.equal(level(undefined), 'ok')
+})
+
+test('the GPU is only reported missing once a sample has actually arrived', () => {
+  const { api } = loadDock()
+  const { gpuMissing } = api.meter
+  /* Before the first sample every field is null. Claiming "no GPU detected" here
+     tells the user something false about their hardware. */
+  assert.equal(gpuMissing({ cpu: null, gpu: null, mem: null, err: '' }), false)
+  /* After a sample, a null gpu really does mean no NVIDIA card. */
+  assert.equal(gpuMissing({ cpu: 20, gpu: null, mem: { usedPct: 50 }, err: '' }), true)
+  assert.equal(gpuMissing({ cpu: 20, gpu: { util: 3 }, mem: { usedPct: 50 }, err: '' }), false)
+})
+
+test('a failed poll marks the reading stale instead of blanking it', () => {
+  const { api } = loadDock()
+  const { isStale } = api.meter
+  assert.equal(isStale({ cpu: 20, gpu: null, mem: null, err: '' }), false)
+  assert.equal(isStale({ cpu: 20, gpu: null, mem: null, err: 'offline' }), true)
+})
+
+/* Review Focus 2: the retry must re-arm after the baseline is discarded by the
+   TTL, or a returning user stares at "—" for a full 5s interval. */
+test('the retry latch re-arms after a completed sample', () => {
+  const { api } = loadDock()
+  const { nextRetryState } = api.meter
+  /* Compare FIELDS, not whole objects: `api.meter` comes out of a `vm` context,
+     so its object literals carry a different Object.prototype than this realm and
+     deepEqual would fail on identical values. */
+  const check = (retried, cpu, wantRetried, wantSchedule) => {
+    const got = nextRetryState(retried, cpu)
+    assert.equal(got.retried, wantRetried, 'retried flag for (' + retried + ', ' + cpu + ')')
+    assert.equal(got.schedule, wantSchedule, 'schedule flag for (' + retried + ', ' + cpu + ')')
+  }
+  /* First null: arm the retry. */
+  check(false, null, true, true)
+  /* Already retried this episode and still null: do not loop. */
+  check(true, null, true, false)
+  /* A real number ends the episode, so the NEXT null (TTL discard) can retry. */
+  check(true, 42, false, false)
+  check(false, 42, false, false)
 })
