@@ -54,6 +54,17 @@ window.__ModuleLoader__.load({
     const STORAGE_DOCK_W = 'dsh-workbay-dock.dockw.v1'
     const LOCALE_NS = 'dsh-workbay-dock'
 
+    /* Load-meter thresholds.
+       The authoritative copy lives in the host half (`src/load.js` exports
+       WARN_PCT / HOT_PCT). This bundle is loaded as a self-contained string
+       through `window.__ModuleLoader__` and cannot import a Node module, so the
+       values are mirrored here; client.test.mjs reads both sources and fails if
+       they ever drift apart. Do not introduce a THIRD copy. */
+    const METER_WARN_PCT = 90
+    const METER_HOT_PCT = 95
+    const METER_POLL_MS = 5000
+    const METER_RETRY_MS = 1500
+
     /* ============================== i18n ============================== */
 
     const ZH = {
@@ -85,6 +96,12 @@ window.__ModuleLoader__.load({
       'layout.single': '单栏',
       'layout.split': '主从双栏',
       'layout.tri': '三栏',
+      'load.title': '本机负载',
+      'load.cpu': '处理器',
+      'load.gpu': '显卡',
+      'load.mem': '内存',
+      'load.noGpu': '未检测到 NVIDIA 显卡（只显示 CPU / 内存）',
+      'load.offline': '读不到宿主负载接口',
     }
 
     const EN = {
@@ -116,6 +133,12 @@ window.__ModuleLoader__.load({
       'layout.single': 'Single column',
       'layout.split': 'Master-detail',
       'layout.tri': 'Three columns',
+      'load.title': 'Machine load',
+      'load.cpu': 'CPU',
+      'load.gpu': 'GPU',
+      'load.mem': 'RAM',
+      'load.noGpu': 'No NVIDIA GPU detected (CPU / RAM only)',
+      'load.offline': 'Host load endpoint unreachable',
     }
 
     const LOCALES = { en: EN }
@@ -676,6 +699,113 @@ window.__ModuleLoader__.load({
       return value
     }
 
+    /* ============================== titlebar load meter ============================== */
+
+    /**
+     * Poll the host sampler and hold the latest reading.
+     *
+     * Sampling discipline (this is the whole point of the component):
+     *   - only while the panel is MOUNTED — mounting happens after the shell's
+     *     `if (!isOpen) return null`, so closing the workbench unmounts us and
+     *     the interval dies with the component;
+     *   - only while the window is VISIBLE and FOCUSED — the guard sits before
+     *     the request, so a backgrounded DSH spawns nothing;
+     *   - one retry 1.5s later if the host answers `cpu: null`, because the very
+     *     first sample has no tick baseline to difference against. `retried`
+     *     makes that retry once-only instead of a tight loop.
+     */
+    function useLoadMeter() {
+      const [reading, setReading] = useState({ cpu: null, gpu: null, mem: null, err: '' })
+      const retried = useRef(false)
+
+      useEffect(() => {
+        let alive = true
+        let retryTimer = null
+
+        const tick = async () => {
+          if (typeof document !== 'undefined' && document.hidden) return
+          if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) return
+          try {
+            const url = new URL('dsh-workbay-dock/api/load', document.baseURI).href
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: '{}',
+            })
+            const envelope = await response.json()
+            const data = envelope && envelope.data ? envelope.data : null
+            if (alive === false || data === null) return
+            setReading({ cpu: data.cpu, gpu: data.gpu, mem: data.mem, err: '' })
+            if (data.cpu === null && retried.current === false) {
+              retried.current = true
+              retryTimer = setTimeout(() => { void tick() }, METER_RETRY_MS)
+            }
+          } catch (error) {
+            /* Keep the last good numbers on screen and only flip the tooltip:
+               a transient failure must not blank the meter. */
+            if (alive === false) return
+            setReading((previous) => ({ ...previous, err: String((error && error.message) || error) }))
+          }
+        }
+
+        void tick()
+        const interval = setInterval(() => { void tick() }, METER_POLL_MS)
+        window.addEventListener('focus', tick)
+        return () => {
+          alive = false
+          clearInterval(interval)
+          if (retryTimer !== null) clearTimeout(retryTimer)
+          window.removeEventListener('focus', tick)
+        }
+      }, [])
+
+      return reading
+    }
+
+    /** At or above WARN the number goes red; at or above HOT the dot breathes too. */
+    function meterLevel(value) {
+      if (typeof value !== 'number') return 'ok'
+      if (value >= METER_HOT_PCT) return 'hot'
+      if (value >= METER_WARN_PCT) return 'warn'
+      return 'ok'
+    }
+
+    /**
+     * The titlebar meter: one colour-coded dot per metric, the number beside it.
+     *
+     * Deliberately does NOT branch on the shell tier: narrow tiers hide the label
+     * and the percent sign through CSS keyed off `[data-w]` on the panel root, so
+     * "how wide am I" and "what does the machine say" never get tangled.
+     */
+    function LoadMeter(props) {
+      const { t } = props
+      const reading = useLoadMeter()
+      const cells = [
+        { tone: 'cpu', label: t('load.cpu'), value: reading.cpu, extra: '' },
+        { tone: 'gpu', label: t('load.gpu'), value: reading.gpu === null || reading.gpu === undefined ? null : reading.gpu.util,
+          extra: reading.gpu ? (reading.gpu.temp + '°C · ' + reading.gpu.memUsed + '/' + reading.gpu.memTotal + ' MB') : '' },
+        { tone: 'mem', label: t('load.mem'), value: reading.mem === null || reading.mem === undefined ? null : reading.mem.usedPct,
+          extra: reading.mem ? (reading.mem.usedGB + ' / ' + reading.mem.totalGB + ' GB') : '' },
+      ]
+      const gpuMissing = reading.gpu === null || reading.gpu === undefined
+      const title = reading.err !== ''
+        ? t('load.offline') + ' — ' + reading.err
+        : cells.map((cell) => cell.label + ' ' + (typeof cell.value === 'number' ? cell.value + '%' : '—')
+          + (cell.extra === '' ? '' : ' (' + cell.extra + ')')).join(' · ')
+          + (gpuMissing ? '　·　' + t('load.noGpu') : '')
+      return E('span', { className: 'wbd-load', title, 'aria-label': t('load.title') },
+        cells.map((cell) => E('span', {
+          key: cell.tone,
+          className: 'wbd-loadCell',
+          'data-tone': cell.tone,
+          'data-level': meterLevel(cell.value),
+        },
+        E('span', { className: 'wbd-loadDot' }),
+        E('span', { className: 'wbd-loadLabel' }, cell.label),
+        E('span', { className: 'wbd-loadNum' }, typeof cell.value === 'number' ? String(cell.value) : '—'),
+        typeof cell.value === 'number' ? E('span', { className: 'wbd-loadPct' }, '%') : null)))
+    }
+
     /**
      * The always-visible workspace bar.
      *
@@ -1129,6 +1259,7 @@ window.__ModuleLoader__.load({
         E('span', { className: 'wbd-title' }, t('pane.title')),
         E('span', { className: 'wbd-titleHint' }, mode === 'docked' ? t('pane.docked') : t('pane.global')),
         E('span', { className: 'wbd-titleActions' },
+          E(LoadMeter, { t }),
           E('button', {
             type: 'button', className: 'wbd-titleBtn', title: restarting ? t('pane.restarting') : t('pane.restart'),
             'aria-label': t('pane.restart'), disabled: restarting,
@@ -1344,6 +1475,33 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 .wbd-titleBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .wbd-titleBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
 .wbd-titleBtn:disabled{opacity:.45;cursor:default;background:transparent}
+/* ===== titlebar load meter =====
+   Per-metric hue so the three numbers are distinguishable at a glance, plus a
+   red override once a metric crosses its threshold — colour identifies, red
+   warns. The breathing uses opacity ONLY: animating box-shadow / filter keeps
+   the compositor busy forever, which is a silly price for a load indicator. */
+.wbd-load{display:inline-flex;align-items:center;gap:8px;flex:none;margin-right:2px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
+.wbd-loadCell{display:inline-flex;align-items:center;gap:3px}
+.wbd-loadDot{width:6px;height:6px;border-radius:50%;flex:none}
+.wbd-loadNum{font-weight:600}
+.wbd-loadPct{opacity:.7}
+.wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#38bdf8}
+.wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#a78bfa}
+.wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#fbbf24}
+.wbd-loadCell[data-level="warn"] .wbd-loadNum,
+.wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e5534b;font-weight:700}
+.wbd-loadCell[data-level="hot"] .wbd-loadDot{animation:wbdLoadBreath 1.6s ease-in-out infinite}
+@keyframes wbdLoadBreath{0%,100%{opacity:.45}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.wbd-loadDot{animation:none!important;opacity:1}}
+html[data-theme="light"] .wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#0284c7}
+html[data-theme="light"] .wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#7c3aed}
+html[data-theme="light"] .wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#b45309}
+html[data-theme="light"] .wbd-loadCell[data-level="warn"] .wbd-loadNum,
+html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#c62828}
+/* Narrow tiers: the dot IS the label, and "—" plus a % reads badly. The docked
+   panel is 620px by default (t1), so this is the COMMON case, not an edge case. */
+[data-w="t1"] .wbd-loadLabel, [data-w="t1"] .wbd-loadPct,
+[data-w="t2"] .wbd-loadLabel, [data-w="t2"] .wbd-loadPct{display:none}
 .wbd-tabs{display:flex;align-items:center;gap:2px;height:38px;flex:none;padding:0 10px;border-bottom:none;background:var(--dsw-alias-bg-layer-1,#1b1e24);overflow-x:auto;scrollbar-width:thin}
 .wbd-tab{display:inline-flex;align-items:center;gap:5px;flex:none;height:26px;padding:0 10px;border:none;border-radius:7px;background:transparent;color:#9aa0a8;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .wbd-tab:hover{background:rgba(255,255,255,.05);color:#cfd3d9}

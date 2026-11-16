@@ -263,3 +263,65 @@ test('every workbench page publishes its context, and guards a missing bus', () 
     assert.match(source, /typeof dock\.(setStatus|setContext) (===|!==) 'function'/, page.rel + ' should guard the bus')
   }
 })
+
+/* ===================== titlebar load meter ===================== */
+
+test('the meter declares the same thresholds as the host sampler', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  const hostSource = readFileSync(path.join(here, '..', 'src', 'load.js'), 'utf8')
+  const hostWarn = Number(/WARN_PCT\s*=\s*(\d+)/.exec(hostSource)[1])
+  const hostHot = Number(/HOT_PCT\s*=\s*(\d+)/.exec(hostSource)[1])
+  const clientWarn = Number(/METER_WARN_PCT\s*=\s*(\d+)/.exec(source)[1])
+  const clientHot = Number(/METER_HOT_PCT\s*=\s*(\d+)/.exec(source)[1])
+  assert.equal(clientWarn, hostWarn)
+  assert.equal(clientHot, hostHot)
+})
+
+test('the meter registers into the titlebar action row', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  assert.match(source, /wbd-titleActions/)
+  assert.match(source, /dsh-workbay-dock\/api\/load/)
+  /* Narrow tiers hide the label and the percent sign by CSS, so both spans exist
+     unconditionally and both carry a hide rule. */
+  assert.match(source, /wbd-loadLabel/)
+  assert.match(source, /wbd-loadDot/)
+  assert.match(source, /wbd-loadPct/)
+  assert.match(source, /\[data-w="t1"\] \.wbd-loadLabel/, 't1 must hide the label')
+})
+
+test('both locale dictionaries carry the meter keys', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  for (const key of ['load.title', 'load.cpu', 'load.gpu', 'load.mem', 'load.noGpu']) {
+    const hits = source.split("'" + key + "'").length - 1
+    assert.ok(hits >= 2, key + ' must appear in ZH and EN, found ' + hits)
+  }
+})
+
+/* Review Focus 1: the first sample has no CPU baseline, so the meter MUST retry
+   once instead of sitting on "—" forever — and exactly once, not in a loop. */
+test('the meter retries a null CPU reading exactly once', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  /* The delay is a named constant, not a literal buried in the hook: assert the
+     VALUE the spec pins, then assert the body actually uses it. */
+  const retryMs = Number(/METER_RETRY_MS\s*=\s*(\d+)/.exec(source)[1])
+  assert.equal(retryMs, 1500, 'retry delay is 1500ms per the spec')
+  const body = source.slice(source.indexOf('function useLoadMeter'), source.indexOf('function LoadMeter'))
+  assert.match(body, /cpu === null/, 'must branch on a missing CPU baseline')
+  assert.match(body, /retried/, 'must hold a one-shot retry flag')
+  assert.match(body, /retried\.current === false/, 'the retry must be gated, not repeated')
+  assert.match(body, /METER_RETRY_MS/, 'the retry must use the declared delay')
+})
+
+/* Review Focus 3: an unfocused / hidden window must not sample at all. */
+test('the meter skips sampling when the window is hidden or unfocused', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  const body = source.slice(source.indexOf('function useLoadMeter'), source.indexOf('function LoadMeter'))
+  assert.match(body, /document\.hidden/, 'must check document.hidden')
+  assert.match(body, /document\.hasFocus\(\)/, 'must check document.hasFocus()')
+  /* Both guards must sit BEFORE the fetch, not after it. */
+  assert.ok(
+    body.indexOf('document.hasFocus()') < body.indexOf('api/load'),
+    'the focus guard must precede the request',
+  )
+  assert.match(body, /removeEventListener\('focus'/, 'the focus listener must be removed on unmount')
+})
