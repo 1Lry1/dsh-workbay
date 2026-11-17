@@ -97,9 +97,12 @@ window.__ModuleLoader__.load({
       'layout.split': '主从双栏',
       'layout.tri': '三栏',
       'load.title': '本机负载',
-      'load.cpu': '处理器',
-      'load.gpu': '显卡',
-      'load.mem': '内存',
+      /* The three metric words stay in ASCII in every locale, on request: they
+         are the conventional labels for these numbers, and 处理器 / 显卡 / 内存
+         made the row wider without being any clearer. */
+      'load.cpu': 'CPU',
+      'load.gpu': 'GPU',
+      'load.mem': 'MEM',
       'load.noGpu': '未检测到 NVIDIA 显卡（只显示 CPU / 内存）',
       'load.offline': '读不到宿主负载接口',
     }
@@ -134,9 +137,10 @@ window.__ModuleLoader__.load({
       'layout.split': 'Master-detail',
       'layout.tri': 'Three columns',
       'load.title': 'Machine load',
+      /* CPU / GPU / MEM in every locale — see the ZH note above. */
       'load.cpu': 'CPU',
       'load.gpu': 'GPU',
-      'load.mem': 'RAM',
+      'load.mem': 'MEM',
       'load.noGpu': 'No NVIDIA GPU detected (CPU / RAM only)',
       'load.offline': 'Host load endpoint unreachable',
     }

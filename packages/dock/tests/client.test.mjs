@@ -300,6 +300,20 @@ test('the metric words are never hidden at any tier', () => {
   assert.equal(hidePct, null, 'no tier may hide the percent sign')
 })
 
+test('the metric words are ASCII abbreviations in every locale', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  /* Explicitly requested: `CPU` / `GPU` / `MEM`, not 处理器 / 显卡 / 内存 and not
+     RAM. Locale dictionaries are the easy place for a well-meaning translation to
+     undo this, so pin the exact strings inside each dictionary slice. */
+  const zh = source.slice(source.indexOf('const ZH = {'), source.indexOf('const EN = {'))
+  const en = source.slice(source.indexOf('const EN = {'), source.indexOf('const LOCALES ='))
+  const want = [['load.cpu', 'CPU'], ['load.gpu', 'GPU'], ['load.mem', 'MEM']]
+  for (const [key, word] of want) {
+    assert.ok(zh.includes("'" + key + "': '" + word + "'"), key + ' must be ' + word + ' in ZH')
+    assert.ok(en.includes("'" + key + "': '" + word + "'"), key + ' must be ' + word + ' in EN')
+  }
+})
+
 test('the request path, the guard order and the envelope check are all present', () => {
   const source = readFileSync(clientPath, 'utf8')
   assert.match(source, /dsh-workbay-dock\/api\/load/)
