@@ -34,8 +34,28 @@ export const HOT_PCT = 95
  * null (the client retries shortly).
  */
 export const BASELINE_TTL_MS = 30000
-/** `nvidia-smi` costs ~40ms and a process; 5s polling does not need a fresh one. */
-export const GPU_CACHE_MS = 4000
+/**
+ * `nvidia-smi` costs a process spawn, and it is the ONLY expensive part of a
+ * sample: CPU is a synchronous `os.cpus()` diff and memory is two synchronous
+ * reads. Measured on this machine it runs **~193ms** (107–462ms), not the ~40ms
+ * the reference implementation's comment claims — so at a flat 5s cadence the
+ * plugin was spawning it 12 times a minute, ~2.3s of process time, forever.
+ *
+ * The two windows below fix that by back-off, without losing responsiveness
+ * where it matters:
+ *
+ *   - ACTIVE — the card is doing something, or we have never looked: sample it
+ *     at the poll cadence (4s cache against a 5s poll ⇒ one spawn per poll, which
+ *     is what a user watching a busy GPU wants).
+ *   - IDLE   — util is 0, or there is no card at all: nothing is going to change
+ *     in a second, so cache for 30s. A GPU going from 0% to busy is still caught
+ *     within half a minute, and the CPU/MEM numbers the user cares about most
+ *     keep updating every 5s regardless.
+ */
+export const GPU_ACTIVE_CACHE_MS = 4000
+export const GPU_IDLE_CACHE_MS = 30000
+/** Util at or below this counts as idle for cache purposes. */
+export const GPU_IDLE_UTIL = 1
 export const GPU_TIMEOUT_MS = 3000
 
 const BYTES_PER_GB = 1073741824
@@ -183,9 +203,18 @@ export function createGpuReader(deps) {
   let at = 0
   let busy = false
 
+  /* How long the CURRENT reading stays good for. A card that is idle (or absent)
+     backs off; one that is working keeps refreshing. Recomputed from `value`
+     after every spawn, so the decision always reflects the latest sample. */
+  const cacheWindow = () => {
+    if (value === null) return GPU_IDLE_CACHE_MS          // no card / no reading: no reason to hammer
+    if (!(value.util > GPU_IDLE_UTIL)) return GPU_IDLE_CACHE_MS
+    return GPU_ACTIVE_CACHE_MS
+  }
+
   return async function readGpu() {
     if (busy) return value
-    if (at !== 0 && nowMs() - at < GPU_CACHE_MS) return value
+    if (at !== 0 && nowMs() - at < cacheWindow()) return value
     busy = true
     try {
       value = parseGpuRow(await spawnOnce())

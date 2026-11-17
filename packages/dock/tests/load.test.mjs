@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   WARN_PCT, HOT_PCT, BASELINE_TTL_MS,
+  GPU_ACTIVE_CACHE_MS, GPU_IDLE_CACHE_MS,
   createCpuReader, readMemory, createGpuReader, sampleLoad,
 } from '../src/load.js'
 
@@ -88,6 +89,54 @@ test('gpu: a second call inside the cache window does not respawn', async () => 
   clock += 1000
   await read()
   assert.equal(calls, 1)
+})
+
+/* `nvidia-smi` measured ~193ms on this machine (107-462ms), which is the only
+   expensive part of a sample: CPU is a sync `os.cpus()` diff and memory is two
+   sync reads. So the GPU alone backs off while it is idle. */
+test('gpu: an idle GPU is cached far longer than a busy one', async () => {
+  let clock = 1000
+  let calls = 0
+  const read = createGpuReader({
+    nowMs: () => clock,
+    spawnOnce: async () => { calls += 1; return 'GPU, 0, 60, 100, 2048' },  // util 0 = idle
+  })
+  await read()
+  assert.equal(calls, 1)
+  /* Well past the active window: still idle, so still cached. */
+  clock += GPU_ACTIVE_CACHE_MS + 1000
+  await read()
+  assert.equal(calls, 1, 'an idle GPU must not be re-sampled at the active cadence')
+  /* Past the idle window it finally re-samples. */
+  clock += GPU_IDLE_CACHE_MS
+  await read()
+  assert.equal(calls, 2)
+})
+
+test('gpu: a busy GPU is sampled at the active cadence', async () => {
+  let clock = 1000
+  let calls = 0
+  const read = createGpuReader({
+    nowMs: () => clock,
+    spawnOnce: async () => { calls += 1; return 'GPU, 87, 70, 900, 2048' },  // util 87 = busy
+  })
+  await read()
+  clock += GPU_ACTIVE_CACHE_MS
+  await read()
+  assert.equal(calls, 2, 'a busy GPU must refresh every active window')
+})
+
+test('gpu: a machine with no card also backs off instead of hammering', async () => {
+  let clock = 1000
+  let calls = 0
+  const read = createGpuReader({
+    nowMs: () => clock,
+    spawnOnce: async () => { calls += 1; return null },   // no nvidia-smi / no card
+  })
+  await read()
+  clock += GPU_ACTIVE_CACHE_MS + 1000
+  await read()
+  assert.equal(calls, 1, 'no card means no reason to keep spawning')
 })
 
 test('gpu: overlapping calls share one spawn (busy gate)', async () => {
