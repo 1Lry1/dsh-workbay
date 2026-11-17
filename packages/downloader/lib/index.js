@@ -901,6 +901,37 @@ export function classifyDownloaderPids(pids, ourPid) {
   }
 }
 
+/**
+ * Reconcile the cheap `tasklist` snapshot with the PID the bridge recorded.
+ *
+ * `tasklist` occasionally misses the very process that is visibly burning
+ * (heavy COM/CPU, process starting up). The old code immediately forgot our
+ * own PID on that single miss, so the next tick called our own Downloader a
+ * "manual" instance every 10 s. Keep the recorded PID while the exact process
+ * probe says it is alive; adopt the sole process while our bridge is active.
+ */
+export function reconcileDownloaderPids(pids, recordedPid, recordedAlive, bridgeActive) {
+  const reality = classifyDownloaderPids(pids, recordedPid)
+  if (reality.mine !== null) return Object.assign({}, reality, { clearRecorded: false })
+  const known = Number.isInteger(recordedPid) && recordedPid > 0 ? recordedPid : null
+  if (known !== null && recordedAlive === true) {
+    return {
+      total: reality.total,
+      mine: known,
+      foreign: reality.foreign.filter((pid) => pid !== known),
+      clearRecorded: false,
+    }
+  }
+  if (bridgeActive === true && recordedAlive !== true && reality.foreign.length === 1) {
+    /* The bridge owns the sole Downloader even if it restarted under a new PID
+       (or tasklist missed it before we recorded one). Re-adopt it instead of
+       labelling our own burning tool as "manual" on every watch tick. */
+    const adopted = reality.foreign[0]
+    return { total: reality.total, mine: adopted, foreign: [], clearRecorded: false }
+  }
+  return Object.assign({}, reality, { clearRecorded: known !== null })
+}
+
 export function shouldLaunchFlash(flash, helperAlive) {
   if (flash.connected) return false
   if (flash.launching) return false
@@ -1016,7 +1047,7 @@ export function withNoSleepSetting(text) {
   }
   return { found: false, value: null, noSleep: false, text: source, changed: false }
 }
-export const __test = { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions }
+export const __test = { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions }
 
 export function apply(ctx) {
   /* AutoStart 是「第二遍烧录」的来源：插件活着的时候由它统一触发。
@@ -1686,8 +1717,18 @@ function freshestDcf(override) {
 
   /** Real Downloader PIDs vs the one our bridge recorded. */
   function currentDownloaderReality() {
-    const reality = classifyDownloaderPids(listDownloaderPids(), state.flash.pid)
-    if (reality.mine === null) state.flash.pid = null
+    const recorded = state.flash.pid
+    const bridgeActive = state.flash.connected === true
+      || state.flash.launching === true
+      || state.flash.burning === true
+    const reality = reconcileDownloaderPids(
+      listDownloaderPids(),
+      recorded,
+      isProcessAlive(recorded),
+      bridgeActive,
+    )
+    if (reality.mine !== null) state.flash.pid = reality.mine
+    else if (reality.clearRecorded === true) state.flash.pid = null
     return reality
   }
 

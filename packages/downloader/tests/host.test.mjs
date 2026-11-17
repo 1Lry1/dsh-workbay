@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } fro
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { __test } from '../lib/index.js'
-const { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, isUnderScanRoot, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions } = __test
+const { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, isUnderScanRoot, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions } = __test
 function flashState(overrides = {}) {
   return { connected: false, launching: false, pid: null, ...overrides }
 }
@@ -129,6 +129,32 @@ test('classifyDownloaderPids separates our bridge child from a user-opened Downl
   assert.deepEqual(classifyDownloaderPids([101], 999), { total: 1, mine: null, foreign: [101] })
   /* Duplicates / junk from tasklist are ignored. */
   assert.deepEqual(classifyDownloaderPids([101, 101, 'x', -1, null], null), { total: 1, mine: null, foreign: [101] })
+})
+
+test('reconcileDownloaderPids keeps our PID through a transient tasklist miss', () => {
+  /* The exact process probe still sees our child even though tasklist missed it. */
+  assert.deepEqual(reconcileDownloaderPids([], 202, true, false), {
+    total: 0, mine: 202, foreign: [], clearRecorded: false,
+  })
+  assert.deepEqual(reconcileDownloaderPids([101], 202, true, false), {
+    total: 1, mine: 202, foreign: [101], clearRecorded: false,
+  })
+  /* The recorded process is really gone: next real instance is foreign. */
+  assert.deepEqual(reconcileDownloaderPids([101], 202, false, false), {
+    total: 1, mine: null, foreign: [101], clearRecorded: true,
+  })
+  /* Our PID was lost, but the active bridge owns the sole Downloader. */
+  assert.deepEqual(reconcileDownloaderPids([202], null, false, true), {
+    total: 1, mine: 202, foreign: [], clearRecorded: false,
+  })
+  /* The bridge child restarted under a new PID while the burn stayed active. */
+  assert.deepEqual(reconcileDownloaderPids([202], 101, false, true), {
+    total: 1, mine: 202, foreign: [], clearRecorded: false,
+  })
+  /* Never adopt a single process when the bridge is idle. */
+  assert.deepEqual(reconcileDownloaderPids([202], null, false, false), {
+    total: 1, mine: null, foreign: [202], clearRecorded: false,
+  })
 })
 
 test('shouldLaunchFlash blocks once connected, allows after helper exit', () => {
