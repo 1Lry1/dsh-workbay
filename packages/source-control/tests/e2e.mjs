@@ -89,6 +89,16 @@ try {
   writeFileSync(path.join(gitRepo, 'gone.ts'), 'export const gone = 0\n')
   mkdirSync(path.join(gitRepo, 'src'), { recursive: true })
   writeFileSync(path.join(gitRepo, 'src', 'deep.ts'), 'export const d = 3\n')
+  /* Long-enough file that a jump to the hit must actually scroll the editor,
+     not just select a line that is already in the first viewport. */
+  const bigLines = []
+  for (let index = 1; index <= 130; index += 1) {
+    bigLines.push(index === 50
+      ? 'export const secondary_needle_xyz = 2'
+      : 'export const filler' + String(index) + ' = ' + String(index))
+  }
+  bigLines.push('export const unique_needle_gtx23 = 1')
+  writeFileSync(path.join(gitRepo, 'big.ts'), bigLines.join('\n') + '\n')
   git(['add', '-A'], gitRepo)
   git(['commit', '-q', '-m', 'initial'], gitRepo)
   rmSync(path.join(gitRepo, 'gone.ts'))
@@ -731,6 +741,55 @@ function mountShell() {
   check('clicking a content hit opens the file at the matching line',
     String(jumped.active).indexOf('extra') >= 0 || String(jumped.gutter).trim() === '2', jumped)
 
+  /* Clicking the FILE row (not one of its match rows) must also land on the
+     first hit, and a hit far enough down must scroll the editor. This is the
+     path the user takes when the source tab was on a diff. */
+  await evaluate(`(function () {
+    var tabs = [].slice.call(document.querySelectorAll('.scw-tab'))
+    var diff = tabs.filter(function (x) { return /变更|Diff/.test(x.textContent) })[0]
+    if (diff) diff.click()
+  })()`)
+  await sleep(200)
+  await typeSearch('unique_needle_gtx23')
+  await sleep(1800)
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-searchResults .scw-row.is-dir')
+    if (row) row.click()
+  })()`)
+  await waitFor("(function(){var a=document.querySelector('.cm-activeLine');return a && a.textContent.indexOf('unique_needle_gtx23')>=0})()")
+  await sleep(500)
+  const fileRowJump = JSON.parse(await evaluate(`JSON.stringify({
+    active: document.querySelector('.cm-activeLine') ? document.querySelector('.cm-activeLine').textContent : '',
+    gutter: document.querySelector('.cm-activeLineGutter') ? document.querySelector('.cm-activeLineGutter').textContent : '',
+    scrollTop: document.querySelector('.cm-scroller') ? document.querySelector('.cm-scroller').scrollTop : -1,
+  })`))
+  check('clicking a search file row opens and scrolls to its first hit',
+    String(fileRowJump.active).indexOf('unique_needle_gtx23') >= 0
+    && Number(fileRowJump.scrollTop) > 0, JSON.stringify(fileRowJump))
+
+  /* Same file already open: a second hit must move the existing editor too. */
+  await evaluate(`(function () {
+    var tabs = [].slice.call(document.querySelectorAll('.scw-tab'))
+    var diff = tabs.filter(function (x) { return /变更|Diff/.test(x.textContent) })[0]
+    if (diff) diff.click()
+  })()`)
+  await sleep(200)
+  await typeSearch('secondary_needle_xyz')
+  await sleep(1600)
+  await evaluate(`(function () {
+    var row = document.querySelector('.scw-matchRow')
+    if (row) row.click()
+  })()`)
+  await waitFor("(function(){var a=document.querySelector('.cm-activeLine');return a && a.textContent.indexOf('secondary_needle_xyz')>=0})()")
+  await sleep(500)
+  const existingJump = JSON.parse(await evaluate(`JSON.stringify({
+    active: document.querySelector('.cm-activeLine') ? document.querySelector('.cm-activeLine').textContent : '',
+    scrollTop: document.querySelector('.cm-scroller') ? document.querySelector('.cm-scroller').scrollTop : -1,
+  })`))
+  check('a second hit in the already-open file still scrolls',
+    String(existingJump.active).indexOf('secondary_needle_xyz') >= 0
+    && Number(existingJump.scrollTop) > 0, existingJump)
+
   /* Esc returns to browsing: the search box is the innermost scope. */
   await evaluate(`(function () {
     var el = document.querySelector('.scw-searchInput')
@@ -764,7 +823,7 @@ function mountShell() {
   await typeSearch('alpha.')
   await sleep(1300)
   await typeSearch('alpha')
-  await sleep(1500)
+  await waitFor("(function(){return [].slice.call(document.querySelectorAll('.scw-searchResults .scw-rowName')).some(function(n){return n.textContent==='alpha.ts'})})()", 5000)
   const accumulated = JSON.parse(await evaluate(`JSON.stringify({
     value: document.querySelector('.scw-searchInput') ? document.querySelector('.scw-searchInput').value : null,
     rows: [].slice.call(document.querySelectorAll('.scw-searchResults .scw-rowName')).map(function (n) { return n.textContent }),

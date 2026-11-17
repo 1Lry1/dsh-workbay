@@ -4371,6 +4371,11 @@ function mountSourcePane(container, api, ctx, t) {
        "is this file dirty?" on a click) and there is exactly one such pane per
        page instance. */
     const sourcePaneRef = { current: null }
+    /* A command can arrive between the shell's selection and the pane's mount
+       (or while the pane is being remounted for a different root). Buffer the
+       latest request instead of silently dropping it; jump wins over open because
+       it carries the search-hit line. */
+    const pendingPaneCommand = { open: null, jump: null }
 
     function apply(ctx) {
       const doc = typeof document !== 'undefined' && document !== null ? document : null
@@ -4424,7 +4429,19 @@ function mountSourcePane(container, api, ctx, t) {
               source: (container, api) => {
                 const mounted = mountSourcePane(container, api, ctx, t)
                 if (mounted !== null && mounted !== undefined && mounted.handle !== undefined) {
-                  sourcePaneRef.current = mounted.handle
+                  const handle = mounted.handle
+                  sourcePaneRef.current = handle
+                  const pendingJump = pendingPaneCommand.jump
+                  const pendingOpen = pendingPaneCommand.open
+                  pendingPaneCommand.open = null
+                  pendingPaneCommand.jump = null
+                  try {
+                    if (pendingJump !== null && typeof handle.jump === 'function') {
+                      handle.jump(pendingJump.rel, pendingJump.line)
+                    } else if (pendingOpen !== null && typeof handle.openFile === 'function') {
+                      handle.openFile(pendingOpen)
+                    }
+                  } catch (error) { void error }
                 }
                 return () => {
                   sourcePaneRef.current = null
@@ -4434,13 +4451,23 @@ function mountSourcePane(container, api, ctx, t) {
             },
             commands: {
               /** Open a workspace-relative file in the editor surface. */
-              openFile: (rel) => { if (sourcePaneRef.current !== null) sourcePaneRef.current.openFile(rel) },
+              openFile: (rel) => {
+                if (sourcePaneRef.current !== null) sourcePaneRef.current.openFile(rel)
+                else pendingPaneCommand.open = rel
+              },
               /** True when that file has unsaved edits in the editor. */
               hasDirty: (rel) => (sourcePaneRef.current !== null ? sourcePaneRef.current.hasDirty(rel) === true : false),
               /** Re-read the file from disk (used after a git write touched it). */
               reload: (rel) => { if (sourcePaneRef.current !== null) sourcePaneRef.current.reload(rel) },
               /** 打开文件并定位到某一行（搜索结果点击）。 */
-              jump: (rel, line) => { if (sourcePaneRef.current !== null && typeof sourcePaneRef.current.jump === 'function') sourcePaneRef.current.jump(rel, line) },
+              jump: (rel, line) => {
+                if (sourcePaneRef.current !== null) {
+                  if (typeof sourcePaneRef.current.jump === 'function') sourcePaneRef.current.jump(rel, line)
+                  else if (typeof sourcePaneRef.current.openFile === 'function') sourcePaneRef.current.openFile(rel)
+                } else {
+                  pendingPaneCommand.jump = { rel, line }
+                }
+              },
             },
           })
           ctx.effect(() => (typeof off === 'function' ? off : () => {}), 'dsh-workbay-files: workbench page')

@@ -3084,6 +3084,37 @@ function Page(props) {
         return () => { clearTimeout(timer) }
       }, [searchQuery, searchMode, workspaceRoot, call, t, searchCase, searchWord, searchRegex, browseRoot])
 
+      /**
+       * A search hit can race the source pane's mount.
+       *
+       * The pane can be mounted/remounted by the same click that switches the
+       * tab (especially in the narrow single-column layout). Calling
+       * `commands.jump` only synchronously targeted the previous pane, or a pane
+       * that was not mounted yet, so the file opened but stayed at line 1. Send
+       * it now and after the remount settles; the files page also buffers a
+       * command that arrives while its editor root is installing.
+       */
+      const jumpSeqRef = useRef(0)
+      const jumpSourceLater = useCallback((rel, line) => {
+        const seq = jumpSeqRef.current + 1
+        jumpSeqRef.current = seq
+        const run = () => {
+          if (seq !== jumpSeqRef.current) return
+          const page = dock !== undefined && dock !== null && typeof dock.get === 'function'
+            ? dock.get('files')
+            : null
+          if (page === null || page === undefined || page.commands === undefined || page.commands === null) return
+          if (typeof page.commands.jump !== 'function') return
+          try { page.commands.jump(rel, line) } catch (error) { void error }
+        }
+        /* Run once for an already-mounted pane and again after a tab/pane
+           remount; the files page buffers a command that arrives before its
+           editor root installs. Generation guard: a newer click wins. */
+        run()
+        setTimeout(run, 80)
+        setTimeout(run, 250)
+      }, [dock])
+
       /** Flatten the host's grouped result into clickable rows. */
 
       const searchRows = useMemo(() => {
@@ -3139,11 +3170,7 @@ function Page(props) {
               const first = Array.isArray(file.matches) && file.matches.length > 0
                 ? Number(file.matches[0].line)
                 : 0
-              const page = sourcePage
-              if (first > 0 && page !== null && page !== undefined && page.commands !== undefined
-                && typeof page.commands.jump === 'function') {
-                try { page.commands.jump(rel, first) } catch (error) { void error }
-              }
+              if (first > 0) jumpSourceLater(rel, first)
             },
           },
           E('span', { className: 'scw-rowChevron' }),
@@ -3163,11 +3190,7 @@ function Page(props) {
               selectRel(rel)
               setActiveTab('source')
               /* 点匹配行直接滚到那一行，而不是只把文件打开让你自己找。 */
-              const page = sourcePage
-              if (page !== null && page !== undefined && page.commands !== undefined
-                && typeof page.commands.jump === 'function') {
-                try { page.commands.jump(rel, match.line) } catch (error) { void error }
-              }
+              jumpSourceLater(rel, match.line)
             },
             },
             E('span', { className: 'scw-matchLine' }, String(match.line)),
