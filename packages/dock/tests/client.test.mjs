@@ -288,6 +288,18 @@ test('the meter is actually mounted into the titlebar action row', () => {
   assert.match(source, /\bE\('span', \{ className: 'wbd-loadLabel' \}/, 'each cell needs its label')
 })
 
+test('the metric words are never hidden at any tier', () => {
+  const source = readFileSync(clientPath, 'utf8')
+  /* The user asked for the words CPU / GPU / MEM to always be visible. Measured
+     in a real browser the full row is 179px and fits the 520px minimum dock
+     width, so no tier needs to drop them. A `display:none` rule keyed off
+     `[data-w]` for the label or the percent sign would silently reverse this. */
+  const hideRules = source.match(/\[data-w="t[1-4]"\][^{]*wbd-loadLabel[^{]*\{[^}]*display\s*:\s*none/g)
+  assert.equal(hideRules, null, 'no tier may hide the metric word')
+  const hidePct = source.match(/\[data-w="t[1-4]"\][^{]*wbd-loadPct[^{]*\{[^}]*display\s*:\s*none/g)
+  assert.equal(hidePct, null, 'no tier may hide the percent sign')
+})
+
 test('the request path, the guard order and the envelope check are all present', () => {
   const source = readFileSync(clientPath, 'utf8')
   assert.match(source, /dsh-workbay-dock\/api\/load/)

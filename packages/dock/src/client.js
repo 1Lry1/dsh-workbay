@@ -839,11 +839,13 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The titlebar meter: one colour-coded dot per metric, the number beside it.
+     * The titlebar meter: one colour-coded dot per metric, the word and the
+     * number beside it.
      *
-     * Deliberately does NOT branch on the shell tier: narrow tiers hide the label
-     * and the percent sign through CSS keyed off `[data-w]` on the panel root, so
-     * "how wide am I" and "what does the machine say" never get tangled.
+     * The labels are never hidden, at any tier: measured in a real browser the
+     * whole row is 179px and fits the titlebar even at the 520px minimum dock
+     * width, so there is nothing to trade away. A bare dot would also make the
+     * user memorise a hue, which defeats the point of colour-coding.
      */
     function LoadMeter(props) {
       const { t } = props
@@ -1564,14 +1566,16 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
    red override once a metric crosses its threshold — colour identifies, red
    warns. The breathing uses opacity ONLY: animating box-shadow / filter keeps
    the compositor busy forever, which is a silly price for a load indicator. */
-.wbd-load{display:inline-flex;align-items:center;gap:8px;flex:none;margin-right:2px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
+.wbd-load{display:inline-flex;align-items:center;gap:10px;flex:none;margin-right:2px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
 /* A failed poll keeps the last numbers but visibly dims them: the reading is no
    longer current, and silently showing stale data is worse than showing none. */
 .wbd-load[data-state="stale"]{opacity:.55}
 .wbd-loadCell{display:inline-flex;align-items:center;gap:3px}
 .wbd-loadDot{width:6px;height:6px;border-radius:50%;flex:none}
+/* The word is the point: let it carry the weight, keep the number quiet. */
+.wbd-loadLabel{font-weight:600;letter-spacing:.02em}
 .wbd-loadNum{font-weight:600}
-.wbd-loadPct{opacity:.7}
+.wbd-loadPct{opacity:.7;margin-left:-1px}
 .wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#38bdf8}
 .wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#a78bfa}
 .wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#fbbf24}
@@ -1589,10 +1593,12 @@ html[data-theme="light"] .wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:
    mean two different hues depending on the theme. */
 html[data-theme="light"] .wbd-loadCell[data-level="warn"] .wbd-loadNum,
 html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e5534b}
-/* Narrow tiers: the dot IS the label, and "—" plus a % reads badly. The docked
-   panel is 620px by default (t1), so this is the COMMON case, not an edge case. */
-[data-w="t1"] .wbd-loadLabel, [data-w="t1"] .wbd-loadPct,
-[data-w="t2"] .wbd-loadLabel, [data-w="t2"] .wbd-loadPct{display:none}
+/* Labels are ALWAYS shown. Measured in a real browser at every dock width
+   (520 / 564 / 620 / 680 / 760 / 980 px): the full "CPU 35% · GPU — · MEM 80%"
+   row is 179px and never overflows the titlebar, so there is no width at which
+   hiding the word buys anything. The word is also the honest label — a bare
+   coloured dot asks the user to memorise a hue, which is exactly the thing the
+   colour-coding was supposed to save them from. */
 .wbd-tabs{display:flex;align-items:center;gap:2px;height:38px;flex:none;padding:0 10px;border-bottom:none;background:var(--dsw-alias-bg-layer-1,#1b1e24);overflow-x:auto;scrollbar-width:thin}
 .wbd-tab{display:inline-flex;align-items:center;gap:5px;flex:none;height:26px;padding:0 10px;border:none;border-radius:7px;background:transparent;color:#9aa0a8;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .wbd-tab:hover{background:rgba(255,255,255,.05);color:#cfd3d9}
