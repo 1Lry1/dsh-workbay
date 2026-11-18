@@ -293,11 +293,14 @@ function mountPage(tier) {
   })()`)
   await sleep(500)
   const afterCancel = JSON.parse(await ev(`JSON.stringify({
-    inputs: document.querySelectorAll('input[type=text]').length,
+    dialogInputs: [].slice.call(document.querySelectorAll('input[type=text]')).filter(function (input) {
+      return String(input.placeholder || '').indexOf('Downloader.exe') >= 0
+    }).length,
+    baudInputs: document.querySelectorAll('.abw-baud').length,
     crashed: document.body.innerText.indexOf('Page crashed') >= 0,
   })`))
   check('cancelling closes the dialog and does not crash the page',
-    afterCancel.inputs === 0 && afterCancel.crashed === false, afterCancel)
+    afterCancel.dialogInputs === 0 && afterCancel.baudInputs === 1 && afterCancel.crashed === false, afterCancel)
 
   /* ---- T3 split layout: the log must get the larger share ---- */
   await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false })

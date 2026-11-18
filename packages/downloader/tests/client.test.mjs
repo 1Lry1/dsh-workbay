@@ -200,3 +200,25 @@ test('the bundle no longer carries the chat-insertion button', () => {
 test('the page still streams logs from the host SSE route', () => {
   assert.match(source, /new EventSource\(API \+ '\/events'\)/)
 })
+
+test('baud rate is a preset datalist that also accepts arbitrary valid values', () => {
+  const { module } = loadClient()
+  const { parseBaudRate } = module.__test
+  assert.equal(parseBaudRate('1500000'), 1500000)
+  assert.equal(parseBaudRate('921600'), 921600)
+  assert.equal(parseBaudRate('300'), 300)
+  assert.equal(parseBaudRate('4000000'), 4000000)
+  assert.equal(parseBaudRate('299'), null)
+  assert.equal(parseBaudRate('4000001'), null)
+  assert.equal(parseBaudRate('abc'), null)
+  assert.equal(parseBaudRate(''), null)
+  assert.match(source, /list: 'abw-baudPresets'/)
+  assert.match(source, /h\('datalist', \{ id: 'abw-baudPresets' \}/)
+  assert.match(source, /波特率（可选择或直接输入）/)
+})
+
+test('the log scrollbar is high-contrast in dark mode', () => {
+  assert.match(source, /scrollbar-width:thin;scrollbar-color:rgba\(170,184,210,\.55\)/)
+  assert.match(source, /\.abw-log::-webkit-scrollbar-thumb\{background:rgba\(170,184,210,\.55\)/)
+  assert.match(source, /\.abw-log::-webkit-scrollbar-thumb:hover\{background:rgba\(196,210,236,\.82\)/)
+})

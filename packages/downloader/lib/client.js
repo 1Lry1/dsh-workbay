@@ -130,7 +130,14 @@ function appendLogs(current, items, max) {
     }
 
     /** 本地日志文件占用（页面显示用）。 */
-    function formatBytes(n) {
+    /* Both the preset list and free typing go through the same sanity check. */
+function parseBaudRate(value) {
+  const number = Number(value)
+  if (!Number.isInteger(number) || number < 300 || number > 4000000) return null
+  return number
+}
+
+function formatBytes(n) {
       const size = Number(n) || 0
       if (size < 1024) return size + ' B'
       if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
@@ -198,6 +205,7 @@ function appendLogs(current, items, max) {
       .abw-btn[data-v="danger"]{color:#f85149;border-color:#5a2a2a}
       .abw-btn[data-v="ghost"]{background:transparent;border-color:transparent;padding:3px 7px}
 
+      .abw-baud{width:96px;font-variant-numeric:tabular-nums}
       .abw-sel,.abw-inp{padding:4px 8px;border-radius:5px;font-size:12px;
         border:1px solid var(--dsw-border,#3a3a3d);background:var(--dsw-bg-2,#252528);
         color:var(--dsw-fg-1,#e6e6e6);outline:none;min-width:0}
@@ -236,7 +244,12 @@ function appendLogs(current, items, max) {
       .abw-deviceWarn{margin:2px 8px 6px;padding:5px 8px;border-radius:5px;background:rgba(210,153,34,.12);color:var(--dsw-alias-state-warning-primary,#d29922);font-size:11.5px;line-height:1.45}\n.abw-log{flex:1 1 auto;min-height:0;overflow:auto;
         font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5;
         white-space:pre;word-break:normal;border:1px solid var(--dsw-border,#2c2c2f);
-        border-radius:8px;padding:8px 10px;background:var(--dsw-bg-2,#18181a)}
+        border-radius:8px;padding:8px 10px;background:var(--dsw-bg-2,#18181a);
+        scrollbar-width:thin;scrollbar-color:rgba(170,184,210,.55) rgba(255,255,255,.04)}
+      .abw-log::-webkit-scrollbar{width:12px;height:12px}
+      .abw-log::-webkit-scrollbar-track{background:rgba(255,255,255,.045);border-radius:6px}
+      .abw-log::-webkit-scrollbar-thumb{background:rgba(170,184,210,.55);border:2px solid transparent;background-clip:padding-box;border-radius:6px}
+      .abw-log::-webkit-scrollbar-thumb:hover{background:rgba(196,210,236,.82);border:2px solid transparent;background-clip:padding-box}
       .abw-ll{display:flex;gap:6px}
       .abw-lt-time{flex:0 0 auto;color:var(--dsw-fg-3,#666);font-variant-numeric:tabular-nums;user-select:none}
       .abw-ls{flex:0 0 auto;width:12px;text-align:center;color:var(--dsw-fg-3,#666);user-select:none}
@@ -381,6 +394,7 @@ function appendLogs(current, items, max) {
       const [ports, setPorts] = React.useState([])
       const [selPort, setSelPort] = React.useState('')
       const [baud, setBaud] = React.useState(1500000)
+      const [baudDraft, setBaudDraft] = React.useState('1500000')
       const [filter, setFilter] = React.useState('all')
       const [follow, setFollow] = React.useState(true)
       const [input, setInput] = React.useState('')
@@ -404,6 +418,18 @@ function appendLogs(current, items, max) {
       const [selectedKey, setSelectedKey] = React.useState(null)
       // 内联提示（替代 alert）：不弹窗，在界面上就地显示几秒
       const [notice, setNotice] = React.useState('')
+      const baudPresets = [9600, 115200, 460800, 921600, 1500000, 2000000, 3000000]
+      const commitBaud = () => {
+        const value = parseBaudRate(baudDraft)
+        if (value === null) {
+          setBaudDraft(String(baud))
+          setNotice('波特率需为 300–4000000 之间的整数')
+          return false
+        }
+        setBaud(value)
+        setBaudDraft(String(value))
+        return true
+      }
       /* 擦除是全片动作，鼠标滑一下就烧进去太危险：第一次点只「上膛」，3 秒内再点
          才真正发送 StartErase。 */
       const [eraseArmed, setEraseArmed] = React.useState(false)
@@ -859,13 +885,30 @@ function appendLogs(current, items, max) {
                 p.name + (p.desc ? ' — ' + p.desc : '')))
             ),
             h('button', { className: 'abw-btn', 'data-v': 'ghost', onClick: loadPorts, disabled: busy, title: '刷新串口' }, '↻'),
-            h('select', {
-              className: 'abw-sel', value: baud, disabled: busy, title: '波特率',
-              onChange: e => setBaud(Number(e.target.value)),
-            },
-              [9600, 115200, 460800, 921600, 1500000, 2000000, 3000000].map(b =>
-                h('option', { key: b, value: b }, b))
-            ))
+            h('input', {
+              className: 'abw-sel abw-baud',
+              type: 'text',
+              inputMode: 'numeric',
+              list: 'abw-baudPresets',
+              value: baudDraft,
+              disabled: busy,
+              title: '波特率（可选择或直接输入）',
+              'aria-label': '波特率',
+              onChange: (e) => {
+                const raw = String(e.target.value || '').replace(/[^\d]/g, '').slice(0, 7)
+                setBaudDraft(raw)
+                const value = parseBaudRate(raw)
+                if (value !== null) setBaud(value)
+              },
+              onBlur: commitBaud,
+              onKeyDown: (e) => {
+                if (e.key !== 'Enter') return
+                e.preventDefault()
+                if (commitBaud()) e.currentTarget.blur()
+              },
+            }),
+            h('datalist', { id: 'abw-baudPresets' },
+              baudPresets.map(b => h('option', { key: b, value: b }))))
           : null,
         shellCompact
           ? h('span', { className: 'abw-cfgChevron' + (configExpanded ? ' is-open' : ''), 'aria-hidden': 'true' }, '▾')
@@ -1446,7 +1489,7 @@ function appendLogs(current, items, max) {
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      __test: { appendLogs, virtualRange, searchParts, mergeLogs, formatBytes, defaultLeftWidth, clampLeftWidth, LEFT_WIDTH_KEY },
+      __test: { appendLogs, virtualRange, searchParts, mergeLogs, formatBytes, parseBaudRate, defaultLeftWidth, clampLeftWidth, LEFT_WIDTH_KEY },
     }
   },
 })
