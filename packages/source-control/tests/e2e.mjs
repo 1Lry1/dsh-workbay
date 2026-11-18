@@ -495,6 +495,31 @@ function mountShell() {
     Array.isArray(historyDom.titles) && historyDom.titles.filter(function (x) { return /^[0-9a-f]{40}/.test(x) }).length >= 2,
     (historyDom.titles || []).slice(0, 2))
 
+  /* History search: the toolbar button opens a field selector + query box. */
+  await evaluate(`(function () {
+    var button = document.querySelector('.scw-toolIcon[title="搜索历史"]')
+    if (button) button.click()
+  })()`)
+  await waitFor("document.querySelector('.scw-historyInput') !== null")
+  await evaluate(`(function () {
+    var input = document.querySelector('.scw-historyInput')
+    if (!input) return
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, 'initial')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await waitFor("document.querySelectorAll('.scw-commitRow').length === 1")
+  const historySearch = JSON.parse(await evaluate(`JSON.stringify({
+    rows: [].slice.call(document.querySelectorAll('.scw-commitSubject')).map(function(n){return n.textContent}),
+    count: document.querySelector('.scw-historyCount') ? document.querySelector('.scw-historyCount').textContent : '',
+  })`))
+  check('history search filters by commit message', historySearch.rows.length === 1 && historySearch.rows[0].indexOf('initial') >= 0, historySearch)
+  await evaluate(`(function () {
+    var close = document.querySelector('.scw-historyClose')
+    if (close) close.click()
+  })()`)
+  await waitFor("document.querySelectorAll('.scw-commitRow').length >= 2")
+
   /* Right-click a history row: normal commit operations live here too. */
   await evaluate(`(function () {
     var row = document.querySelector('.scw-commitRow')

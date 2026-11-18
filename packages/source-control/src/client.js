@@ -277,6 +277,15 @@ const NARROW_PANE_W = 225
       'group.untracked': '未跟踪',
       'changes.clean': '工作区是干净的',
       'history.empty': '还没有提交',
+      'history.search': '搜索历史',
+      'history.searchPlaceholder': '哈希 / 说明 / 作者…',
+      'history.fieldAll': '全部',
+      'history.fieldHash': '哈希',
+      'history.fieldMessage': '说明',
+      'history.fieldAuthor': '作者',
+      'history.noMatches': '没有匹配的提交',
+      'history.searchScope': '只搜索已加载的 {n} 条提交',
+      'history.matchCount': '{n} 条匹配',
       'branches.local': '本地分支',
       'branches.remote': '远程分支',
       'branches.tags': '标签',
@@ -593,6 +602,15 @@ const NARROW_PANE_W = 225
       'group.untracked': 'Untracked',
       'changes.clean': 'The working tree is clean',
       'history.empty': 'No commits yet',
+      'history.search': 'Search history',
+      'history.searchPlaceholder': 'Hash / message / author…',
+      'history.fieldAll': 'All',
+      'history.fieldHash': 'Hash',
+      'history.fieldMessage': 'Message',
+      'history.fieldAuthor': 'Author',
+      'history.noMatches': 'No matching commits',
+      'history.searchScope': 'Searching {n} loaded commits',
+      'history.matchCount': '{n} match(es)',
       'history.tagRef': 'tag',
       'history.loadMore': 'Load more commits',
       'branches.local': 'Local branches',
@@ -1209,6 +1227,35 @@ const NARROW_PANE_W = 225
         })
       }
       return rows
+    }
+
+    /**
+     * Search the loaded history without another git round-trip.
+     *
+     * A field selector keeps hash prefixes from accidentally matching a word in
+     * a commit message; "all" is the quick default. Only already-loaded commits
+     * are searched, so the panel's "load more" still widens the result set.
+     */
+    function filterHistoryCommits(commits, query, field) {
+      const list = Array.isArray(commits) ? commits : []
+      const needle = typeof query === 'string' ? query.trim().toLowerCase() : ''
+      if (needle === '') return list
+      const mode = field === 'hash' || field === 'message' || field === 'author' ? field : 'all'
+      return list.filter((commit) => {
+        if (commit === null || commit === undefined) return false
+        const hash = String(commit.hash === undefined || commit.hash === null ? '' : commit.hash).toLowerCase()
+        const short = String(commit.short === undefined || commit.short === null ? '' : commit.short).toLowerCase()
+        const subject = String(commit.subject === undefined || commit.subject === null ? '' : commit.subject).toLowerCase()
+        const author = (
+          String(commit.authorName === undefined || commit.authorName === null ? '' : commit.authorName)
+          + ' '
+          + String(commit.authorEmail === undefined || commit.authorEmail === null ? '' : commit.authorEmail)
+        ).toLowerCase()
+        if (mode === 'hash') return hash.includes(needle) || short.includes(needle)
+        if (mode === 'message') return subject.includes(needle)
+        if (mode === 'author') return author.includes(needle)
+        return hash.includes(needle) || short.includes(needle) || subject.includes(needle) || author.includes(needle)
+      })
     }
 
     function relativeTime(ms, t) {
@@ -2039,6 +2086,14 @@ const NARROW_PANE_W = 225
    button, so hide any engine-provided one. */
 .scw-searchInput::-webkit-search-cancel-button,.scw-searchInput::-webkit-search-decoration{-webkit-appearance:none;display:none}
 .scw-searchInput{flex:1 1 auto;min-width:0;height:24px;padding:0 6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:inherit;font:inherit;font-size:11px}
+.scw-historySearch{flex:none;display:flex;align-items:center;gap:5px;padding:5px 8px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.10));color:var(--dsw-alias-label-tertiary,#8a8f98)}
+.scw-historyField{height:24px;padding:0 4px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.05));color:inherit;font:inherit;font-size:10.5px}
+.scw-historyInput{flex:1 1 auto;min-width:0;height:24px;padding:0 6px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:5px;background:var(--dsw-alias-bg-base,#14161a);color:var(--dsw-alias-label-primary,#e6e8eb);font:inherit;font-size:11px}
+.scw-historyInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
+.scw-historyCount{flex:none;font-size:10px;opacity:.8;font-variant-numeric:tabular-nums}
+.scw-historyClose{flex:none;width:20px;height:20px;border:none;border-radius:4px;background:transparent;color:inherit;font:inherit;font-size:14px;line-height:1;cursor:pointer}
+.scw-historyClose:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08));color:var(--dsw-alias-label-primary,#fff)}
+.scw-historyEmpty{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column}
 .scw-searchInput:focus{outline:none;border-color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-searchClear{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px;margin-left:-20px;border:none;border-radius:3px;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8f98);cursor:pointer}
 .scw-searchClear:hover{color:var(--dsw-alias-label-primary,#fff)}
@@ -2276,6 +2331,9 @@ function Page(props) {
   const pageCache = readPageCache()
   const [snapshot, setSnapshot] = useState(() => pageCache.snapshot)
   const [historyState, setHistoryState] = useState(() => pageCache.history)
+  const [historySearchOpen, setHistorySearchOpen] = useState(false)
+  const [historySearch, setHistorySearch] = useState('')
+  const [historySearchField, setHistorySearchField] = useState('all')
   const [branchState, setBranchState] = useState(() => pageCache.branches)
       /* Remote names/URLs for the branches page (open in browser, copy). */
       const [remoteState, setRemoteState] = useState({ status: 'idle', remotes: {} })
@@ -5029,6 +5087,7 @@ function Page(props) {
           }
           if (treeMode === 'history') {
             return E('div', { className: 'scw-toolbar' },
+              toolbarIcon('search', t('history.search'), () => setHistorySearchOpen((value) => !value), { primary: historySearchOpen }),
               toolbarIcon('tag', t('action.tagCreate'), () => doTagCreate(selectedCommit === null ? undefined : selectedCommit)),
               toolbarIcon('arrowUp', t('action.tagPush'), () => doTagPush()))
           }
@@ -5429,13 +5488,56 @@ function Page(props) {
             })
         }
 
+        const historyVisibleCommits = useMemo(
+          () => filterHistoryCommits(historyState.commits, historySearch, historySearchField),
+          [historyState.commits, historySearch, historySearchField],
+        )
+        const historySearchRow = historySearchOpen
+          ? E('div', { className: 'scw-historySearch' },
+            E(Icon, { name: 'search', size: 12 }),
+            E('select', {
+              className: 'scw-historyField',
+              value: historySearchField,
+              title: t('history.search'),
+              onChange: (event) => setHistorySearchField(event.target.value),
+            },
+            [['all', t('history.fieldAll')], ['hash', t('history.fieldHash')], ['message', t('history.fieldMessage')], ['author', t('history.fieldAuthor')]]
+              .map(([value, label]) => E('option', { key: value, value }, label))),
+            E('input', {
+              className: 'scw-historyInput',
+              value: historySearch,
+              placeholder: t('history.searchPlaceholder'),
+              title: t('history.searchScope', { n: historyState.commits.length }),
+              spellCheck: false,
+              autoFocus: true,
+              'aria-label': t('history.search'),
+              onChange: (event) => setHistorySearch(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key !== 'Escape') return
+                event.preventDefault()
+                event.stopPropagation()
+                if (historySearch !== '') setHistorySearch('')
+                else setHistorySearchOpen(false)
+              },
+            }),
+            historySearch.trim() === ''
+              ? null
+              : E('span', { className: 'scw-historyCount' }, t('history.matchCount', { n: historyVisibleCommits.length })),
+            E('button', {
+              type: 'button',
+              className: 'scw-historyClose',
+              title: t('action.close'),
+              onClick: () => { setHistorySearchOpen(false); setHistorySearch('') },
+            }, '×'))
+          : null
+
         /* Lane allocation walks every commit and its parents, and it used to run INSIDE
            the render — so hovering a row, typing in the search box or scrolling the list
-           recomputed the whole graph. Keyed on the commits array (which the host replaces
-           only when the repository changes), this now runs once per fetch. */
+           recomputed the whole graph. Keyed on the filtered commits (the host replaces
+           the source list only when the repository changes), this runs once per fetch. */
         const historyGraph = useMemo(
-          () => (historyState.commits.length === 0 ? [] : buildCommitGraph(historyState.commits)),
-          [historyState.commits],
+          () => (historyVisibleCommits.length === 0 ? [] : buildCommitGraph(historyVisibleCommits)),
+          [historyVisibleCommits],
         )
 
         const historyPanel = historyState.status === 'loading' && historyState.commits.length === 0
@@ -5444,6 +5546,18 @@ function Page(props) {
             ? E('div', { className: 'scw-treeState is-error' }, historyState.error)
             : historyState.commits.length === 0
               ? E('div', { className: 'scw-treeState' }, t('history.empty'))
+              : historyVisibleCommits.length === 0
+                ? E('div', { className: 'scw-historyEmpty' },
+                  E('div', { className: 'scw-treeState' }, t('history.noMatches')),
+                  historyHasMore === true
+                    ? E('div', { className: 'scw-loadMore' },
+                      E('button', {
+                        type: 'button',
+                        className: 'scw-loadMoreBtn',
+                        disabled: historyState.status === 'loading',
+                        onClick: loadMoreHistory,
+                      }, historyState.status === 'loading' ? t('state.loading') : t('history.loadMore')))
+                    : null)
               : E('div', { className: 'scw-tree scw-list' },
                 historyGraph.map((graphRow) => {
                   const commit = graphRow.commit
@@ -5822,7 +5936,7 @@ function Page(props) {
           visibleRows.map(({ row, offset }) => renderRow(row, offset))))
 
         const browsingBody = treeMode === 'changes' ? changesPanel
-          : treeMode === 'history' ? historyPanel
+          : treeMode === 'history' ? E(Fragment, null, historySearchRow, historyPanel)
             : treeMode === 'branches' ? branchesPanel
               : treeMode === 'stash' ? stashPanel
                 : filesPanel
@@ -6679,6 +6793,7 @@ function Page(props) {
       buildStatusIndex,
       buildDirtyDirs,
       buildChangeGroups,
+      filterHistoryCommits,
       relativeTime,
       highlightName,
       flattenTree,

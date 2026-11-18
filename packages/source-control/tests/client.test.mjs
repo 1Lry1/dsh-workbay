@@ -557,6 +557,19 @@ test('commitMessageFromDetail restores subject and optional body for undo-commit
   assert.equal(api.commitMessageFromDetail({ subject: '', body: 'body only' }), 'body only')
   assert.equal(api.commitMessageFromDetail(null), '')
 })
+test('history search filters hash, message and author without crossing fields', () => {
+  const commits = [
+    { hash: 'abc123def456', short: 'abc123', subject: 'fix: uart timeout', authorName: 'Alice', authorEmail: 'alice@example.com' },
+    { hash: 'def456abc123', short: 'def456', subject: 'feat: add parser', authorName: 'Bob', authorEmail: 'bob@example.com' },
+  ]
+  assert.equal(api.filterHistoryCommits(commits, 'abc123', 'hash').length, 2)
+  assert.equal(api.filterHistoryCommits(commits, 'uart', 'message').length, 1)
+  assert.equal(api.filterHistoryCommits(commits, 'bob@', 'author').length, 1)
+  assert.equal(api.filterHistoryCommits(commits, 'parser', 'hash').length, 0, 'message text must not match in hash mode')
+  assert.equal(api.filterHistoryCommits(commits, 'alice', 'all').length, 1)
+  assert.equal(api.filterHistoryCommits(commits, '', 'all').length, 2)
+})
+
 test('buildChangeGroups splits by change type (modified / deleted / added / renamed)', () => {
   const index = new Map([
     ['a.ts', { kind: 'modified', staged: true }],
