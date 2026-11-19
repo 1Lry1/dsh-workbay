@@ -428,6 +428,28 @@ test('stash push / list / pop keeps the worktree clean in between', async () => 
   sh(repo, ['checkout', '--', 'a.txt'])
 })
 
+test('stash push --staged leaves unstaged edits in the worktree', async () => {
+  sh(repo, ['checkout', '--', 'a.txt', 'b.txt'])
+  writeFileSync(path.join(repo, 'a.txt'), 'staged part\n')
+  sh(repo, ['add', 'a.txt'])
+  writeFileSync(path.join(repo, 'b.txt'), 'unstaged part\n')
+
+  const out = await call('stashPush', { cwd: repo, message: 'staged only', staged: true })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.equal(out.data.snapshot.changes.some((entry) => entry.path === 'a.txt'), false, 'the staged file left the worktree')
+  const changed = out.data.snapshot.changes.find((entry) => entry.path === 'b.txt')
+  assert.ok(changed, 'the other unstaged file remains')
+  assert.equal(changed.staged, false)
+  assert.equal(readText(path.join(repo, 'b.txt')), 'unstaged part\n')
+
+  const list = await call('stashList', { cwd: repo })
+  assert.equal(list.ok, true)
+  assert.ok(list.data.stash.some((entry) => /staged only/.test(entry.subject)))
+  const pop = await call('stashPop', { cwd: repo, index: 0 })
+  assert.equal(pop.ok, true, JSON.stringify(pop))
+  sh(repo, ['checkout', '--', 'a.txt', 'b.txt'])
+})
+
 test('merge reports conflicts and conflictResolve/mark-resolved closes it', async () => {
   sh(repo, ['checkout', '-q', '-b', 'topic', 'main'])
   writeFileSync(path.join(repo, 'conflict.txt'), 'base\n')

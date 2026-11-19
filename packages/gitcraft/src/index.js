@@ -2841,6 +2841,7 @@ const METHODS = {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
     const message = typeof payload.message === 'string' ? payload.message.trim() : ''
     const args = ['stash', 'push']
+    if (boolOf(payload.staged)) args.push('--staged')
     if (boolOf(payload.includeUntracked)) args.push('--include-untracked')
     if (boolOf(payload.keepIndex)) args.push('--keep-index')
     if (message !== '') args.push('-m', message)

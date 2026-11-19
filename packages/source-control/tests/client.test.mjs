@@ -570,6 +570,13 @@ test('history search filters hash, message and author without crossing fields', 
   assert.equal(api.filterHistoryCommits(commits, '', 'all').length, 2)
 })
 
+test('stash offers staged-only without silently dropping untracked files', () => {
+  assert.match(source, /if \(stagedOnly\) payload\.staged = true/)
+  assert.match(source, /else payload\.includeUntracked = true/)
+  assert.match(source, /stash\.stagedOnly/)
+  assert.match(source, /stash\.allChanges/)
+})
+
 test('buildChangeGroups splits by change type (modified / deleted / added / renamed)', () => {
   const index = new Map([
     ['a.ts', { kind: 'modified', staged: true }],

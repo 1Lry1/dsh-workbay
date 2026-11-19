@@ -470,7 +470,13 @@ const NARROW_PANE_W = 225
       'tag.nameLabel': '标签名',
       'tag.namePlaceholder': 'v1.0.0',
       'stash.pushTitle': '贮藏更改',
-      'stash.pushBody': '把未提交的改动收进贮藏区，工作区会变干净。',
+      'stash.pushBody': '把未提交的改动（含未跟踪文件）收进贮藏区，工作区会变干净。',
+      'stash.pushBodyStaged': '只把已暂存的改动收进贮藏区；未暂存和未跟踪文件留在工作区。',
+      'stash.chooseBody': '选择要贮藏的范围。',
+      'stash.chooseMixedBody': '有文件同时存在已暂存和未暂存改动；Git 无法只贮藏其中一半，请选「全部更改」（或先处理该文件的未暂存部分）。',
+      'stash.chooseConflictBody': '当前有未解决的冲突，不能只贮藏暂存区；请先解决冲突再贮藏。',
+      'stash.stagedOnly': '仅暂存区',
+      'stash.allChanges': '全部更改（含未跟踪）',
       'stash.messageLabel': '说明（可留空）',
       'stash.messagePlaceholder': '做到一半的功能',
       'file.newFile': '新建文件',
@@ -797,7 +803,13 @@ const NARROW_PANE_W = 225
       'tag.nameLabel': 'Tag name',
       'tag.namePlaceholder': 'v1.0.0',
       'stash.pushTitle': 'Stash changes',
-      'stash.pushBody': 'Parks uncommitted changes in the stash; the worktree becomes clean.',
+      'stash.pushBody': 'Parks uncommitted changes (including untracked files) in the stash; the worktree becomes clean.',
+      'stash.pushBodyStaged': 'Parks only staged changes; unstaged and untracked files stay in the worktree.',
+      'stash.chooseBody': 'Choose what to stash.',
+      'stash.chooseMixedBody': 'A file has both staged and unstaged edits; git cannot stash only one half. Choose "All changes" (or deal with that file first).',
+      'stash.chooseConflictBody': 'Unresolved conflicts are present; staged-only stashing is unavailable until they are resolved.',
+      'stash.stagedOnly': 'Staged only',
+      'stash.allChanges': 'All changes (incl. untracked)',
       'stash.messageLabel': 'Message (optional)',
       'stash.messagePlaceholder': 'work in progress',
       'file.newFile': 'New file',
@@ -4040,19 +4052,46 @@ function Page(props) {
       /* ---------- stash ---------- */
 
       const doStashPush = useCallback(() => {
-        openPrompt(t('stash.pushTitle'), t('stash.pushBody'), t('stash.messageLabel'), '', t('stash.messagePlaceholder'), (value) => {
-          const payload = { repoRoot }
-          const message = value.trim()
-          if (message !== '') payload.message = message
-          /* Include untracked by default: a stash that silently leaves new files
-             behind is the classic "I stashed but my tree is still dirty" surprise. */
-          payload.includeUntracked = true
-          void runGitOp('stashPush', payload, 'stashPush').then(() => {
-            stashLoadedRef.current = false
-            if (treeMode === 'stash') void loadStash()
-          })
-        })
-      }, [openPrompt, runGitOp, repoRoot, treeMode, loadStash, t])
+        const entries = Array.from(statusIndex.values())
+        const hasStaged = entries.some((change) => change.staged === true)
+        const hasConflict = entries.some((change) => change.conflicted === true)
+        /* `git stash push --staged` cannot split a file that has BOTH staged and
+           unstaged edits (it tries to remove the worktree half and fails). Do not
+           offer a mode git will reject; "all" still works for that tree. */
+        const hasMixed = entries.some((change) => change.staged === true
+          && change.untracked !== true
+          && ((typeof change.worktree === 'string' && change.worktree.trim() !== '')
+            || Number(change.unstagedAdded) > 0
+            || Number(change.unstagedDeleted) > 0))
+        const promptFor = (stagedOnly) => {
+          openPrompt(
+            t('stash.pushTitle'),
+            stagedOnly ? t('stash.pushBodyStaged') : t('stash.pushBody'),
+            t('stash.messageLabel'),
+            '',
+            t('stash.messagePlaceholder'),
+            (value) => {
+              const payload = { repoRoot }
+              const message = value.trim()
+              if (message !== '') payload.message = message
+              if (stagedOnly) payload.staged = true
+              /* "All" includes untracked: a stash that silently leaves new files
+                 behind is the classic "I stashed but my tree is still dirty" surprise. */
+              else payload.includeUntracked = true
+              void runGitOp('stashPush', payload, 'stashPush').then(() => {
+                stashLoadedRef.current = false
+                if (treeMode === 'stash') void loadStash()
+              })
+            },
+          )
+        }
+        openMenu(t('stash.pushTitle'),
+          hasConflict ? t('stash.chooseConflictBody') : (hasMixed ? t('stash.chooseMixedBody') : t('stash.chooseBody')),
+          [
+          menuItem(t('stash.stagedOnly'), () => promptFor(true), { disabled: !hasStaged || hasMixed || hasConflict }),
+          menuItem(t('stash.allChanges'), () => promptFor(false)),
+        ])
+      }, [openPrompt, openMenu, runGitOp, repoRoot, treeMode, loadStash, statusIndex, t])
 
       /* ---------- repo ---------- */
 

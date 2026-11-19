@@ -668,6 +668,22 @@ function mountShell() {
   /* ---- 贮藏 (empty here, but the panel must render honestly) ---- */
   await clickMode('贮藏')
   await sleep(1500)
+  await evaluate(`(function () {
+    var button = document.querySelector('.scw-toolIcon[title="贮藏更改"]')
+    if (button) button.click()
+  })()`)
+  await sleep(350)
+  const stashMenu = JSON.parse(await evaluate(`JSON.stringify({
+    items: [].slice.call(document.querySelectorAll('.scw-menuItem')).map(function (n) { return n.textContent }),
+  })`))
+  check('the stash dialog offers staged-only and all changes',
+    stashMenu.items.some(function (s) { return /仅暂存区|Staged only/.test(s) })
+    && stashMenu.items.some(function (s) { return /全部更改|All changes/.test(s) }), stashMenu.items)
+  await evaluate(`(function () {
+    var dialog = document.querySelector('.scw-dialog')
+    if (dialog) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })()`)
+  await sleep(300)
   const stashDom = JSON.parse(await evaluate(`JSON.stringify({
     rows: document.querySelectorAll('.scw-stashRow').length,
     state: document.querySelector('.scw-treeState') ? document.querySelector('.scw-treeState').textContent : null,
