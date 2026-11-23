@@ -260,6 +260,7 @@ namespace DshDlBridge
         private readonly ManualResetEventSlim _startOk = new ManualResetEventSlim(false);
         private HiddenReceiver _wnd;
         private Process _proc;
+        private int _launchBusy;
         private IntPtr _job = IntPtr.Zero;
         private volatile bool _running = true;
         private long _dlHwndFromStartOk;
@@ -674,6 +675,21 @@ namespace DshDlBridge
         // ---------------- 启停 ----------------
 
         public void Launch(string argsOverride)
+        {
+            /* The command thread (explicit "launch") and the startup timer can call
+               this at the same time. Without the gate both passed the _proc null
+               check and started two Downloader.exe children ~1 s apart; the host
+               then saw one as a foreign instance and aborted the burn. */
+            if (Interlocked.CompareExchange(ref _launchBusy, 1, 0) != 0)
+            {
+                Ev("launch_skip", "\"reason\":" + J("launch already in progress"));
+                return;
+            }
+            try { LaunchCore(argsOverride); }
+            finally { Interlocked.Exchange(ref _launchBusy, 0); }
+        }
+
+        private void LaunchCore(string argsOverride)
         {
             if (_proc != null && !_proc.HasExited)
             {
