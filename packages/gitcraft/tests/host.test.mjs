@@ -450,6 +450,34 @@ test('stash push --staged leaves unstaged edits in the worktree', async () => {
   sh(repo, ['checkout', '--', 'a.txt', 'b.txt'])
 })
 
+test('a conflicted path diff is converted from combined --cc to a parseable unified patch', async () => {
+  sh(repo, ['checkout', '-q', 'main'])
+  sh(repo, ['checkout', '-q', '-b', 'diff-conflict'])
+  writeFileSync(path.join(repo, 'a.txt'), 'ours side\n')
+  sh(repo, ['commit', '-qam', 'ours side'])
+  sh(repo, ['checkout', '-q', 'main'])
+  writeFileSync(path.join(repo, 'a.txt'), 'theirs side\n')
+  sh(repo, ['commit', '-qam', 'theirs side'])
+  let merged = true
+  try { sh(repo, ['merge', 'diff-conflict']) } catch { merged = false }
+  assert.equal(merged, false, 'the fixture must really conflict')
+  const out = await call('diff', { cwd: repo, base: 'worktree', path: 'a.txt' })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.match(out.data.patch, /diff --git /, 'combined --cc header must be replaced')
+  assert.match(out.data.patch, /<<<<<<< /)
+  assert.match(out.data.patch, />>>>>>> /)
+  assert.ok(out.data.hunks.length > 0, 'the pane parser must receive at least one hunk')
+  /* A conflicted status row can be marked staged (`U` in the index column), so
+     the page asks for base=staged. `git diff --cached` only says
+     "* Unmerged path"; it must take the same fallback. */
+  const staged = await call('diff', { cwd: repo, base: 'staged', path: 'a.txt' })
+  assert.equal(staged.ok, true, JSON.stringify(staged))
+  assert.match(staged.data.patch, /diff --git /)
+  assert.ok(staged.data.hunks.length > 0, 'staged conflict lookup must also produce hunks')
+  sh(repo, ['merge', '--abort'])
+  sh(repo, ['branch', '-D', 'diff-conflict'])
+})
+
 test('merge reports conflicts and conflictResolve/mark-resolved closes it', async () => {
   sh(repo, ['checkout', '-q', '-b', 'topic', 'main'])
   writeFileSync(path.join(repo, 'conflict.txt'), 'base\n')

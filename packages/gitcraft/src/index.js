@@ -2209,7 +2209,19 @@ const METHODS = {
     const request = (async () => {
       const res = await runGit(root, args, { timeoutMs: 60_000 })
       if (res.code !== 0) throw new PanelError('diff-failed', res.stderr.trim() || 'git diff failed', 409)
-      const text = clipDiff(res.stdout)
+      let text = res.stdout
+      /* An unmerged path has no ordinary unified diff: git emits a combined
+         `diff --cc`/`@@@` patch, which the pane's unified parser cannot turn
+         into hunks (it showed "没有差异"). Diff the worktree against the
+         `--ours` stage instead; it still contains both conflict marker blocks,
+         so the user can see and resolve the conflict, and it is parseable. */
+      if (/^diff --cc /m.test(text) || /^\* Unmerged path /m.test(text)) {
+        const oursArgs = ['diff', '--ours', `--unified=${context}`, ...guard]
+        if (filePath !== null && filePath !== '') oursArgs.push('--', filePath)
+        const ours = await runGit(root, oursArgs, { timeoutMs: 60_000 })
+        if (ours.code === 0) text = ours.stdout
+      }
+      text = clipDiff(text)
       const value = { patch: text, hunks: splitDiff(text).map(({ patch, ...rest }) => rest) }
       rememberDiff(cacheKey, value)
       return value
