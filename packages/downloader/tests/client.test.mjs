@@ -217,6 +217,14 @@ test('baud rate is a preset datalist that also accepts arbitrary valid values', 
   assert.match(source, /波特率（可选择或直接输入）/)
 })
 
+test('the page offers a serial encoding selector and sends it on open', () => {
+  assert.match(source, /const \[encoding, setEncoding\] = React\.useState\('utf-8'\)/)
+  assert.match(source, /\[\['utf-8', 'UTF-8'\]/)
+  assert.match(source, /api\.post\('\/serial\/open', \{ port: selPort, baud, encoding \}\)/)
+  assert.match(source, /encoding: next,/)
+  assert.match(source, /changeEncoding/)
+})
+
 test('the log scrollbar is high-contrast in dark mode', () => {
   assert.match(source, /scrollbar-width:thin;scrollbar-color:rgba\(170,184,210,\.55\)/)
   assert.match(source, /\.abw-log::-webkit-scrollbar-thumb\{background:rgba\(170,184,210,\.55\)/)

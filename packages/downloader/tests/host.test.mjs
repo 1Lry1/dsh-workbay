@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } fro
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { __test } from '../lib/index.js'
-const { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, isUnderScanRoot, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions } = __test
+const { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, normalizeSerialEncoding, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, isUnderScanRoot, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions } = __test
 function flashState(overrides = {}) {
   return { connected: false, launching: false, pid: null, ...overrides }
 }
@@ -129,6 +129,16 @@ test('classifyDownloaderPids separates our bridge child from a user-opened Downl
   assert.deepEqual(classifyDownloaderPids([101], 999), { total: 1, mine: null, foreign: [101] })
   /* Duplicates / junk from tasklist are ignored. */
   assert.deepEqual(classifyDownloaderPids([101, 101, 'x', -1, null], null), { total: 1, mine: null, foreign: [101] })
+})
+
+test('serial encoding accepts UTF-8, GB18030 and ASCII only', () => {
+  assert.equal(normalizeSerialEncoding('UTF-8'), 'utf-8')
+  assert.equal(normalizeSerialEncoding('utf8'), 'utf-8')
+  assert.equal(normalizeSerialEncoding('gbk'), 'gb18030')
+  assert.equal(normalizeSerialEncoding('GB18030'), 'gb18030')
+  assert.equal(normalizeSerialEncoding('ascii'), 'ascii')
+  assert.equal(normalizeSerialEncoding('bogus'), 'utf-8')
+  assert.equal(normalizeSerialEncoding(undefined), 'utf-8')
 })
 
 test('reconcileDownloaderPids keeps our PID through a transient tasklist miss', () => {

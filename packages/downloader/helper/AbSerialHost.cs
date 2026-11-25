@@ -26,6 +26,8 @@ using System.Threading;
 internal static class Program
 {
     private static SerialPort _port;
+    private static Encoding _serialEncoding = Encoding.GetEncoding("GB18030");
+    private static Decoder _serialDecoder = _serialEncoding.GetDecoder();
     private static readonly object _lock = new object();
     private static volatile bool _running = true;
 
@@ -82,6 +84,8 @@ internal static class Program
                 {
                     var name = ExtractStr(line, "port");
                     var baud = ExtractInt(line, "baud", 1500000);
+                    var encodingName = ExtractStr(line, "encoding");
+                    var encoding = ResolveEncoding(encodingName);
                     var opened = false;
                     var openError = (string)null;
                     lock (_lock)
@@ -97,6 +101,8 @@ internal static class Program
                             p.ReadBufferSize = 1 << 20;
                             p.WriteBufferSize = 1 << 16;
                             p.Open();
+                            _serialEncoding = encoding;
+                            _serialDecoder = encoding.GetDecoder();
                             _port = p;
                             var th = new Thread(PortReadLoop) { IsBackground = true };
                             th.Start();
@@ -112,7 +118,7 @@ internal static class Program
                     }
                     // 失败也必须带 id 回包：外层 catch 发出的 err 事件没有 id，
                     // 宿主会一直等到超时（表现为"打开串口"卡 3 秒 + 连续刷错误）。
-                    if (opened) Reply(id, true, "\"baud\":" + baud);
+                    if (opened) Reply(id, true, "\"baud\":" + baud + ",\"encoding\":" + J(encodingName ?? "GB18030"));
                     else Reply(id, false, "\"msg\":" + J(openError ?? "open failed"));
                 }
                 break;
@@ -128,7 +134,12 @@ internal static class Program
                     var hex = ExtractStr(line, "hex");
                     var text = ExtractStr(line, "text");
                     if (hex != null) data = ParseHex(hex);
-                    else if (text != null) data = Encoding.GetEncoding("GB18030").GetBytes(Unescape(text));
+                    else if (text != null)
+                    {
+                        Encoding enc;
+                        lock (_lock) { enc = _serialEncoding; }
+                        data = enc.GetBytes(Unescape(text));
+                    }
                     if (data == null) { Reply(id, false, "\"msg\":\"need hex or text\""); break; }
                     lock (_lock)
                     {
@@ -165,7 +176,14 @@ internal static class Program
         while (true)
         {
             SerialPort p;
-            lock (_lock) { p = _port; }
+            Encoding encoding;
+            Decoder decoder;
+            lock (_lock)
+            {
+                p = _port;
+                encoding = _serialEncoding;
+                decoder = _serialDecoder;
+            }
             if (p == null || !p.IsOpen) return;
             try
             {
@@ -175,7 +193,16 @@ internal static class Program
                     var hex = new StringBuilder(n * 2);
                     for (int i = 0; i < n; i++) hex.Append(buf[i].ToString("X2"));
                     string txt;
-                    try { txt = Encoding.GetEncoding("GB18030").GetString(buf, 0, n); }
+                    try
+                    {
+                        /* Keep the decoder's state across reads: a Chinese
+                           character can be split at the read boundary. Decoding
+                           each chunk independently produced U+FFFD even with the
+                           right code page. */
+                        var chars = new char[encoding.GetMaxCharCount(n)];
+                        int charsRead = decoder.GetChars(buf, 0, n, chars, 0);
+                        txt = new string(chars, 0, charsRead);
+                    }
                     catch { txt = Encoding.ASCII.GetString(buf, 0, n); }
                     Console.WriteLine("{\"ev\":\"data\",\"n\":" + n + ",\"hex\":\"" + hex + "\",\"text\":" + J(txt) + "}");
                 }
@@ -274,6 +301,18 @@ internal static class Program
         var v = ExtractRaw(s, "id");
         return v;
     }
+    private static Encoding ResolveEncoding(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return Encoding.GetEncoding("GB18030");
+        var normalized = name.Trim().ToLowerInvariant().Replace("_", "-");
+        if (normalized == "utf-8" || normalized == "utf8") return new UTF8Encoding(false, false);
+        if (normalized == "gb18030" || normalized == "gbk" || normalized == "gb2312")
+            return Encoding.GetEncoding("GB18030");
+        if (normalized == "ascii") return Encoding.ASCII;
+        try { return Encoding.GetEncoding(name); }
+        catch { return Encoding.GetEncoding("GB18030"); }
+    }
+
     private static string ExtractStr(string s, string key)
     {
         var v = ExtractRaw(s, key);

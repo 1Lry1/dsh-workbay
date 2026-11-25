@@ -891,6 +891,16 @@ export function wireJson(value) {
   }
 }
 
+/* Serial text encoding is selected in the page and remembered across an
+   auto-flash close/reopen. Unknown values fall back to UTF-8, which is what the
+   current LVGL firmware emits. */
+export function normalizeSerialEncoding(value) {
+  const name = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (name === 'gb18030' || name === 'gbk' || name === 'gb2312') return 'gb18030'
+  if (name === 'ascii') return 'ascii'
+  return 'utf-8'
+}
+
 export function classifyDownloaderPids(pids, ourPid) {
   const list = Array.from(new Set((Array.isArray(pids) ? pids : []).filter(pid => Number.isInteger(pid) && pid > 0)))
   const mine = Number.isInteger(ourPid) && ourPid > 0 && list.includes(ourPid) ? ourPid : null
@@ -1047,7 +1057,7 @@ export function withNoSleepSetting(text) {
   }
   return { found: false, value: null, noSleep: false, text: source, changed: false }
 }
-export const __test = { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions }
+export const __test = { shouldLaunchFlash, beginFlashLaunch, isStaleFlashConnection, isProcessAlive, shouldReleaseSerialForDownloader, normalizeSerialEncoding, classifyDownloaderPids, reconcileDownloaderPids, clearFlashTimers, wireJson, flashPlanOf, toolAutoStartOf, sameFlashPath, withAutoStartValue, isPrimaryFirmwareDcf, pickPrimaryFirmwareDcf, serialErrorLine, locationPayload, writeDownFile, isUnderScanRoot, resolveDlDir, readToolConfig, pruneBackups, sleepSettingOf, withNoSleepSetting, withConfigValue, parseBurnOptions }
 
 export function apply(ctx) {
   /* AutoStart 是「第二遍烧录」的来源：插件活着的时候由它统一触发。
@@ -1062,7 +1072,7 @@ export function apply(ctx) {
   const state = {
     root: null,                 // 当前工作台根目录
     project: null,              // 当前选中的工程
-    serial: { open: false, port: null, baud: 1500000, opening: false, lastError: null, dupCount: 0, suppressed: 0 },
+    serial: { open: false, port: null, baud: 1500000, encoding: 'utf-8', opening: false, lastError: null, dupCount: 0, suppressed: 0 },
     flash: {
       status: '离线', progress: 0, online: false, com: null, fwChecksum: null, devChecksum: null,
       connected: false, busy: false, burning: false, burnSeq: 0, doneSeq: 0, launching: false, launchAt: 0, staleChecks: 0,
@@ -1624,7 +1634,7 @@ function freshestDcf(override) {
     if (!state.flash.connected && state.serial.open) {
       stopSerialGuard()
       state.serial.resumeAfterFlash = state.serial.wantOpen
-        || { port: state.serial.port, baud: state.serial.baud }
+        || { port: state.serial.port, baud: state.serial.baud, encoding: state.serial.encoding }
       try { await serialHelper.command('close', {}) } catch { }
       state.serial.open = false
       pushLog('S', '已让出串口（自动烧录需独占）')
@@ -1746,7 +1756,7 @@ function freshestDcf(override) {
     if (!resume) return
     state.serial.resumeAfterFlash = null
     try {
-      void resumeSerial(resume.port, resume.baud)
+      void resumeSerial(resume.port, resume.baud, resume.encoding)
     } catch (error) { void error }
   }
 
@@ -1957,7 +1967,7 @@ function freshestDcf(override) {
     // 1) 让出串口
     if (state.serial.open) {
       state.serial.resumeAfterFlash = state.serial.wantOpen
-        || { port: state.serial.port, baud: state.serial.baud }
+        || { port: state.serial.port, baud: state.serial.baud, encoding: state.serial.encoding }
       stopSerialGuard()
       let closed = { ok: false }
       try { closed = await serialHelper.command('close', {}, 3000) } catch (error) { void error }
@@ -2122,7 +2132,8 @@ function freshestDcf(override) {
     const pids = listDownloaderPids()
     if (!shouldReleaseSerialForDownloader(state.serial.open, state.flash.burning, pids)) return
     stopSerialGuard()
-    const resume = state.serial.wantOpen || { port: state.serial.port, baud: state.serial.baud }
+    const resume = state.serial.wantOpen
+      || { port: state.serial.port, baud: state.serial.baud, encoding: state.serial.encoding }
     state.serial.resumeAfterFlash = resume
     try {
       const r = await serialHelper.command('close', {})
@@ -2148,8 +2159,9 @@ function freshestDcf(override) {
     if (typeof serialGuardTimer.unref === 'function') serialGuardTimer.unref()
   }
 
-  async function resumeSerial(port, baud) {
+  async function resumeSerial(port, baud, encoding) {
     if (!port) return
+    const serialEncoding = normalizeSerialEncoding(encoding === undefined ? state.serial.encoding : encoding)
     const startedAt = Date.now()
     // ★ Downloader 烧完会持续占着 COM 监控设备，必须先让它退出才能抢回。
     //   自动烧录不依赖它常驻——工作台自己监听 dcf，需要时会重新拉起它。
@@ -2201,12 +2213,13 @@ function freshestDcf(override) {
     let lastError = ''
     while (Date.now() < deadline) {
       tries++
-      const r = await serialHelper.command('open', { port, baud }, 300)
+      const r = await serialHelper.command('open', { port, baud, encoding: serialEncoding }, 300)
       if (r && r.ok) {
         state.serial.open = true
         state.serial.port = port
         state.serial.baud = baud
-        state.serial.wantOpen = { port, baud }
+        state.serial.encoding = serialEncoding
+        state.serial.wantOpen = { port, baud, encoding: serialEncoding }
         const totalMs = Date.now() - startedAt
         const openMs = Date.now() - readyAt
         pushLog('S', '已自动恢复串口 ' + port + ' @' + baud +
@@ -2324,7 +2337,7 @@ function freshestDcf(override) {
             const resume = state.serial.resumeAfterFlash
             state.serial.resumeAfterFlash = null
             if (resume) {
-              resumeSerial(resume.port, resume.baud)
+              resumeSerial(resume.port, resume.baud, resume.encoding)
             } else {
               pushLog('S', 'Downloader 保持开着（继续监听编译产物）')
             }
@@ -2750,6 +2763,7 @@ async function handleHttp(req, res, state, api) {
 
     if (p === '/serial/open' && req.method === 'POST') {
       const body = JSON.parse(await readBody(req))
+      const encoding = normalizeSerialEncoding(body.encoding)
       // 烧录进行中不允许抢串口
       if (state.flash.busy) return json(res, 409, { error: '烧录进行中，不能打开串口' })
       // 连点/重复请求：只允许一个 in-flight open，避免并发 open 互相把端口关掉。
@@ -2765,7 +2779,7 @@ async function handleHttp(req, res, state, api) {
       try {
         for (let i = 0; i < 4; i++) {
           attempts = i + 1
-          r = await serialHelper.command('open', { port: body.port, baud: body.baud || 1500000 }, 3000)
+          r = await serialHelper.command('open', { port: body.port, baud: body.baud || 1500000, encoding }, 3000)
           if (r && r.ok) break
           const why = String(r.msg || r.error || '')
           if (!/denied|拒绝|占用|busy|access|正在使用/i.test(why)) break
@@ -2775,9 +2789,10 @@ async function handleHttp(req, res, state, api) {
           state.serial.open = true
           state.serial.port = body.port
           state.serial.baud = body.baud || 1500000
+          state.serial.encoding = encoding
           // 记住用户意图：他想看串口。烧录会临时抢走，烧完要按这个意图还回去
-          state.serial.wantOpen = { port: body.port, baud: body.baud || 1500000 }
-          pushLog('S', `串口 ${body.port} @${state.serial.baud} 已打开`)
+          state.serial.wantOpen = { port: body.port, baud: body.baud || 1500000, encoding }
+          pushLog('S', `串口 ${body.port} @${state.serial.baud} 已打开（${encoding.toUpperCase()}）`)
           startSerialGuard()
           broadcast({ ev: 'serial-state', serial: state.serial })
         } else {
@@ -3025,7 +3040,7 @@ async function handleHttp(req, res, state, api) {
         // 不能只看当前是不是开着 —— 烧录前一步可能已经让出了。
         if (state.serial.open || state.serial.wantOpen) {
           state.serial.resumeAfterFlash = state.serial.wantOpen
-            || { port: state.serial.port, baud: state.serial.baud }
+            || { port: state.serial.port, baud: state.serial.baud, encoding: state.serial.encoding }
           if (state.serial.open) {
             stopSerialGuard()
             const closed = await serialHelper.command('close', {}, 3000)

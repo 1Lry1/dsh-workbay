@@ -206,6 +206,7 @@ function formatBytes(n) {
       .abw-btn[data-v="ghost"]{background:transparent;border-color:transparent;padding:3px 7px}
 
       .abw-baud{width:96px;font-variant-numeric:tabular-nums}
+      .abw-enc{width:82px;font-size:11px;padding-left:4px;padding-right:2px}
       .abw-sel,.abw-inp{padding:4px 8px;border-radius:5px;font-size:12px;
         border:1px solid var(--dsw-border,#3a3a3d);background:var(--dsw-bg-2,#252528);
         color:var(--dsw-fg-1,#e6e6e6);outline:none;min-width:0}
@@ -395,6 +396,7 @@ function formatBytes(n) {
       const [selPort, setSelPort] = React.useState('')
       const [baud, setBaud] = React.useState(1500000)
       const [baudDraft, setBaudDraft] = React.useState('1500000')
+      const [encoding, setEncoding] = React.useState('utf-8')
       const [filter, setFilter] = React.useState('all')
       const [follow, setFollow] = React.useState(true)
       const [input, setInput] = React.useState('')
@@ -429,6 +431,29 @@ function formatBytes(n) {
         setBaud(value)
         setBaudDraft(String(value))
         return true
+      }
+      /* Encoding takes effect immediately: if the port is already open, reopen
+         it with the new decoder. The host remembers the choice across flash-induced
+         close/reopen cycles. */
+      const changeEncoding = async (event) => {
+        const next = event.target.value === 'gb18030' || event.target.value === 'ascii'
+          ? event.target.value
+          : 'utf-8'
+        setEncoding(next)
+        if (st.serial.open !== true) return
+        setNotice('正在按 ' + next.toUpperCase() + ' 重开串口…')
+        try {
+          await api.post('/serial/close', {})
+          const r = await api.post('/serial/open', {
+            port: st.serial.port || selPort,
+            baud: st.serial.baud || baud,
+            encoding: next,
+          })
+          if (r && r.ok) setNotice('串口编码已切换为 ' + next.toUpperCase())
+          else setNotice('重开串口失败：' + ((r && (r.msg || r.error)) || '未知错误'))
+        } catch (error) {
+          setNotice('重开串口失败：' + (error && error.message ? error.message : String(error)))
+        }
       }
       /* 擦除是全片动作，鼠标滑一下就烧进去太危险：第一次点只「上膛」，3 秒内再点
          才真正发送 StartErase。 */
@@ -861,7 +886,7 @@ function formatBytes(n) {
             h('span', { className: 'abw-dot', 'data-s': dot }),
             h('span', null, statusText),
             f.com ? h('span', { className: 'abw-badge abw-mono' }, f.com) : null,
-            h('span', { className: 'abw-dim abw-mono' }, baud + ' baud')),
+            h('span', { className: 'abw-dim abw-mono' }, baud + ' baud · ' + encoding.toUpperCase())),
         h('span', { className: 'abw-sp' }),
         configExpanded
           ? h('span', { className: 'abw-cfgWrap', onClick: (event) => { event.stopPropagation() } },
@@ -908,7 +933,17 @@ function formatBytes(n) {
               },
             }),
             h('datalist', { id: 'abw-baudPresets' },
-              baudPresets.map(b => h('option', { key: b, value: b }))))
+              baudPresets.map(b => h('option', { key: b, value: b }))),
+            h('select', {
+              className: 'abw-sel abw-enc',
+              value: encoding,
+              disabled: busy,
+              title: '串口文本编码',
+              'aria-label': '串口文本编码',
+              onChange: changeEncoding,
+            },
+              [['utf-8', 'UTF-8'], ['gb18030', 'GB18030'], ['ascii', 'ASCII']].map(([value, label]) =>
+                h('option', { key: value, value }, label))))
           : null,
         shellCompact
           ? h('span', { className: 'abw-cfgChevron' + (configExpanded ? ' is-open' : ''), 'aria-hidden': 'true' }, '▾')
@@ -924,7 +959,7 @@ function formatBytes(n) {
         h('div', { className: 'abw-mono' }, f.devChecksum || '—'),
         h('div', null, '串口状态'),
         h('div', null, s.open
-          ? h('span', null, h('span', { className: 'abw-dot', 'data-s': 'ok' }), ' ' + s.port + ' @' + s.baud)
+          ? h('span', null, h('span', { className: 'abw-dot', 'data-s': 'ok' }), ' ' + s.port + ' @' + s.baud + ' · ' + String(s.encoding || encoding).toUpperCase())
           : h('span', { className: 'abw-dim' }, '未打开'))
       )
 
@@ -1029,7 +1064,7 @@ function formatBytes(n) {
         : h('button', {
           key: 'ser', className: 'abw-btn',
           onClick: async () => {
-            const r = await api.post('/serial/open', { port: selPort, baud })
+            const r = await api.post('/serial/open', { port: selPort, baud, encoding })
             if (!r.ok) setNotice('打开 ' + selPort + ' 失败：' + (r.msg || r.error || '可能被占用'))
           },
         }, '打开串口')
