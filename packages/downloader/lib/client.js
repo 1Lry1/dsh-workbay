@@ -24,6 +24,29 @@ window.__ModuleLoader__.load({
     const CLIENT_MAX_LOGS = 300000
     const ROW_HEIGHT = 20
     const OVERSCAN = 20
+    const EXCLUDE_KEY = 'dsh-workbay.downloader.exclude.v1'
+
+    /* One literal substring per line. The page applies them case-insensitively
+       to both the live stream and search results; this is for noisy repeats
+       (heartbeats, polling lines), not full regex filtering. */
+    function parseExcludeRules(text) {
+      const seen = new Set()
+      const rules = []
+      for (const line of String(text === undefined || text === null ? '' : text).split(/\r?\n/)) {
+        const rule = line.trim()
+        if (rule === '' || seen.has(rule.toLowerCase())) continue
+        seen.add(rule.toLowerCase())
+        rules.push(rule)
+        if (rules.length >= 50) break
+      }
+      return rules
+    }
+
+    function isLogExcluded(text, rules) {
+      if (!Array.isArray(rules) || rules.length === 0) return false
+      const lower = String(text === undefined || text === null ? '' : text).toLowerCase()
+      return rules.some((rule) => lower.includes(rule.toLowerCase()))
+    }
 
     /** 批量追加 + 环形裁剪；返回新数组，不修改入参。 */
 /* The last workspace root this PAGE told the host. Module scope on purpose: the
@@ -261,6 +284,10 @@ function formatBytes(n) {
       .abw-lt{flex:1 1 auto;min-width:0}
       .abw-empty{padding:24px 10px;text-align:center;color:var(--dsw-fg-3,#777);font-size:12px;line-height:1.9}
       .abw-send{flex:0 0 auto;display:flex;gap:8px;margin-top:8px}
+      .abw-exclude{flex:0 0 auto;display:flex;align-items:stretch;gap:8px;margin-bottom:6px;padding:6px;border:1px solid var(--dsw-border,#2c2c2f);border-radius:6px;background:rgba(255,255,255,.025)}
+      .abw-excludeInput{flex:1 1 auto;min-width:0;min-height:38px;resize:vertical;padding:5px 7px;border:1px solid var(--dsw-border,#3a3a3d);border-radius:5px;background:var(--dsw-bg-2,#18181a);color:var(--dsw-fg-1,#e6e6e6);font:11px/1.45 ui-monospace,Consolas,monospace;outline:none}
+      .abw-excludeInput:focus{border-color:var(--dsw-accent,#4c9aff)}
+      .abw-excludeSide{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px;justify-content:center}
       .abw-search{flex:0 0 auto;display:flex;align-items:center;gap:6px;margin-bottom:6px}
       .abw-hit{background:#4d3b00;color:#ffd866;border-radius:2px}
       .abw-ll.is-target{background:#3a3000;box-shadow:inset 2px 0 0 #ffd866}
@@ -399,6 +426,14 @@ function formatBytes(n) {
       const [encoding, setEncoding] = React.useState('utf-8')
       const [filter, setFilter] = React.useState('all')
       const [follow, setFollow] = React.useState(true)
+      const [excludeText, setExcludeText] = React.useState(() => {
+        try { return window.localStorage.getItem(EXCLUDE_KEY) || '' } catch (error) { return '' }
+      })
+      const [excludeDraft, setExcludeDraft] = React.useState(() => {
+        try { return window.localStorage.getItem(EXCLUDE_KEY) || '' } catch (error) { return '' }
+      })
+      const [excludeOpen, setExcludeOpen] = React.useState(false)
+      const excludeRules = React.useMemo(() => parseExcludeRules(excludeText), [excludeText])
       const [input, setInput] = React.useState('')
       const logRef = React.useRef(null)
       const [scrollTop, setScrollTop] = React.useState(0)
@@ -413,6 +448,9 @@ function formatBytes(n) {
       const [target, setTarget] = React.useState(null)
       const logsRef = React.useRef(st.logs)
       React.useEffect(() => { logsRef.current = st.logs }, [st.logs])
+      React.useEffect(() => {
+        try { window.localStorage.setItem(EXCLUDE_KEY, excludeText) } catch (error) { void error }
+      }, [excludeText])
       /* 搜索时下方结果栏有独立的滚动位置与高度（上方实时流不受影响）。 */
       const [resultScrollTop, setResultScrollTop] = React.useState(0)
       const [resultViewH, setResultViewH] = React.useState(200)
@@ -749,10 +787,25 @@ function formatBytes(n) {
         }
       }, [setSt])
 
-      const shown = filter === 'all' ? st.logs : st.logs.filter(l => l.src === filter)
+      const shown = React.useMemo(() => {
+        const base = filter === 'all' ? st.logs : st.logs.filter((item) => item.src === filter)
+        return excludeRules.length === 0 ? base : base.filter((item) => !isLogExcluded(item.text, excludeRules))
+      }, [st.logs, filter, excludeRules])
+      const excludedCount = React.useMemo(() => {
+        if (excludeRules.length === 0) return 0
+        let count = 0
+        for (const item of st.logs) {
+          if (isLogExcluded(item.text, excludeRules)) count += 1
+        }
+        return count
+      }, [st.logs, excludeRules])
       const rows = shown
       const range = virtualRange(scrollTop, viewH, rows.length, ROW_HEIGHT, OVERSCAN)
-      const resultRows = search.matches
+      const resultRows = React.useMemo(() => (
+        excludeRules.length === 0
+          ? search.matches
+          : search.matches.filter((item) => !isLogExcluded(item.text, excludeRules))
+      ), [search.matches, excludeRules])
       const resultRange = virtualRange(resultScrollTop, resultViewH, resultRows.length, ROW_HEIGHT, OVERSCAN)
 
       React.useEffect(() => {
@@ -1246,6 +1299,15 @@ function formatBytes(n) {
           h('option', { value: 'D' }, '烧录'),
           h('option', { value: 'S' }, '系统')
         ),
+        h('button', {
+          className: 'abw-btn',
+          'data-v': excludeRules.length > 0 ? 'pri' : 'ghost',
+          title: '自定义隐藏日志：每行一个关键词，匹配即不显示',
+          onClick: () => setExcludeOpen((open) => {
+            if (!open) setExcludeDraft(excludeText)
+            return !open
+          }),
+        }, '排除' + (excludeRules.length > 0 ? ' ' + excludeRules.length : '')),
         h('label', {
           className: 'abw-dim',
           style: { fontSize: 12, cursor: 'pointer', display: 'flex', gap: 4, alignItems: 'center' },
@@ -1259,6 +1321,39 @@ function formatBytes(n) {
           onClick: () => api.post('/log/clear', {}),
         }, '清空')
       )
+
+      const excludeBar = excludeOpen
+        ? h('div', { className: 'abw-exclude' },
+          h('textarea', {
+            className: 'abw-excludeInput',
+            rows: 2,
+            value: excludeDraft,
+            spellCheck: false,
+            placeholder: '每行一个要隐藏的关键词，匹配即不显示（不区分大小写）',
+            onChange: (event) => setExcludeDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault()
+                setExcludeText(excludeDraft)
+              }
+            },
+          }),
+          h('div', { className: 'abw-excludeSide' },
+            h('span', { className: 'abw-dim', style: { fontSize: 11 } },
+              excludedCount + ' 条被隐藏 · ' + excludeRules.length + ' 条规则'),
+            h('button', {
+              className: 'abw-btn', 'data-v': 'pri',
+              onClick: () => setExcludeText(excludeDraft),
+            }, '应用'),
+            h('button', {
+              className: 'abw-btn', 'data-v': 'ghost',
+              onClick: () => { setExcludeText(''); setExcludeDraft('') },
+            }, '清空规则'),
+            h('button', {
+              className: 'abw-btn', 'data-v': 'ghost',
+              onClick: () => setExcludeOpen(false),
+            }, '收起')))
+        : null
 
       // ★ 时间戳：之前只渲染了 [src] text，没有时间，所以看不到。
       const fmtT = (ms) => {
@@ -1403,7 +1498,7 @@ function formatBytes(n) {
         h('button', { className: 'abw-btn', disabled: !s.open, onClick: send }, '发送')
       )
 
-      const bottom = h('div', { className: 'abw-logwrap' }, logBar, locateBar, searchRow, logSplit, sendBar)
+      const bottom = h('div', { className: 'abw-logwrap' }, logBar, excludeBar, locateBar, searchRow, logSplit, sendBar)
 
   /* 工具路径对话框：内联渲染，不依赖任何弹窗 API。 */
   const toolModal = toolDialog.open === true
@@ -1524,7 +1619,7 @@ function formatBytes(n) {
         }, 250)
         ctx.effect(function () { return function () { clearInterval(timer) } }, 'downloader: dock discovery')
       },
-      __test: { appendLogs, virtualRange, searchParts, mergeLogs, formatBytes, parseBaudRate, defaultLeftWidth, clampLeftWidth, LEFT_WIDTH_KEY },
+      __test: { appendLogs, virtualRange, searchParts, mergeLogs, formatBytes, parseBaudRate, parseExcludeRules, isLogExcluded, defaultLeftWidth, clampLeftWidth, LEFT_WIDTH_KEY },
     }
   },
 })

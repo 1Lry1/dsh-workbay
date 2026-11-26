@@ -134,7 +134,7 @@ test('searching splits the pane: live stream on top, results below, click locate
   assert.match(source, /\/log\/context\?/)
   assert.match(source, /const locate = React\.useCallback/)
   assert.match(source, /mergeLogs\(logsRef\.current, data\.logs/)
-  assert.match(source, /const resultRows = search\.matches/)
+  assert.match(source, /const resultRows = React\.useMemo/)
   assert.match(source, /className: 'abw-log abw-resultList'/)
   assert.match(source, /abw-split/)
   assert.match(source, /setSelectedKey\(logKey\(l\)\); void locate\(l\)/)
@@ -223,6 +223,19 @@ test('the page offers a serial encoding selector and sends it on open', () => {
   assert.match(source, /api\.post\('\/serial\/open', \{ port: selPort, baud, encoding \}\)/)
   assert.match(source, /encoding: next,/)
   assert.match(source, /changeEncoding/)
+})
+
+test('custom log exclusions are literal, case-insensitive, deduped and capped', () => {
+  const { module } = loadClient()
+  const { parseExcludeRules, isLogExcluded } = module.__test
+  const rules = parseExcludeRules('  HeartBeat  \nheartbeat\n\nnoise\n')
+  assert.deepEqual(rules, ['HeartBeat', 'noise'])
+  assert.equal(isLogExcluded('12:00 HEARTBEAT tick', rules), true)
+  assert.equal(isLogExcluded('12:00 useful line', rules), false)
+  assert.equal(isLogExcluded('anything', []), false)
+  assert.match(source, /abw-excludeInput/)
+  assert.match(source, /每行一个要隐藏的关键词/)
+  assert.match(source, /isLogExcluded\(item\.text, excludeRules\)/)
 })
 
 test('the log scrollbar is high-contrast in dark mode', () => {
