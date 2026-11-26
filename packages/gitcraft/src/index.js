@@ -2836,7 +2836,19 @@ const METHODS = {
 
   async stashList(payload) {
     const root = await repoRootOf(await cwdOfPayload(payload), payload)
-    const res = await runGit(root, ['stash', 'list', '--format=%gd%x1f%ci%x1f%gs%x1e'], { timeoutMs: 20_000 })
+    const args = ['stash', 'list', '--format=%gd%x1f%ci%x1f%gs%x1e']
+    let res
+    try {
+      res = await runGit(root, args, { timeoutMs: 20_000 })
+    } catch (error) {
+      /* `stash list` is a read and normally takes ~200 ms. A concurrent
+         stash/drop or a transient Git lock can make the first spawn wait until
+         the 20 s deadline; retry once after a short yield instead of turning a
+         temporary contention into a permanent error in the page. */
+      if (!error || error.code !== 'git-timeout') throw error
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      res = await runGit(root, args, { timeoutMs: 20_000 })
+    }
     const stash = []
     if (res.code === 0) {
       for (const record of res.stdout.split('\u001e')) {

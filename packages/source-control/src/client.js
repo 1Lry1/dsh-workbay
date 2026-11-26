@@ -5952,7 +5952,13 @@ function Page(props) {
         const stashPanel = stashState.status === 'loading' && stashState.stash.length === 0
           ? E('div', { className: 'scw-treeState' }, t('state.loading'))
           : stashState.status === 'error'
-            ? E('div', { className: 'scw-treeState is-error' }, stashState.error)
+            ? E('div', { className: 'scw-treeState is-error' },
+              E('span', null, stashState.error),
+              E('button', {
+                type: 'button',
+                className: 'scw-btn',
+                onClick: () => { stashLoadedRef.current = false; void loadStash() },
+              }, t('state.retry')))
             : stashState.stash.length === 0
               ? E('div', { className: 'scw-treeState' }, t('stash.empty'))
               : E('div', { className: 'scw-tree scw-list' },
