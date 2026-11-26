@@ -570,6 +570,13 @@ test('history search filters hash, message and author without crossing fields', 
   assert.equal(api.filterHistoryCommits(commits, '', 'all').length, 2)
 })
 
+test('only stash@{n} refs open the stash detail view', () => {
+  assert.equal(api.isStashRef('stash@{0}'), true)
+  assert.equal(api.isStashRef('stash@{12}'), true)
+  assert.equal(api.isStashRef('0123abcd'), false)
+  assert.equal(api.isStashRef('stash'), false)
+})
+
 test('stash offers staged-only without silently dropping untracked files', () => {
   assert.match(source, /if \(stagedOnly\) payload\.staged = true/)
   assert.match(source, /else payload\.includeUntracked = true/)

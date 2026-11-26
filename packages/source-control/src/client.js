@@ -475,6 +475,7 @@ const NARROW_PANE_W = 225
       'stash.chooseBody': '选择要贮藏的范围。',
       'stash.chooseMixedBody': '有文件同时存在已暂存和未暂存改动；Git 无法只贮藏其中一半，请选「全部更改」（或先处理该文件的未暂存部分）。',
       'stash.chooseConflictBody': '当前有未解决的冲突，不能只贮藏暂存区；请先解决冲突再贮藏。',
+      'stash.openHint': '点击查看贮藏的文件和差异',
       'stash.stagedOnly': '仅暂存区',
       'stash.allChanges': '全部更改（含未跟踪）',
       'stash.messageLabel': '说明（可留空）',
@@ -808,6 +809,7 @@ const NARROW_PANE_W = 225
       'stash.chooseBody': 'Choose what to stash.',
       'stash.chooseMixedBody': 'A file has both staged and unstaged edits; git cannot stash only one half. Choose "All changes" (or deal with that file first).',
       'stash.chooseConflictBody': 'Unresolved conflicts are present; staged-only stashing is unavailable until they are resolved.',
+      'stash.openHint': 'Click to view the stashed files and diff',
       'stash.stagedOnly': 'Staged only',
       'stash.allChanges': 'All changes (incl. untracked)',
       'stash.messageLabel': 'Message (optional)',
@@ -1268,6 +1270,10 @@ const NARROW_PANE_W = 225
         if (mode === 'author') return author.includes(needle)
         return hash.includes(needle) || short.includes(needle) || subject.includes(needle) || author.includes(needle)
       })
+    }
+
+    function isStashRef(value) {
+      return typeof value === 'string' && /^stash@\{\d+\}$/.test(value.trim())
     }
 
     function relativeTime(ms, t) {
@@ -1982,6 +1988,7 @@ const NARROW_PANE_W = 225
 /* ---- stash ---- */
 .scw-stashRow{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:11px}
 .scw-stashRow:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.scw-stashRow.is-active{background:var(--dsw-alias-interactive-bg-active,rgba(77,107,254,.18));box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-stashRef{flex:none;font-family:var(--dsw-font-markdown-code-block,ui-monospace,monospace);font-size:10px;color:var(--dsw-alias-brand-primary,#4d6bfe)}
 .scw-stashSubject{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary,#b6bac1)}
         /* 通用规则把 .scw-rowActions 设成 display:none，只在 .scw-row 悬停时解除；贮藏行没有那个 class，
@@ -2956,6 +2963,21 @@ function Page(props) {
           })
         }
       }, [workspaceRoot, repoRoot, call, t])
+
+      /* Applying/popping/dropping a stash makes its ref disappear. Do not leave
+         the detail pane pointing at a stash entry that no longer exists. */
+      useEffect(() => {
+        if (!isStashRef(selectedCommit)) return
+        if ((stashState.stash || []).some((entry) => entry.ref === selectedCommit)) return
+        setSelectedCommit(null)
+        setCommitFile(null)
+      }, [stashState.stash, selectedCommit])
+
+      useEffect(() => {
+        if (treeMode === 'stash' || !isStashRef(selectedCommit)) return
+        setSelectedCommit(null)
+        setCommitFile(null)
+      }, [treeMode, selectedCommit])
 
       useEffect(() => {
         if (treeMode !== 'history' || visible !== true || workspaceRoot === '') return undefined
@@ -5936,8 +5958,16 @@ function Page(props) {
               : E('div', { className: 'scw-tree scw-list' },
                 stashState.stash.map((item) => E('div', {
                   key: item.ref,
-                  className: 'scw-stashRow',
-                  title: item.ref + '\n' + item.subject,
+                  className: 'scw-stashRow' + (selectedCommit === item.ref ? ' is-active' : ''),
+                  title: item.ref + '\n' + item.subject + '\n' + t('stash.openHint'),
+                  role: 'button',
+                  tabIndex: 0,
+                  onClick: () => selectCommit(item.ref),
+                  onKeyDown: (event) => {
+                    if (event.key !== 'Enter') return
+                    event.preventDefault()
+                    selectCommit(item.ref)
+                  },
                 },
                 E('span', { className: 'scw-stashRef' }, item.ref),
                 E('span', { className: 'scw-stashSubject' }, item.subject),
@@ -6020,18 +6050,40 @@ function Page(props) {
           return E('div', { className: 'scw-empty' }, E('div', { className: 'scw-emptyTitle' }, t('state.loading')))
         }
         const files = Array.isArray(detail.files) ? detail.files : []
-        return E('div', { className: 'scw-commitDetail' },
-          E('div', { className: 'scw-commitHead' },
-            E('span', { className: 'scw-commitHash' }, detail.short),
-            E('span', { className: 'scw-commitSubject is-large' }, detail.subject)),
-          E('div', { className: 'scw-commitInfo' },
-            E('span', null, detail.authorName),
-            E('span', { className: 'scw-dim' }, relativeTime(detail.authorTime, t)),
-            E('span', { className: 'scw-dim' }, detail.hash)),
-          /* Actions on THIS commit. Placed with the commit rather than in the
-             toolbar for the same reason as branch actions: "which commit?" would
-             otherwise be a guess. */
-          E('div', { className: 'scw-commitOps' },
+        const stashMode = isStashRef(selectedCommit)
+        const stashItem = stashMode
+          ? (stashState.stash || []).find((entry) => entry.ref === selectedCommit) || null
+          : null
+        const stashOps = stashMode
+          ? E('div', { className: 'scw-commitOps scw-stashOps' },
+            E('button', {
+              type: 'button',
+              className: 'scw-toolBtn',
+              disabled: busyAction !== null || stashItem === null,
+              title: t('action.stashApply'),
+              onClick: () => { if (stashItem !== null) stashAction('stashApply', stashItem) },
+            }, t('action.stashApply')),
+            E('button', {
+              type: 'button',
+              className: 'scw-toolBtn',
+              disabled: busyAction !== null || stashItem === null,
+              title: t('action.stashPop'),
+              onClick: () => { if (stashItem !== null) stashAction('stashPop', stashItem) },
+            }, t('action.stashPop')),
+            E('button', {
+              type: 'button',
+              className: 'scw-toolBtn is-danger',
+              disabled: busyAction !== null || stashItem === null,
+              title: t('action.stashDrop'),
+              onClick: () => { if (stashItem !== null) stashAction('stashDrop', stashItem) },
+            }, t('action.stashDrop')),
+            E('button', {
+              type: 'button',
+              className: 'scw-toolBtn',
+              title: t('commit.wholeHint'),
+              onClick: () => setCommitFile({ rel: null, rev: detail.hash }),
+            }, t('commit.wholeBtn')))
+          : E('div', { className: 'scw-commitOps' },
             E('button', {
               type: 'button',
               className: 'scw-toolBtn',
@@ -6065,7 +6117,16 @@ function Page(props) {
               className: 'scw-toolBtn',
               title: t('commit.wholeHint'),
               onClick: () => setCommitFile({ rel: null, rev: detail.hash }),
-            }, t('commit.wholeBtn'))),
+            }, t('commit.wholeBtn')))
+        return E('div', { className: 'scw-commitDetail' },
+          E('div', { className: 'scw-commitHead' },
+            E('span', { className: 'scw-commitHash' }, stashMode ? selectedCommit : detail.short),
+            E('span', { className: 'scw-commitSubject is-large' }, detail.subject)),
+          E('div', { className: 'scw-commitInfo' },
+            E('span', null, detail.authorName),
+            E('span', { className: 'scw-dim' }, relativeTime(detail.authorTime, t)),
+            E('span', { className: 'scw-dim' }, detail.hash)),
+          stashOps,
           detail.body === '' || detail.body === null || detail.body === undefined
             ? null
             : E('pre', { className: 'scw-commitBody' }, detail.body),
@@ -6288,7 +6349,7 @@ function Page(props) {
       }
       /* 右栏值得打开吗？ */
       const hasDoc = (commitFile !== null && commitFile !== undefined)
-        || (selectedCommit !== null && treeMode === 'history')
+        || (selectedCommit !== null && (treeMode === 'history' || isStashRef(selectedCommit)))
         /* 选中目录也算「有内容」：右栏显示该目录的条目数，比留白有用。 */
         || selectedRel !== null
       const contentInner = (() => {
@@ -6312,7 +6373,7 @@ function Page(props) {
         if (commitFile !== null && commitFile !== undefined) {
           return commitPatchView()
         }
-        if (selectedCommit !== null && treeMode === 'history') {
+        if (selectedCommit !== null && (treeMode === 'history' || isStashRef(selectedCommit))) {
           return commitDetailView()
         }
         if (selectedRel === null) {
@@ -6833,6 +6894,7 @@ function Page(props) {
       buildDirtyDirs,
       buildChangeGroups,
       filterHistoryCommits,
+      isStashRef,
       relativeTime,
       highlightName,
       flattenTree,

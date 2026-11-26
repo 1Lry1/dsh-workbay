@@ -421,6 +421,14 @@ test('stash push / list / pop keeps the worktree clean in between', async () => 
   assert.ok(list.data.stash.length >= 1)
   assert.match(list.data.stash[0].subject, /wip: probe/)
 
+  /* A stash can be inspected through the ordinary commit detail/diff APIs. */
+  const detail = await call('commitDetail', { cwd: repo, rev: 'stash@{0}' })
+  assert.equal(detail.ok, true, JSON.stringify(detail))
+  assert.ok(detail.data.files.some((file) => file.path === 'a.txt'), JSON.stringify(detail.data.files))
+  const stashDiff = await call('diff', { cwd: repo, base: 'commit', rev: 'stash@{0}', path: 'a.txt' })
+  assert.equal(stashDiff.ok, true, JSON.stringify(stashDiff))
+  assert.match(stashDiff.data.patch, /stashed content/)
+
   out = await call('stashPop', { cwd: repo, index: 0 })
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.equal(out.data.conflicted, false)

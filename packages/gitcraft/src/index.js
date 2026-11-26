@@ -2121,7 +2121,7 @@ const METHODS = {
          process costs ~120-250 ms. `--name-status -z` plus a pretty format emits
          both in one stream: header up to \x1e, then NUL-separated status/path. */
       const res = await runGit(root, [
-        'show', '--name-status', '-z',
+        'show', '--name-status', '-z', '--first-parent',
         '--no-ext-diff', '--no-textconv', '--no-color',
         `--pretty=format:${format}%x1e`,
         '--end-of-options', rev,
