@@ -54,17 +54,6 @@ window.__ModuleLoader__.load({
     const STORAGE_DOCK_W = 'dsh-workbay-dock.dockw.v1'
     const LOCALE_NS = 'dsh-workbay-dock'
 
-    /* Load-meter thresholds.
-       The authoritative copy lives in the host half (`src/load.js` exports
-       WARN_PCT / HOT_PCT). This bundle is loaded as a self-contained string
-       through `window.__ModuleLoader__` and cannot import a Node module, so the
-       values are mirrored here; client.test.mjs reads both sources and fails if
-       they ever drift apart. Do not introduce a THIRD copy. */
-    const METER_WARN_PCT = 90
-    const METER_HOT_PCT = 95
-    const METER_POLL_MS = 5000
-    const METER_RETRY_MS = 1500
-
     /* ============================== i18n ============================== */
 
     const ZH = {
@@ -96,15 +85,6 @@ window.__ModuleLoader__.load({
       'layout.single': '单栏',
       'layout.split': '主从双栏',
       'layout.tri': '三栏',
-      'load.title': '本机负载',
-      /* The three metric words stay in ASCII in every locale, on request: they
-         are the conventional labels for these numbers, and 处理器 / 显卡 / 内存
-         made the row wider without being any clearer. */
-      'load.cpu': 'CPU',
-      'load.gpu': 'GPU',
-      'load.mem': 'MEM',
-      'load.noGpu': '未检测到 NVIDIA 显卡（只显示 CPU / 内存）',
-      'load.offline': '读不到宿主负载接口',
     }
 
     const EN = {
@@ -136,13 +116,6 @@ window.__ModuleLoader__.load({
       'layout.single': 'Single column',
       'layout.split': 'Master-detail',
       'layout.tri': 'Three columns',
-      'load.title': 'Machine load',
-      /* CPU / GPU / MEM in every locale — see the ZH note above. */
-      'load.cpu': 'CPU',
-      'load.gpu': 'GPU',
-      'load.mem': 'MEM',
-      'load.noGpu': 'No NVIDIA GPU detected (CPU / RAM only)',
-      'load.offline': 'Host load endpoint unreachable',
     }
 
     const LOCALES = { en: EN }
@@ -703,199 +676,6 @@ window.__ModuleLoader__.load({
       return value
     }
 
-    /* ============================== titlebar load meter ============================== */
-
-    /**
-     * Poll the host sampler and hold the latest reading.
-     *
-     * Sampling discipline (this is the whole point of the component):
-     *   - only while the panel is MOUNTED — mounting happens after the shell's
-     *     `if (!isOpen) return null`, so closing the workbench unmounts us and
-     *     the interval dies with the component;
-     *   - only while the window is VISIBLE and FOCUSED — the guard sits before
-     *     the request, so a backgrounded DSH spawns nothing;
-     *   - one retry 1.5s later if the host answers `cpu: null`, because the very
-     *     first sample has no tick baseline to difference against. `retried`
-     *     makes that retry once-only instead of a tight loop.
-     */
-    function useLoadMeter() {
-      const [reading, setReading] = useState({ cpu: null, gpu: null, mem: null, err: '' })
-      const retried = useRef(false)
-
-      useEffect(() => {
-        let alive = true
-        let retryTimer = null
-        let inFlight = false
-
-        const tick = async () => {
-          if (typeof document !== 'undefined' && document.hidden) return
-          if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) return
-          /* One request at a time. Two overlapping ticks would be differenced over
-             a ~0ms window by the host's CPU reader, which yields a bogus 0/100 or
-             a spurious "—"; the GPU side has its own gate, CPU does not. */
-          if (inFlight === true) return
-          inFlight = true
-          try {
-            const url = new URL('dsh-workbay-dock/api/load', document.baseURI).href
-            const response = await fetch(url, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: '{}',
-            })
-            const envelope = await response.json()
-            /* The kit answers non-fatal failures as a JSON envelope with ok:false
-               (404 unknown method, 403 forbidden, 415 bad content type). Those are
-               NOT absent data — they are the case the user will hit first, before
-               the host half is loaded. Route them into the error path so the meter
-               greys out and explains itself instead of showing three dashes. */
-            if (response.ok !== true || envelope === null || envelope === undefined || envelope.ok !== true) {
-              const reason = envelope && envelope.error && envelope.error.message
-                ? envelope.error.message
-                : 'HTTP ' + response.status
-              throw new Error(reason)
-            }
-            const data = envelope.data ? envelope.data : null
-            if (alive === false) return
-            if (data === null) throw new Error('empty payload')
-            setReading({ cpu: data.cpu, gpu: data.gpu, mem: data.mem, err: '' })
-            const latch = meterNextRetryState(retried.current, data.cpu)
-            retried.current = latch.retried
-            if (latch.schedule === true) {
-              retryTimer = setTimeout(() => { void tick() }, METER_RETRY_MS)
-            }
-          } catch (error) {
-            /* Keep the last good numbers on screen and only flip the tooltip:
-               a transient failure must not blank the meter. */
-            if (alive === false) return
-            setReading((previous) => ({ ...previous, err: String((error && error.message) || error) }))
-          } finally {
-            inFlight = false
-          }
-        }
-
-        void tick()
-        const interval = setInterval(() => { void tick() }, METER_POLL_MS)
-        window.addEventListener('focus', tick)
-        return () => {
-          alive = false
-          clearInterval(interval)
-          if (retryTimer !== null) clearTimeout(retryTimer)
-          window.removeEventListener('focus', tick)
-        }
-      }, [])
-
-      return reading
-    }
-
-    /** At or above WARN the number goes red; at or above HOT the dot breathes too. */
-    function meterLevel(value) {
-      if (typeof value !== 'number') return 'ok'
-      if (value >= METER_HOT_PCT) return 'hot'
-      if (value >= METER_WARN_PCT) return 'warn'
-      return 'ok'
-    }
-
-    /**
-     * Has at least one sample landed?
-     *
-     * Before the first reply every field is null, and reporting "no NVIDIA GPU"
-     * from that state tells the user something false about their hardware. The
-     * verdict is only trustworthy once `mem` exists (every successful sample
-     * carries it, and it is the field that cannot be null in a real reply).
-     */
-    function meterHasSample(reading) {
-      const state = reading === null || reading === undefined ? {} : reading
-      return state.mem !== null && state.mem !== undefined
-    }
-
-    /** True only when a sample landed AND that sample had no GPU. */
-    function meterGpuMissing(reading) {
-      if (meterHasSample(reading) === false) return false
-      const state = reading === null || reading === undefined ? {} : reading
-      return state.gpu === null || state.gpu === undefined
-    }
-
-    /** A failed poll keeps the numbers but flags them as out of date. */
-    function meterIsStale(reading) {
-      const state = reading === null || reading === undefined ? {} : reading
-      return typeof state.err === 'string' && state.err !== ''
-    }
-
-    /**
-     * Decide the retry latch for one poll result.
-     *
-     * `cpu === null` means "no baseline yet": on mount the reader has never run,
-     * and after `BASELINE_TTL_MS` of the window being unfocused the datum is
-     * discarded on purpose. Either way a fast retry turns the dash into a number
-     * immediately instead of waiting for the next 5s tick — but exactly once per
-     * episode, so a persistently null CPU cannot spin.
-     *
-     * A real number ENDS the episode, which re-arms the latch; without that, the
-     * TTL case (Review Focus 2) would never get its fast retry.
-     */
-    function meterNextRetryState(retried, cpu) {
-      if (cpu === null || cpu === undefined) {
-        /* Latch at SCHEDULE time, not when the timer fires: a focus event landing
-           before the timer would otherwise schedule a second one. */
-        return retried === true ? { retried: true, schedule: false } : { retried: true, schedule: true }
-      }
-      return { retried: false, schedule: false }
-    }
-
-    /**
-     * The titlebar meter: one colour-coded dot per metric, the word and the
-     * number beside it.
-     *
-     * The labels are never hidden, at any tier: measured in a real browser the
-     * whole row is 179px and fits the titlebar even at the 520px minimum dock
-     * width, so there is nothing to trade away. A bare dot would also make the
-     * user memorise a hue, which defeats the point of colour-coding.
-     */
-    function LoadMeter(props) {
-      const { t } = props
-      const reading = useLoadMeter()
-      const gpu = reading.gpu === null || reading.gpu === undefined ? null : reading.gpu
-      const mem = reading.mem === null || reading.mem === undefined ? null : reading.mem
-      /* Temperature is `[N/A]` on some drivers, which parses to NaN and would
-         render as "null°C"; drop it rather than print nonsense. */
-      const gpuBits = gpu === null
-        ? []
-        : [
-          gpu.name,
-          Number.isFinite(gpu.temp) ? gpu.temp + '°C' : '',
-          gpu.memUsed + '/' + gpu.memTotal + ' MB',
-        ].filter((part) => typeof part === 'string' && part !== '')
-      const cells = [
-        { tone: 'cpu', label: t('load.cpu'), value: reading.cpu, extra: '' },
-        { tone: 'gpu', label: t('load.gpu'), value: gpu === null ? null : gpu.util, extra: gpuBits.join(' · ') },
-        { tone: 'mem', label: t('load.mem'), value: mem === null ? null : mem.usedPct,
-          extra: mem === null ? '' : (mem.usedGB + ' / ' + mem.totalGB + ' GB') },
-      ]
-      const gpuMissing = meterGpuMissing(reading)
-      const stale = meterIsStale(reading)
-      const title = stale
-        ? t('load.offline') + ' — ' + reading.err
-        : cells.map((cell) => cell.label + ' ' + (typeof cell.value === 'number' ? cell.value + '%' : '—')
-          + (cell.extra === '' ? '' : ' (' + cell.extra + ')')).join(' · ')
-          + (gpuMissing ? '　·　' + t('load.noGpu') : '')
-      return E('span', {
-        className: 'wbd-load',
-        title,
-        'aria-label': t('load.title'),
-        'data-state': stale ? 'stale' : undefined,
-      },
-        cells.map((cell) => E('span', {
-          key: cell.tone,
-          className: 'wbd-loadCell',
-          'data-tone': cell.tone,
-          'data-level': meterLevel(cell.value),
-        },
-        E('span', { className: 'wbd-loadDot' }),
-        E('span', { className: 'wbd-loadLabel' }, cell.label),
-        E('span', { className: 'wbd-loadNum' }, typeof cell.value === 'number' ? String(cell.value) : '—'),
-        typeof cell.value === 'number' ? E('span', { className: 'wbd-loadPct' }, '%') : null)))
-    }
-
     /**
      * The always-visible workspace bar.
      *
@@ -1349,7 +1129,6 @@ window.__ModuleLoader__.load({
         E('span', { className: 'wbd-title' }, t('pane.title')),
         E('span', { className: 'wbd-titleHint' }, mode === 'docked' ? t('pane.docked') : t('pane.global')),
         E('span', { className: 'wbd-titleActions' },
-          E(LoadMeter, { t }),
           E('button', {
             type: 'button', className: 'wbd-titleBtn', title: restarting ? t('pane.restarting') : t('pane.restart'),
             'aria-label': t('pane.restart'), disabled: restarting,
@@ -1565,44 +1344,6 @@ body.wbd-docked-open{padding-right:var(--wbd-dock-width,620px);box-sizing:border
 .wbd-titleBtn{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#b6bac1);cursor:pointer}
 .wbd-titleBtn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.1));color:var(--dsw-alias-label-primary,#fff)}
 .wbd-titleBtn:disabled{opacity:.45;cursor:default;background:transparent}
-/* ===== titlebar load meter =====
-   Per-metric hue so the three numbers are distinguishable at a glance, plus a
-   red override once a metric crosses its threshold — colour identifies, red
-   warns. The breathing uses opacity ONLY: animating box-shadow / filter keeps
-   the compositor busy forever, which is a silly price for a load indicator. */
-.wbd-load{display:inline-flex;align-items:center;gap:10px;flex:none;margin-right:2px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#b6bac1);white-space:nowrap}
-/* A failed poll keeps the last numbers but visibly dims them: the reading is no
-   longer current, and silently showing stale data is worse than showing none. */
-.wbd-load[data-state="stale"]{opacity:.55}
-.wbd-loadCell{display:inline-flex;align-items:center;gap:3px}
-.wbd-loadDot{width:6px;height:6px;border-radius:50%;flex:none}
-/* The word is the point: let it carry the weight, keep the number quiet. */
-.wbd-loadLabel{font-weight:600;letter-spacing:.02em}
-.wbd-loadNum{font-weight:600}
-.wbd-loadPct{opacity:.7;margin-left:-1px}
-.wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#38bdf8}
-.wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#a78bfa}
-.wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#fbbf24}
-.wbd-loadCell[data-level="warn"] .wbd-loadNum,
-.wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e5534b;font-weight:700}
-.wbd-loadCell[data-level="hot"] .wbd-loadDot{animation:wbdLoadBreath 1.6s ease-in-out infinite}
-@keyframes wbdLoadBreath{0%,100%{opacity:.45}50%{opacity:1}}
-@media (prefers-reduced-motion:reduce){.wbd-loadDot{animation:none!important;opacity:1}}
-html[data-theme="light"] .wbd-loadCell[data-tone="cpu"] .wbd-loadDot{background:#0284c7}
-html[data-theme="light"] .wbd-loadCell[data-tone="gpu"] .wbd-loadDot{background:#7c3aed}
-html[data-theme="light"] .wbd-loadCell[data-tone="mem"] .wbd-loadDot{background:#b45309}
-/* One red, in both themes — the spec pins #e5534b and says the light theme uses
-   the same colour. The dots change because a 6px chip on white needs more
-   contrast; the alarm colour does not, because "this is a warning" must not
-   mean two different hues depending on the theme. */
-html[data-theme="light"] .wbd-loadCell[data-level="warn"] .wbd-loadNum,
-html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e5534b}
-/* Labels are ALWAYS shown. Measured in a real browser at every dock width
-   (520 / 564 / 620 / 680 / 760 / 980 px): the full "CPU 35% · GPU — · MEM 80%"
-   row is 179px and never overflows the titlebar, so there is no width at which
-   hiding the word buys anything. The word is also the honest label — a bare
-   coloured dot asks the user to memorise a hue, which is exactly the thing the
-   colour-coding was supposed to save them from. */
 .wbd-tabs{display:flex;align-items:center;gap:2px;height:38px;flex:none;padding:0 10px;border-bottom:none;background:var(--dsw-alias-bg-layer-1,#1b1e24);overflow-x:auto;scrollbar-width:thin}
 .wbd-tab{display:inline-flex;align-items:center;gap:5px;flex:none;height:26px;padding:0 10px;border:none;border-radius:7px;background:transparent;color:#9aa0a8;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .wbd-tab:hover{background:rgba(255,255,255,.05);color:#cfd3d9}
@@ -1795,16 +1536,6 @@ html[data-theme="light"] .wbd-loadCell[data-level="hot"] .wbd-loadNum{color:#e55
       /* The tier/layout rules are exported so the duplicated copy here can be
          pinned by tests against the canonical ones in @dsh-workbay/kit/src/ui.js. */
       shell: { tierForWidth, resolveLayoutKind, normalizeLayoutMode, isWorkbenchShortcut },
-      /* The meter's decisions live here as pure functions so they can be tested
-         by BEHAVIOR. The earlier string-matching tests stayed green even with the
-         component deleted; these cannot. */
-      meter: {
-        level: meterLevel,
-        hasSample: meterHasSample,
-        gpuMissing: meterGpuMissing,
-        isStale: meterIsStale,
-        nextRetryState: meterNextRetryState,
-      },
       open: () => setOpen(true),
       close: () => setOpen(false),
     }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbay-dock",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Workbench dock for DeepSeek Harness: one left-sidebar entry that opens an INDEPENDENT right-hand panel hosting pages contributed by other plugins. Does not use dsh-better-sidebar. | DSH 插件：左侧栏「工作台」入口，打开一个独立的右侧面板，页面由其它插件注册；不使用 dsh-better-sidebar。",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node --test tests/client.test.mjs tests/restart.test.mjs tests/load.test.mjs",
+    "test": "node --test tests/client.test.mjs tests/restart.test.mjs",
     "test:back": "node tests/back-stack.e2e.mjs",
     "test:tree": "node tests/files-tree.e2e.mjs",
     "test:branches": "node tests/branches.e2e.mjs",
