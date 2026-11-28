@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbay-suite",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "The DSH workbench as ONE installable plugin: vendors the dock, files, terminal, gitcraft, downloader, source-control, memmap and absolute-file-reference bundles, mounts every host half from a single apply(), and ships all client halves in one client bundle.",
   "type": "module",

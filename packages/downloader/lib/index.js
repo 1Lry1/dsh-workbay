@@ -521,6 +521,9 @@ class LineHelper {
     for (const { resolve } of this.pending.values()) resolve({ ok: false, error: 'stopped' })
     this.pending.clear()
     if (!p) return
+    /* Already gone: waiting for an exit event that will never fire would just
+       idle for the full timeout. */
+    if (p.exitCode !== null) return
     try { p.stdin.end() } catch { }
     await new Promise(res => {
       let done = false
@@ -544,6 +547,36 @@ class LineHelper {
 }
 
 // ---------------------------------------------------------------- 插件主体
+
+/**
+ * Kill helper processes left behind by an EARLIER plugin generation.
+ *
+ * HMR reloads do not always dispose the previous instance, and a force-killed
+ * DSH can leave its child helpers alive. Those orphans keep their COM port open
+ * (three AbSerialHost processes held COM3 across reloads), so the next
+ * generation cannot open it and the vendor tool reports "COM3 打开失败".
+ *
+ * Both helpers start lazily, so at mount time any child of THIS process is by
+ * definition a leftover — except our own, whose PIDs are passed as `keep`.
+ */
+function sweepStaleHelpers(keep = []) {
+  if (process.platform !== 'win32') return
+  const keepList = keep.filter((pid) => Number.isInteger(pid) && pid > 0).join(',')
+  const script = '$parent = ' + process.pid + '; $keep = @(' + keepList + '); ' +
+    'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
+    'Where-Object { ($_.Name -eq "AbSerialHost.exe" -or $_.Name -eq "DownloaderIpcBridge.exe") -and $_.ParentProcessId -eq $parent -and $keep -notcontains $_.ProcessId } | ' +
+    'ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }'
+  try {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+    child.on('error', () => { /* no PowerShell: nothing to sweep */ })
+    if (typeof child.unref === 'function') child.unref()
+  } catch (error) {
+    void error
+  }
+}
 
 /* ---------------------------------------------------------------- 互斥 / 去重
  * 两个实测踩过的坑，抽成纯函数以便单测：
@@ -2514,20 +2547,38 @@ function freshestDcf(override) {
     }
   }
 
+  /* Last-resort cleanup for helpers a previous generation left behind: HMR does
+     not reliably run the disposer below, and those orphans hold the COM port.
+     Deferred so it never delays the first paint; `keep` protects the helpers
+     this instance may already have started. */
+  const helperSweepTimer = setTimeout(() => {
+    const keep = []
+    if (serialHelper.proc !== null && Number.isInteger(serialHelper.proc.pid)) keep.push(serialHelper.proc.pid)
+    if (flashHelper.proc !== null && Number.isInteger(flashHelper.proc.pid)) keep.push(flashHelper.proc.pid)
+    sweepStaleHelpers(keep)
+  }, 1200)
+  if (typeof helperSweepTimer.unref === 'function') helperSweepTimer.unref()
+
   // 注册 HTTP 路由。webServer 是可选服务，用 ctx.inject 包起来，
   // 缺了也只是少一层 UI，不会让整个插件停摆。
   /* 插件卸载 / DSH 正常退出：把 Downloader 的 AutoStart 还给用户。 */
   ctx.effect(() => () => {
     clearTimeout(bootArmTimer)
+    clearTimeout(helperSweepTimer)
     clearInterval(flashLivenessTimer)
     clearBootWatch()
     stopSerialGuard()
     if (state.watch.timer !== null) { clearInterval(state.watch.timer); state.watch.timer = null }
     /* HMR/workbench reload does not restart the DSH process, so its child
        helpers would otherwise survive beside the replacement plugin (two
-       bridges, COM conflicts). Close them explicitly on plugin disposal. */
-    try { flashHelper.line('quit') } catch (error) { void error }
-    try { serialHelper.line('quit') } catch (error) { void error }
+       bridges, COM conflicts). `line('quit')` alone is NOT enough: if the
+       helper is busy in a serial read, or its stdin is already broken, the
+       message is simply lost and the process keeps the COM port forever. That
+       is exactly how three `AbSerialHost.exe` orphans ended up holding COM3
+       across HMR reloads. End stdin (the helpers exit on EOF) and kill whatever
+       is still alive after a short grace period. */
+    try { void flashHelper.stopAndWait(1500) } catch (error) { void error }
+    try { void serialHelper.stopAndWait(1500) } catch (error) { void error }
     try { restoreAutoStart() } catch { /* non-fatal */ }
   }, 'downloader: restore AutoStart')
 

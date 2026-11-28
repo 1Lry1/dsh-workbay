@@ -1,6 +1,6 @@
 {
   "name": "dsh-downloader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Downloader：在「工作台」里烧录蓝牙芯片。驱动厂商 Downloader 引擎（IPC，不模拟鼠标键盘），自带 1.5 Mbps 串口日志；串口与烧录自动互斥切换，烧完自动恢复串口并保持板卡启动日志完整",
   "type": "module",
   "main": "lib/index.js",
